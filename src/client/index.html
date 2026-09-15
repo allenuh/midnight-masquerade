@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Creature Containment Crew — Prototype 1</title>
+  </head>
+  <body>
+    <header>
+      <span>Prototype 1 — The Chase</span>
+      <span id="role">Role: unassigned</span>
+      <span id="proximity" hidden></span>
+      <button id="restart" type="button" disabled>Restart round</button>
+    </header>
+    <p id="status" role="status">Connecting…</p>
+    <main id="arena-container">
+      <div id="arena-view">
+        <canvas id="arena" aria-label="3D chase arena. Hunter: white sphere. Creature: orange octahedron, visible only to itself."></canvas>
+        <div id="proximity-warning" data-state="SAFE" aria-hidden="true"></div>
+      </div>
+    </main>
+    <footer>WASD to move. First connection: Hunter. Second connection: Creature.</footer>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
