@@ -2,76 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ARENA_WALLS } from '../src/shared/arena.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
-import type { Position } from '../src/shared/protocol.js';
 import { constrainToArena, distance3D, spheresTouchDuringStep } from '../src/server/spatial.js';
 import {
+  abandonRound,
   createGame,
-  joinGame,
-  leaveGame,
   proximityForDistance,
-  restartGame,
   setInput,
   snapshotFor,
+  startRound,
   stepGame,
+  type Game,
 } from '../src/server/game.js';
+import {
+  CREATURE_PAYLOAD_KEYS, PLAYERS, assertHunterPayload, closeTo, creatureId, creatureView, groundPosition, groundedY,
+  hunterId, hunterView, input, ownView, positions, stageGame, type Keys,
+} from './helpers/game.js';
 
-type Game = ReturnType<typeof createGame>;
 type Role = 'hunter' | 'creature';
-type Keys = { up: boolean; down: boolean; left: boolean; right: boolean; light: boolean };
 
-const groundedY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
-const groundPosition = (x: number, z: number): Position => ({ x, y: groundedY, z });
-
+// The Prototype 1 chase, staged in a five-player round: H1 is "the Hunter", the other
+// three Hunters stand parked on open floor of the obstacle blockout (see src/shared/arena.ts).
 function runningGame(): Game {
-  const game = createGame();
-  joinGame(game, 'hunter');
-  joinGame(game, 'creature');
-  game.players.hunter = groundPosition(100, 100);
-  // Both starts sit on open floor of the obstacle blockout (see src/shared/arena.ts).
-  game.players.creature = groundPosition(660, 300);
-  return game;
+  return stageGame(groundPosition(100, 100), groundPosition(660, 300));
 }
 
-function input(game: Game, keys: Partial<Keys> = {}) {
-  return {
-    type: 'input', roundId: game.roundId,
-    up: false, down: false, left: false, right: false, light: false, ...keys,
-  };
-}
-
-function closeTo(actual: number, expected: number) {
-  assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} should equal ${expected}`);
-}
-
-function assertHunterPayload(value: unknown) {
-  const payload = JSON.parse(JSON.stringify(value));
-  // An allowlist checks every exposed field, including additions made later.
-  // `creature` is optional: present only while the Creature is revealed.
-  const keys = Object.keys(payload).filter((key) => key !== 'creature').sort();
-  assert.deepEqual(keys, [
-    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'facing', 'light', 'proximity', 'creatureHp',
-  ].sort());
-  assert.equal(typeof payload.facing, 'number');
-  assert.equal(typeof payload.light, 'boolean');
-  assert.equal(typeof payload.creatureHp, 'number');
-  if ('creature' in payload) {
-    assert.deepEqual(Object.keys(payload.creature).sort(), ['position', 'sprinting', 'staggered']);
-    assert.deepEqual(Object.keys(payload.creature.position).sort(), ['x', 'y', 'z']);
-    assert.equal(typeof payload.creature.staggered, 'boolean');
-    assert.equal(typeof payload.creature.sprinting, 'boolean');
-  }
-  assert.equal(payload.type, 'snapshot');
-  assert.equal(payload.role, 'hunter');
-  assert.equal(typeof payload.roundId, 'number');
-  assert.ok(['waiting', 'running', 'ended'].includes(payload.roundState));
-  assert.ok(payload.result === null || payload.result === 'caught' || payload.result === 'defeated');
-  assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(payload.proximity));
-  if (payload.hunter !== null) {
-    assert.deepEqual(Object.keys(payload.hunter).sort(), ['x', 'y', 'z']);
-    assert.equal(typeof payload.hunter.x, 'number');
-    assert.equal(typeof payload.hunter.y, 'number');
-    assert.equal(typeof payload.hunter.z, 'number');
-  }
+const playerOf = (game: Game, role: Role) => (role === 'hunter' ? hunterId(game) : creatureId(game));
+const positionOf = (game: Game, role: Role) => (role === 'hunter' ? game.hunters[0].position : game.creature!.position);
+function place(game: Game, role: Role, position: { x: number; y: number; z: number }): void {
+  if (role === 'hunter') game.hunters[0].position = position;
+  else game.creature!.position = position;
 }
 
 test('proximity uses inclusive configured boundaries and four discrete bands', () => {
@@ -97,7 +56,7 @@ test('distance and server proximity use all three world axes', () => {
   closeTo(distance3D(b, a), 13);
 
   const game = runningGame();
-  const hunter = game.players.hunter!;
+  const hunter = game.hunters[0].position;
   // Exercise the spatial calculation directly, before movement constrains Y.
   // Equal X/Z must not make vertically separated players immediately close.
   const { immediate, danger, uneasy } = GAMEPLAY.proximity;
@@ -105,14 +64,11 @@ test('distance and server proximity use all three world axes', () => {
     [immediate, 'IMMEDIATE'], [immediate + 1, 'DANGER'],
     [danger + 1, 'UNEASY'], [uneasy + 1, 'SAFE'],
   ] as const) {
-    game.players.creature = { ...hunter, y: hunter.y + verticalGap };
-    const snapshot = snapshotFor(game, 'hunter');
-    assert.ok(snapshot.role === 'hunter');
+    game.creature!.position = { ...hunter, y: hunter.y + verticalGap };
+    const snapshot = hunterView(game);
     assert.equal(snapshot.proximity, expected);
     assertHunterPayload(snapshot);
-    const creatureSnapshot = snapshotFor(game, 'creature');
-    assert.ok(creatureSnapshot.role === 'creature');
-    assert.deepEqual(creatureSnapshot.creature, game.players.creature);
+    assert.deepEqual(creatureView(game).creature, game.creature!.position);
   }
 });
 
@@ -120,12 +76,12 @@ test('both roles move at configured speed, including diagonal movement', () => {
   for (const role of ['hunter', 'creature'] as const) {
     for (const keys of [{ right: true }, { right: true, down: true }]) {
       const game = runningGame();
-      const start = { ...game.players[role]! };
+      const start = { ...positionOf(game, role) };
       for (let tick = 0; tick < GAMEPLAY.tickRate; tick++) {
-        assert.equal(setInput(game, role, input(game, keys)), true);
+        assert.equal(setInput(game, playerOf(game, role), input(game, keys)), true);
         stepGame(game);
       }
-      const end = game.players[role]!;
+      const end = positionOf(game, role);
       closeTo(distance3D(end, start), GAMEPLAY.speed[role]);
       assert.equal(end.y, groundedY);
       assert.equal(game.roundState, 'running');
@@ -143,13 +99,13 @@ test('opposing keys cancel and WASD moves along X/Z while staying grounded on Y'
   ];
   for (const [keys, dx, dz] of cases) {
     const game = runningGame();
-    const start = { ...game.players.hunter! };
-    setInput(game, 'hunter', input(game, keys));
+    const start = { ...game.hunters[0].position };
+    setInput(game, hunterId(game), input(game, keys));
     stepGame(game);
     const step = GAMEPLAY.speed.hunter / GAMEPLAY.tickRate;
-    closeTo(game.players.hunter!.x - start.x, dx * step);
-    closeTo(game.players.hunter!.z - start.z, dz * step);
-    assert.equal(game.players.hunter!.y, groundedY);
+    closeTo(game.hunters[0].position.x - start.x, dx * step);
+    closeTo(game.hunters[0].position.z - start.z, dz * step);
+    assert.equal(game.hunters[0].position.y, groundedY);
   }
 });
 
@@ -160,17 +116,17 @@ test('the entire player shape stays within all four arena boundaries', () => {
     const other = role === 'hunter' ? 'creature' : 'hunter';
     for (const low of [true, false]) {
       const game = runningGame();
-      game.players[role] = low
+      place(game, role, low
         ? groundPosition(radius, radius)
-        : groundPosition(width - radius, depth - radius);
-      game.players[other] = groundPosition(width / 2, depth / 2);
-      const expected = { ...game.players[role]! };
+        : groundPosition(width - radius, depth - radius));
+      place(game, other, groundPosition(width / 2, depth / 2));
+      const expected = { ...positionOf(game, role) };
       for (let tick = 0; tick < GAMEPLAY.tickRate; tick++) {
-        setInput(game, role, input(game, low
+        setInput(game, playerOf(game, role), input(game, low
           ? { up: true, left: true } : { down: true, right: true }));
         stepGame(game);
       }
-      assert.deepEqual(game.players[role], expected);
+      assert.deepEqual(positionOf(game, role), expected);
       assert.equal(game.roundState, 'running');
     }
   }
@@ -198,43 +154,62 @@ test('the server owns ground height with both held and released movement keys', 
   for (const keys of [{}, { right: true, down: true }]) {
     const game = runningGame();
     for (const role of ['hunter', 'creature'] as const) {
-      game.players[role]!.y += 100;
-      assert.equal(setInput(game, role, { ...input(game, keys), y: -1_000 }), false);
-      assert.equal(setInput(game, role, { ...input(game, keys), z: 10_000 }), false);
-      assert.equal(setInput(game, role, input(game, keys)), true);
+      positionOf(game, role).y += 100;
+      assert.equal(setInput(game, playerOf(game, role), { ...input(game, keys), y: -1_000 }), false);
+      assert.equal(setInput(game, playerOf(game, role), { ...input(game, keys), z: 10_000 }), false);
+      assert.equal(setInput(game, playerOf(game, role), input(game, keys)), true);
     }
     stepGame(game);
-    assert.equal(game.players.hunter!.y, groundedY);
-    assert.equal(game.players.creature!.y, groundedY);
+    assert.equal(game.hunters[0].position.y, groundedY);
+    assert.equal(game.creature!.position.y, groundedY);
     assert.equal(game.roundState, 'running');
   }
 });
 
-test('touching ends the round, a small gap does not, and ended players cannot move', () => {
+test('touching downs the Hunter, a small gap does not, the last Hunter down ends the round, and ended players cannot move', () => {
   const game = runningGame();
-  game.players.hunter = groundPosition(400, 300);
-  game.players.creature = groundPosition(400 + 2 * GAMEPLAY.playerRadius + 0.01, 300);
+  game.hunters[0].position = groundPosition(400, 300);
+  game.creature!.position = groundPosition(400 + 2 * GAMEPLAY.playerRadius + 0.01, 300);
+  stepGame(game);
+  assert.equal(game.hunters[0].down, false);
+  assert.equal(game.roundState, 'running');
+  game.creature!.position.x = 400 + 2 * GAMEPLAY.playerRadius;
+  stepGame(game);
+  // Prototype 3: contact incapacitates rather than ending the round.
+  assert.equal(game.hunters[0].down, true);
+  assert.equal(game.roundState, 'running');
+  assert.equal(game.result, null);
+  assert.equal(ownView(hunterView(game)).down, true);
+  assert.equal(creatureView(game).hunters[0].down, true);
+
+  // With every other Hunter already down, the same contact rule ends the round.
+  for (const hunter of game.hunters.slice(1, 3)) hunter.down = true;
+  const last = game.hunters[3];
+  game.creature!.position = groundPosition(last.position.x - 2 * GAMEPLAY.playerRadius - 0.01, last.position.z);
   stepGame(game);
   assert.equal(game.roundState, 'running');
-  game.players.creature.x = 400 + 2 * GAMEPLAY.playerRadius;
+  // The attack cooldown from the first tag must have expired; wait it out, then touch.
+  while (game.creatureState.attackCooldownTicks > 0) stepGame(game);
+  game.creature!.position = groundPosition(last.position.x - 2 * GAMEPLAY.playerRadius, last.position.z);
   stepGame(game);
+  assert.equal(last.down, true);
   assert.equal(game.roundState, 'ended');
   assert.equal(game.result, 'caught');
-  assert.equal(snapshotFor(game, 'hunter').result, 'caught');
-  assert.equal(snapshotFor(game, 'creature').result, 'caught');
-  const finalPositions = structuredClone(game.players);
+  assert.equal(hunterView(game).result, 'caught');
+  assert.equal(creatureView(game).result, 'caught');
+  const finalPositions = positions(game);
   for (let tick = 0; tick < 10; tick++) {
-    setInput(game, 'hunter', input(game, { right: true }));
-    setInput(game, 'creature', input(game, { left: true }));
+    setInput(game, hunterId(game), input(game, { right: true }));
+    setInput(game, creatureId(game), input(game, { left: true }));
     stepGame(game);
   }
-  assert.deepEqual(game.players, finalPositions);
+  assert.deepEqual(positions(game), finalPositions);
 });
 
 test('inputs cannot supply positions, role, speed, elapsed time, or stale round commands', () => {
   const game = runningGame();
-  const initialPlayers = structuredClone(game.players);
-  const initialInput = structuredClone(game.inputs.hunter);
+  const initialPositions = positions(game);
+  const initialInput = structuredClone(game.hunters[0].input);
   const invalid: unknown[] = [
     null, [], true, 'right', {},
     { ...input(game), up: 1 }, { ...input(game), down: 'false' },
@@ -245,93 +220,117 @@ test('inputs cannot supply positions, role, speed, elapsed time, or stale round 
     { ...input(game), y: 500 },
     { ...input(game), z: 500 },
     { ...input(game), role: 'creature' },
+    { ...input(game), self: 'H2' },
     { ...input(game), speed: 99_999 },
     { ...input(game), deltaTime: 99_999 },
     { ...input(game), velocity: { x: 99_999, y: 99_999, z: 99_999 } },
+    { ...input(game), revive: 1 },
   ];
   for (const raw of invalid) {
-    assert.equal(setInput(game, 'hunter', raw), false);
-    assert.deepEqual(game.inputs.hunter, initialInput);
-    assert.deepEqual(game.players, initialPlayers);
+    assert.equal(setInput(game, hunterId(game), raw), false);
+    assert.deepEqual(game.hunters[0].input, initialInput);
+    assert.deepEqual(positions(game), initialPositions);
   }
+  // A connection that is not in the round has no role and no input.
+  assert.equal(setInput(game, 'p999', input(game, { right: true })), false);
 });
 
 test('input flooding does not advance simulation or increase one tick of movement', () => {
   const game = runningGame();
-  const start = { ...game.players.hunter! };
+  const start = { ...game.hunters[0].position };
   for (let message = 0; message < 1_000; message++) {
-    assert.equal(setInput(game, 'hunter', input(game, { right: true })), true);
+    assert.equal(setInput(game, hunterId(game), input(game, { right: true })), true);
   }
-  assert.deepEqual(game.players.hunter, start);
+  assert.deepEqual(game.hunters[0].position, start);
   stepGame(game);
-  closeTo(game.players.hunter!.x - start.x, GAMEPLAY.speed.hunter / GAMEPLAY.tickRate);
-  closeTo(game.players.hunter!.y, start.y);
-  closeTo(game.players.hunter!.z, start.z);
+  closeTo(game.hunters[0].position.x - start.x, GAMEPLAY.speed.hunter / GAMEPLAY.tickRate);
+  closeTo(game.hunters[0].position.y, start.y);
+  closeTo(game.hunters[0].position.z, start.z);
 });
 
-test('joining, leaving, and restarting preserve primitive two-player round rules', () => {
+test('starting, abandoning, and restarting rounds preserve the primitive round rules', () => {
   const game = createGame();
-  assert.equal(game.roundState, 'waiting');
-  joinGame(game, 'hunter');
-  const waitingPosition = { ...game.players.hunter! };
-  setInput(game, 'hunter', input(game, { right: true }));
+  assert.equal(game.roundState, 'lobby');
+  assert.equal(game.hunters.length, 0);
+  assert.ok(game.creature === null);
+  assert.throws(() => startRound(game, PLAYERS.slice(0, 4)), /exactly 5 distinct players/);
+  assert.throws(() => startRound(game, [...PLAYERS.slice(0, 4), 'p1']), /exactly 5 distinct players/);
+  assert.equal(game.roundState, 'lobby');
+
+  startRound(game, PLAYERS);
+  assert.equal(game.roundState, 'reveal');
+  assert.equal(game.roundId, 1);
+  // Nobody moves during the role reveal: inputs are rejected and positions hold.
+  const revealPositions = positions(game);
+  assert.equal(setInput(game, hunterId(game), input(game, { right: true })), false);
+  assert.equal(setInput(game, creatureId(game), input(game, { left: true })), false);
   stepGame(game);
-  assert.deepEqual(game.players.hunter, waitingPosition);
-  assert.equal(game.roundState, 'waiting');
-  joinGame(game, 'creature');
+  assert.deepEqual(positions(game), revealPositions);
+  while (game.roundState === 'reveal') stepGame(game);
   assert.equal(game.roundState, 'running');
+  assert.deepEqual(positions(game), revealPositions);
+
   const oldRoundId = game.roundId;
-  setInput(game, 'hunter', input(game, { right: true }));
-  setInput(game, 'creature', input(game, { left: true }));
-  restartGame(game);
+  setInput(game, hunterId(game), input(game, { right: true }));
+  setInput(game, creatureId(game), input(game, { left: true }));
+  startRound(game, PLAYERS);
   assert.equal(game.roundId, oldRoundId + 1);
-  assert.equal(game.roundState, 'running');
+  assert.equal(game.roundState, 'reveal');
   assert.equal(game.result, null);
-  assert.ok(distance3D(game.players.hunter!, game.players.creature!) > 2 * GAMEPLAY.playerRadius);
-  assert.equal(game.players.hunter!.y, groundedY);
-  assert.equal(game.players.creature!.y, groundedY);
-  const spawns = structuredClone(game.players);
+  for (const hunter of game.hunters) {
+    assert.ok(distance3D(hunter.position, game.creature!.position) > 2 * GAMEPLAY.playerRadius);
+    assert.equal(hunter.position.y, groundedY);
+  }
+  assert.equal(game.creature!.position.y, groundedY);
+  while (game.roundState === 'reveal') stepGame(game);
+  const spawns = positions(game);
   stepGame(game);
-  assert.deepEqual(game.players, spawns, 'restart clears held inputs');
-  assert.equal(setInput(game, 'hunter', { ...input(game), roundId: oldRoundId }), false);
-  leaveGame(game, 'creature');
-  assert.equal(game.players.creature, null);
-  assert.equal(game.roundState, 'waiting');
+  assert.deepEqual(positions(game), spawns, 'restart clears held inputs');
+  assert.equal(setInput(game, hunterId(game), { ...input(game), roundId: oldRoundId }), false);
+
+  abandonRound(game);
+  assert.equal(game.roundState, 'lobby');
+  assert.equal(game.hunters.length, 0);
+  assert.ok(game.creature === null);
   assert.equal(game.result, null);
-  assertHunterPayload(snapshotFor(game, 'hunter'));
-  joinGame(game, 'creature');
+  assert.throws(() => snapshotFor(game, PLAYERS[0]), /without a role/);
+  startRound(game, PLAYERS);
+  assert.equal(game.roundId, oldRoundId + 2);
+  while (game.roundState === 'reveal') stepGame(game);
   assert.equal(game.roundState, 'running');
-  const rejoinedSpawns = structuredClone(game.players);
+  const rejoinedSpawns = positions(game);
   stepGame(game);
-  assert.deepEqual(game.players, rejoinedSpawns);
+  assert.deepEqual(positions(game), rejoinedSpawns);
 });
 
 test('Hunter payload contains only permitted data in every round state', () => {
   const game = createGame();
-  assert.throws(() => snapshotFor(game, 'hunter'), /empty player slot/);
-  joinGame(game, 'hunter');
-  assertHunterPayload(snapshotFor(game, 'hunter'));
-  joinGame(game, 'creature');
-  assertHunterPayload(snapshotFor(game, 'hunter'));
-  const creaturePayload = snapshotFor(game, 'creature');
-  assert.ok(creaturePayload.role === 'creature');
-  assert.deepEqual(Object.keys(creaturePayload).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'creature', 'hunter', 'hunterFacing', 'hunterLight',
-    'hp', 'lit', 'revealed', 'staggered', 'staggerCooldown', 'sprinting', 'sprintCooldown',
-  ].sort());
-  assert.deepEqual(creaturePayload.creature, game.players.creature);
-  assert.deepEqual(creaturePayload.hunter, game.players.hunter);
-  game.players.creature = { ...game.players.hunter! };
-  stepGame(game);
+  assert.throws(() => snapshotFor(game, PLAYERS[0]), /without a role/);
+  startRound(game, PLAYERS);
+  for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+  while (game.roundState === 'reveal') stepGame(game);
+  for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+  const creaturePayload = creatureView(game);
+  assert.deepEqual(Object.keys(creaturePayload).sort(), CREATURE_PAYLOAD_KEYS);
+  assert.deepEqual(creaturePayload.creature, game.creature!.position);
+  assert.deepEqual(creaturePayload.hunters.map((hunter) => hunter.position), game.hunters.map((hunter) => hunter.position));
+  // Down every Hunter by contact, one per attack cooldown, checking the payload throughout.
+  for (const hunter of game.hunters) {
+    while (game.creatureState.attackCooldownTicks > 0) stepGame(game);
+    game.creature!.position = { ...hunter.position };
+    stepGame(game);
+    assert.equal(hunter.down, true);
+    for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+  }
   assert.equal(game.roundState, 'ended');
-  assertHunterPayload(snapshotFor(game, 'hunter'));
-  restartGame(game);
-  assertHunterPayload(snapshotFor(game, 'hunter'));
-  leaveGame(game, 'creature');
-  assertHunterPayload(snapshotFor(game, 'hunter'));
+  assert.equal(game.result, 'caught');
+  startRound(game, PLAYERS);
+  for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+  abandonRound(game);
+  assert.throws(() => snapshotFor(game, PLAYERS[0]), /without a role/);
 });
 
-test('glancing contact between tick endpoints still catches the Hunter', () => {
+test('glancing contact between tick endpoints still downs the Hunter', () => {
   const game = runningGame();
   const radius = GAMEPLAY.playerRadius * 2;
   // One Creature step centred on the Hunter's X, passing so close that only the
@@ -339,15 +338,15 @@ test('glancing contact between tick endpoints still catches the Hunter', () => {
   // speed so retuning cannot move either endpoint into contact.
   const halfStep = GAMEPLAY.speed.creature / GAMEPLAY.tickRate / 2;
   const sideOffset = Math.sqrt(radius * radius - (halfStep / 2) ** 2);
-  game.players.hunter = groundPosition(400, 300);
-  game.players.creature = groundPosition(400 - halfStep, 300 + sideOffset);
+  game.hunters[0].position = groundPosition(400, 300);
+  game.creature!.position = groundPosition(400 - halfStep, 300 + sideOffset);
   assert.ok(Math.hypot(halfStep, sideOffset) > radius);
-  setInput(game, 'creature', input(game, { right: true }));
+  setInput(game, creatureId(game), input(game, { right: true }));
   stepGame(game);
-  assert.ok(distance3D(game.players.creature!, game.players.hunter!) > radius,
+  assert.ok(distance3D(game.creature!.position, game.hunters[0].position) > radius,
     'neither tick endpoint overlaps');
-  assert.equal(game.roundState, 'ended');
-  assert.equal(game.result, 'caught');
+  assert.equal(game.hunters[0].down, true);
+  assert.equal(game.roundState, 'running');
 });
 
 test('swept sphere contact considers vertical separation and vertical crossings', () => {
@@ -368,41 +367,42 @@ test('swept sphere contact considers vertical separation and vertical crossings'
 
 test('different hidden positions in the same proximity band produce identical Hunter messages', () => {
   const game = runningGame();
-  game.players.hunter = groundPosition(GAMEPLAY.arena.width / 2, GAMEPLAY.arena.depth / 2);
+  game.hunters[0].position = groundPosition(GAMEPLAY.arena.width / 2, GAMEPLAY.arena.depth / 2);
   for (const distance of [40, 150, 280, 400]) {
-    game.players.creature = groundPosition(game.players.hunter.x + distance, game.players.hunter.z);
-    const first = JSON.stringify(snapshotFor(game, 'hunter'));
+    game.creature!.position = groundPosition(game.hunters[0].position.x + distance, game.hunters[0].position.z);
+    const first = JSON.stringify(hunterView(game));
     // Change direction and exact distance without crossing a warning threshold.
-    game.players.creature = groundPosition(game.players.hunter.x - distance - 1, game.players.hunter.z);
-    const second = JSON.stringify(snapshotFor(game, 'hunter'));
+    game.creature!.position = groundPosition(game.hunters[0].position.x - distance - 1, game.hunters[0].position.z);
+    const second = JSON.stringify(hunterView(game));
     assert.equal(second, first);
   }
 });
 
 test('role snapshots cannot mutate or alias authoritative player positions', () => {
   const game = runningGame();
-  const hunterSnapshot = snapshotFor(game, 'hunter');
-  const creatureSnapshot = snapshotFor(game, 'creature');
-  assert.ok(hunterSnapshot.role === 'hunter');
-  assert.ok(creatureSnapshot.role === 'creature');
+  const hunterSnapshot = hunterView(game);
+  const creatureSnapshot = creatureView(game);
   const originalSnapshots = structuredClone([hunterSnapshot, creatureSnapshot]);
 
-  game.players.hunter!.x += 10;
-  game.players.hunter!.y += 20;
-  game.players.hunter!.z += 30;
-  game.players.creature!.x -= 10;
-  game.players.creature!.y -= 20;
-  game.players.creature!.z -= 30;
+  game.hunters[0].position.x += 10;
+  game.hunters[0].position.y += 20;
+  game.hunters[0].position.z += 30;
+  game.creature!.position.x -= 10;
+  game.creature!.position.y -= 20;
+  game.creature!.position.z -= 30;
   assert.deepEqual([hunterSnapshot, creatureSnapshot], originalSnapshots,
     'later authoritative mutations do not rewrite snapshots already constructed');
 
-  const authoritativePositions = structuredClone(game.players);
-  hunterSnapshot.hunter.x = 999;
-  creatureSnapshot.hunter!.y = 999;
+  const authoritativePositions = positions(game);
+  ownView(hunterSnapshot).position.x = 999;
+  hunterSnapshot.hunters[1].position.z = 999;
+  creatureSnapshot.hunters[0].position.y = 999;
   creatureSnapshot.creature.x = 999;
   creatureSnapshot.creature.z = 999;
-  assert.deepEqual(game.players, authoritativePositions,
+  assert.deepEqual(positions(game), authoritativePositions,
     'mutating outbound objects does not alter the simulation');
-  assert.notEqual(creatureSnapshot.hunter!.x, hunterSnapshot.hunter.x,
+  assert.notEqual(creatureSnapshot.hunters[0].position.x, ownView(hunterSnapshot).position.x,
     'the two roles do not share a mutable Hunter position object');
+  assert.notEqual(hunterView(game, 1).hunters[0].position, hunterView(game).hunters[0].position,
+    'two Hunters do not share a mutable teammate position object');
 });

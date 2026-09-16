@@ -5,26 +5,23 @@ import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { Position } from '../src/shared/protocol.js';
 import { constrainToWalls, distance3D, sphereInCone } from '../src/server/spatial.js';
 import {
-  createGame,
-  flashlightHitsCreature,
+  flashlightReaches,
   isOnStaggerCooldown,
   isRevealed,
   isStaggered,
-  joinGame,
-  restartGame,
   secondsToTicks,
   setInput,
-  snapshotFor,
+  startRound,
   stepGame,
   turnToward,
   type Game,
 } from '../src/server/game.js';
-
-type Keys = { up: boolean; down: boolean; left: boolean; right: boolean; light: boolean };
+import {
+  HUNTER_PAYLOAD_KEYS, PLAYERS, closeTo, creatureId, creatureView, groundPosition, groundedY, hold, hunterId, hunterView,
+  input, ownView, positions, stageGame, step,
+} from './helpers/game.js';
 
 const radius = GAMEPLAY.playerRadius;
-const groundedY = GAMEPLAY.arena.floorY + radius;
-const groundPosition = (x: number, z: number): Position => ({ x, y: groundedY, z });
 const damagePerTick = GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate;
 const staggerTicks = secondsToTicks(GAMEPLAY.creature.staggerSeconds);
 const cooldownTicks = secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds);
@@ -45,60 +42,25 @@ const LANE_CREATURE = groundPosition(200, 75);
 const WALL_HUNTER = groundPosition(280, 300);
 const WALL_CREATURE = groundPosition(380, 300);
 
+// The Prototype 2 hunt: H1 is "the Hunter" (facing east unless stated), the Creature is
+// staged opposite it, and H2..H4 stand parked far from both with their lights off.
 function huntGame(hunter: Position, creature: Position, facing = EAST): Game {
-  const game = createGame();
-  joinGame(game, 'hunter');
-  joinGame(game, 'creature');
-  game.players.hunter = { ...hunter };
-  game.players.creature = { ...creature };
-  game.hunterFacing = facing;
-  return game;
+  return stageGame(hunter, creature, facing);
 }
 
-function input(game: Game, keys: Partial<Keys> = {}) {
-  return {
-    type: 'input', roundId: game.roundId,
-    up: false, down: false, left: false, right: false, light: false, ...keys,
-  };
-}
-
-function hold(game: Game, role: 'hunter' | 'creature', keys: Partial<Keys>): void {
-  assert.equal(setInput(game, role, input(game, keys)), true);
-}
-
-function step(game: Game, ticks = 1, hunterKeys: Partial<Keys> = {}, creatureKeys: Partial<Keys> = {}): void {
-  for (let tick = 0; tick < ticks; tick++) {
-    hold(game, 'hunter', hunterKeys);
-    hold(game, 'creature', creatureKeys);
-    stepGame(game);
-  }
-}
-
-function closeTo(actual: number, expected: number, tolerance = 1e-8) {
-  assert.ok(Math.abs(actual - expected) < tolerance, `${actual} should equal ${expected}`);
-}
-
-function hunterView(game: Game) {
-  const snapshot = snapshotFor(game, 'hunter');
-  assert.ok(snapshot.role === 'hunter');
-  return snapshot;
-}
-
-function creatureView(game: Game) {
-  const snapshot = snapshotFor(game, 'creature');
-  assert.ok(snapshot.role === 'creature');
-  return snapshot;
-}
+const hunterPosition = (game: Game) => game.hunters[0].position;
+const creaturePosition = (game: Game) => game.creature!.position;
+const hunterFacing = (game: Game) => game.hunters[0].facing;
 
 test('a Creature inside the flashlight cone and range is detected', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
-  assert.equal(flashlightHitsCreature(game.players.hunter!, game.hunterFacing, game.players.creature!), true);
+  assert.equal(flashlightReaches(hunterPosition(game), hunterFacing(game), creaturePosition(game)), true);
   // The cone edge counts when any part of the sphere overlaps it.
   const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
   const onEdge = groundPosition(LANE_HUNTER.x + 100 * Math.cos(halfAngle), LANE_HUNTER.z + 100 * Math.sin(halfAngle));
-  assert.equal(flashlightHitsCreature(LANE_HUNTER, EAST, onEdge), true);
+  assert.equal(flashlightReaches(LANE_HUNTER, EAST, onEdge), true);
   const justInsideRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + radius - 1, LANE_HUNTER.z);
-  assert.equal(flashlightHitsCreature(LANE_HUNTER, EAST, justInsideRange), true);
+  assert.equal(flashlightReaches(LANE_HUNTER, EAST, justInsideRange), true);
   step(game, 1, { light: true });
   assert.equal(game.creatureState.lit, true);
   assert.equal(isRevealed(game.creatureState), true);
@@ -108,13 +70,13 @@ test('a Creature outside the cone angle, beyond range, or behind the Hunter is n
   const wide = 45 * (Math.PI / 180);
   const outsideAngle = groundPosition(LANE_HUNTER.x + 100 * Math.cos(wide), LANE_HUNTER.z + 100 * Math.sin(wide));
   assert.equal(sphereInCone(LANE_HUNTER, EAST, outsideAngle, radius), false);
-  assert.equal(flashlightHitsCreature(LANE_HUNTER, EAST, outsideAngle), false);
+  assert.equal(flashlightReaches(LANE_HUNTER, EAST, outsideAngle), false);
   const beyondRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + radius + 1, LANE_HUNTER.z);
-  assert.equal(flashlightHitsCreature(LANE_HUNTER, EAST, beyondRange), false);
+  assert.equal(flashlightReaches(LANE_HUNTER, EAST, beyondRange), false);
   const behind = groundPosition(LANE_HUNTER.x - 60, LANE_HUNTER.z);
-  assert.equal(flashlightHitsCreature(LANE_HUNTER, EAST, behind), false);
+  assert.equal(flashlightReaches(LANE_HUNTER, EAST, behind), false);
   // Facing north instead: the same east-side Creature is now outside the cone.
-  assert.equal(flashlightHitsCreature(LANE_HUNTER, -Math.PI / 2, LANE_CREATURE), false);
+  assert.equal(flashlightReaches(LANE_HUNTER, -Math.PI / 2, LANE_CREATURE), false);
 
   const game = huntGame(LANE_HUNTER, beyondRange);
   step(game, 30, { light: true });
@@ -126,9 +88,9 @@ test('a Creature outside the cone angle, beyond range, or behind the Hunter is n
 
 test('a wall blocks the flashlight even when the Creature is inside the cone geometry', () => {
   assert.equal(sphereInCone(WALL_HUNTER, EAST, WALL_CREATURE, radius), true, 'cone geometry alone would hit');
-  assert.equal(flashlightHitsCreature(WALL_HUNTER, EAST, WALL_CREATURE), false, 'the slab blocks line of sight');
+  assert.equal(flashlightReaches(WALL_HUNTER, EAST, WALL_CREATURE), false, 'the slab blocks line of sight');
   // Through the opening beside the slab the identical offset is lit.
-  assert.equal(flashlightHitsCreature(groundPosition(280, 180), EAST, groundPosition(380, 180)), true);
+  assert.equal(flashlightReaches(groundPosition(280, 180), EAST, groundPosition(380, 180)), true);
 
   const game = huntGame(WALL_HUNTER, WALL_CREATURE);
   step(game, 30, { light: true });
@@ -150,8 +112,8 @@ test('an illuminated Creature takes server-authoritative damage measured in simu
   const hpAfterLight = game.creatureState.hp;
   step(game, 30);
   assert.equal(game.creatureState.hp, hpAfterLight);
-  assert.equal(setInput(game, 'hunter', { ...input(game, { light: true }), damage: 1_000 }), false);
-  assert.equal(setInput(game, 'creature', { ...input(game), hp: 1_000 }), false);
+  assert.equal(setInput(game, hunterId(game), { ...input(game, { light: true }), damage: 1_000 }), false);
+  assert.equal(setInput(game, creatureId(game), { ...input(game), hp: 1_000 }), false);
   assert.equal(game.creatureState.hp, hpAfterLight);
 });
 
@@ -164,13 +126,13 @@ test('the first flashlight hit staggers the Creature: it cannot move or tag unti
   assert.equal(creatureView(game).staggered, true);
   closeTo(creatureView(game).staggerCooldown, GAMEPLAY.creature.staggerCooldownSeconds);
 
-  const frozen = { ...game.players.creature! };
+  const frozen = { ...creaturePosition(game) };
   step(game, staggerTicks - 1, {}, { right: true });
-  assert.deepEqual(game.players.creature, frozen, 'no movement while staggered');
+  assert.deepEqual(creaturePosition(game), frozen, 'no movement while staggered');
   assert.equal(isStaggered(game.creatureState), true);
   step(game, 1, {}, { right: true });
   assert.equal(isStaggered(game.creatureState), false);
-  closeTo(game.players.creature!.x - frozen.x, GAMEPLAY.speed.creature / GAMEPLAY.tickRate);
+  closeTo(creaturePosition(game).x - frozen.x, GAMEPLAY.speed.creature / GAMEPLAY.tickRate);
 });
 
 test('contact with a staggered Creature is not a tag, but it can tag again once free', () => {
@@ -183,17 +145,19 @@ test('contact with a staggered Creature is not a tag, but it can tag again once 
   const walkTicks = Math.ceil((gap + 1) / (GAMEPLAY.speed.hunter / GAMEPLAY.tickRate));
   assert.ok(walkTicks + 1 < staggerTicks, 'the walk must finish inside the stagger');
   step(game, walkTicks, { right: true });
-  assert.ok(distance3D(game.players.hunter!, game.players.creature!) <= 2 * radius, 'spheres overlap');
+  assert.ok(distance3D(hunterPosition(game), creaturePosition(game)) <= 2 * radius, 'spheres overlap');
+  assert.equal(game.hunters[0].down, false);
   assert.equal(game.roundState, 'running');
   assert.equal(game.result, null);
   // Still overlapping on the last staggered tick: no tag. The tick the stagger expires: tagged.
   step(game, staggerTicks - walkTicks - 1);
   assert.equal(isStaggered(game.creatureState), true);
-  assert.equal(game.roundState, 'running');
+  assert.equal(game.hunters[0].down, false);
   step(game, 1);
   assert.equal(isStaggered(game.creatureState), false);
-  assert.equal(game.roundState, 'ended');
-  assert.equal(game.result, 'caught');
+  assert.equal(game.hunters[0].down, true);
+  assert.equal(game.roundState, 'running', 'three Hunters are still active');
+  assert.equal(game.result, null);
 });
 
 test('continuous light during the stagger cooldown keeps damaging and revealing but never re-staggers', () => {
@@ -213,9 +177,9 @@ test('continuous light during the stagger cooldown keeps damaging and revealing 
   for (let tick = staggerTicks + 1; tick < cooldownTicks; tick++) {
     // Once, mid-cooldown, prove the lit Creature is free to move (and therefore attack).
     const moving = tick === staggerTicks + 10;
-    const before = game.players.creature!.x;
+    const before = creaturePosition(game).x;
     step(game, 1, { light: true }, moving ? { right: true } : {});
-    if (moving) closeTo(game.players.creature!.x - before, GAMEPLAY.speed.creature / GAMEPLAY.tickRate);
+    if (moving) closeTo(creaturePosition(game).x - before, GAMEPLAY.speed.creature / GAMEPLAY.tickRate);
     assert.equal(game.creatureState.lit, true);
     assert.equal(isStaggered(game.creatureState), false, `no re-stagger at tick ${tick}`);
     assert.equal(isOnStaggerCooldown(game.creatureState), true);
@@ -234,7 +198,7 @@ test('continuous light during the stagger cooldown keeps damaging and revealing 
 test('the Creature stays visible for the linger period, then leaves the Hunter payload entirely', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
   step(game, 1, { light: true });
-  const revealedAt = { ...game.players.creature! };
+  const revealedAt = { ...creaturePosition(game) };
   const revealed = hunterView(game);
   assert.deepEqual(revealed.creature, { position: revealedAt, staggered: true, sprinting: false });
   assert.equal(creatureView(game).revealed, true);
@@ -258,9 +222,7 @@ test('the Creature stays visible for the linger period, then leaves the Hunter p
   assert.equal(wire.includes('sprinting'), false);
   // Still staggered and hidden: the Hunter learns nothing further about the stagger either.
   assert.equal(isStaggered(game.creatureState), true);
-  assert.deepEqual(Object.keys(hidden).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'facing', 'light', 'proximity', 'creatureHp',
-  ].sort());
+  assert.deepEqual(Object.keys(hidden).sort(), HUNTER_PAYLOAD_KEYS);
 });
 
 test('illuminating the Creature again refreshes the visibility linger', () => {
@@ -276,7 +238,7 @@ test('illuminating the Creature again refreshes the visibility linger', () => {
   assert.equal('creature' in hunterView(game), false);
 });
 
-test('Creature HP reaching zero ends the round with a Hunter victory and freezes both players', () => {
+test('Creature HP reaching zero ends the round with a Hunter victory and freezes every player', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
   game.creatureState.hp = damagePerTick * 2.5;
   step(game, 2, { light: true });
@@ -289,58 +251,62 @@ test('Creature HP reaching zero ends the round with a Hunter victory and freezes
   assert.equal(creatureView(game).result, 'defeated');
   assert.equal(hunterView(game).creatureHp, 0);
 
-  const finalPositions = structuredClone(game.players);
+  const finalPositions = positions(game);
   for (let tick = 0; tick < 10; tick++) {
-    assert.equal(setInput(game, 'hunter', input(game, { right: true, light: true })), false);
-    assert.equal(setInput(game, 'creature', input(game, { left: true })), false);
+    assert.equal(setInput(game, hunterId(game), input(game, { right: true, light: true })), false);
+    assert.equal(setInput(game, creatureId(game), input(game, { left: true })), false);
     stepGame(game);
   }
-  assert.deepEqual(game.players, finalPositions);
+  assert.deepEqual(positions(game), finalPositions);
   assert.equal(game.creatureState.hp, 0);
 
-  restartGame(game);
+  startRound(game, PLAYERS);
+  while (game.roundState === 'reveal') stepGame(game);
   assert.equal(game.roundState, 'running');
   assert.equal(game.result, null);
   assert.equal(game.creatureState.hp, GAMEPLAY.creature.maxHp);
   assert.equal(isRevealed(game.creatureState), false);
   assert.equal(isStaggered(game.creatureState), false);
   assert.equal(isOnStaggerCooldown(game.creatureState), false);
-  assert.equal(game.inputs.hunter.light, false);
+  assert.equal(game.hunters.every((hunter) => !hunter.input.light && !hunter.down), true);
   assert.equal('creature' in hunterView(game), false);
 });
 
-test('the Creature tagging the Hunter still wins, even in the same step the light would reveal it', () => {
+test('the Creature tagging the Hunter still downs it, even in the same step the light would reveal it', () => {
   // Plain tag with the light off.
   const plain = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + 5, LANE_HUNTER.z));
   step(plain, 1, {}, { left: true });
-  assert.equal(plain.result, 'caught');
-  assert.equal(hunterView(plain).result, 'caught');
-  assert.equal(creatureView(plain).result, 'caught');
+  assert.equal(plain.hunters[0].down, true);
+  assert.equal(ownView(hunterView(plain)).down, true);
+  assert.equal(creatureView(plain).hunters[0].down, true);
+  assert.equal(plain.roundState, 'running');
 
   // Same geometry with the light held: the Creature is in the cone, yet the tag
-  // resolves first and the flashlight is never applied.
+  // resolves first and the downed Hunter's flashlight is never applied.
   const raced = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + 5, LANE_HUNTER.z));
-  assert.equal(flashlightHitsCreature(raced.players.hunter!, raced.hunterFacing, raced.players.creature!), true);
+  assert.equal(flashlightReaches(hunterPosition(raced), hunterFacing(raced), creaturePosition(raced)), true);
   step(raced, 1, { light: true }, { left: true });
-  assert.equal(raced.roundState, 'ended');
-  assert.equal(raced.result, 'caught');
+  assert.equal(raced.hunters[0].down, true);
+  assert.equal(raced.roundState, 'running');
   assert.equal(raced.creatureState.hp, GAMEPLAY.creature.maxHp);
   assert.equal(raced.creatureState.lit, false);
   assert.equal(isStaggered(raced.creatureState), false);
-  assert.equal('creature' in hunterView(raced), false, 'a hidden Creature stays hidden after catching');
+  assert.equal('creature' in hunterView(raced), false, 'a hidden Creature stays hidden after downing a Hunter');
+  assert.equal(ownView(hunterView(raced)).light, false, 'a downed Hunter has no light');
 });
 
 test('players collide with interior walls, slide along them, and are never placed inside one', () => {
   const [northSlab, , , westSlab] = ARENA_OBSTACLES;
   for (const role of ['hunter', 'creature'] as const) {
+    const positionOf = (game: Game) => (role === 'hunter' ? hunterPosition(game) : creaturePosition(game));
     // Straight into the west face of the west slab: stops with the sphere touching it.
     const game = role === 'hunter'
       ? huntGame(groundPosition(300, 300), groundPosition(900, 60))
       : huntGame(groundPosition(900, 60), groundPosition(300, 300));
     step(game, 30, role === 'hunter' ? { right: true } : {}, role === 'creature' ? { right: true } : {});
     assert.equal(game.roundState, 'running');
-    closeTo(game.players[role]!.x, westSlab.min.x - radius);
-    assert.equal(game.players[role]!.z, 300);
+    closeTo(positionOf(game).x, westSlab.min.x - radius);
+    assert.equal(positionOf(game).z, 300);
 
     // Diagonal input against the same face keeps the parallel component: sliding.
     const sliding = role === 'hunter'
@@ -348,15 +314,15 @@ test('players collide with interior walls, slide along them, and are never place
       : huntGame(groundPosition(900, 60), groundPosition(300, 300));
     const keys = { right: true, down: true };
     step(sliding, 20, role === 'hunter' ? keys : {}, role === 'creature' ? keys : {});
-    closeTo(sliding.players[role]!.x, westSlab.min.x - radius);
-    closeTo(sliding.players[role]!.z, 300 + 20 * (GAMEPLAY.speed[role] / GAMEPLAY.tickRate) * Math.SQRT1_2);
+    closeTo(positionOf(sliding).x, westSlab.min.x - radius);
+    closeTo(positionOf(sliding).z, 300 + 20 * (GAMEPLAY.speed[role] / GAMEPLAY.tickRate) * Math.SQRT1_2);
   }
 
   // Pressing up beneath the north slab stops the sphere on its south face.
   const cornered = huntGame(groundPosition(540, 175), groundPosition(900, 60));
   step(cornered, 30, { up: true });
-  closeTo(cornered.players.hunter!.z, northSlab.max.z + radius);
-  assert.equal(cornered.players.hunter!.x, 540);
+  closeTo(hunterPosition(cornered).z, northSlab.max.z + radius);
+  assert.equal(hunterPosition(cornered).x, 540);
 
   // A position overlapping a slab is pushed out to a non-overlapping one.
   const inside = constrainToWalls(groundPosition(328, 300));
@@ -366,10 +332,9 @@ test('players collide with interior walls, slide along them, and are never place
   assert.deepEqual(constrainToWalls(groundPosition(300, 300)), groundPosition(300, 300));
 
   for (let round = 0; round < 200; round++) {
-    restartGame(cornered);
-    for (const role of ['hunter', 'creature'] as const) {
-      const spawn = cornered.players[role]!;
-      assert.deepEqual(constrainToWalls(spawn), spawn, `${role} spawn overlaps a wall: ${JSON.stringify(spawn)}`);
+    startRound(cornered, PLAYERS);
+    for (const spawn of [creaturePosition(cornered), ...cornered.hunters.map((hunter) => hunter.position)]) {
+      assert.deepEqual(constrainToWalls(spawn), spawn, `spawn overlaps a wall: ${JSON.stringify(spawn)}`);
       assert.equal(spawn.y, groundedY);
     }
   }
@@ -406,39 +371,40 @@ test('the Hunter turns gradually toward the held direction at the configured spe
   // wall may stop the body without stopping the turn.
   const game = huntGame(groundPosition(GAMEPLAY.arena.width - radius, 300), groundPosition(100, 60), -Math.PI / 2);
   step(game, 3, { right: true });
-  assert.equal(game.players.hunter!.x, GAMEPLAY.arena.width - radius);
-  closeTo(game.hunterFacing, Math.min(-Math.PI / 2 + 3 * turnStep, EAST));
-  closeTo(hunterView(game).facing, game.hunterFacing);
-  closeTo(creatureView(game).hunterFacing!, game.hunterFacing);
+  assert.equal(hunterPosition(game).x, GAMEPLAY.arena.width - radius);
+  closeTo(hunterFacing(game), Math.min(-Math.PI / 2 + 3 * turnStep, EAST));
+  closeTo(ownView(hunterView(game)).facing, hunterFacing(game));
+  closeTo(creatureView(game).hunters[0].facing, hunterFacing(game));
   const moving = huntGame(groundPosition(100, 60), groundPosition(900, 500), -Math.PI / 2);
   step(moving, 1, { right: true });
-  closeTo(moving.players.hunter!.x, 100 + GAMEPLAY.speed.hunter / GAMEPLAY.tickRate);
-  closeTo(moving.hunterFacing, Math.min(-Math.PI / 2 + turnStep, EAST));
+  closeTo(hunterPosition(moving).x, 100 + GAMEPLAY.speed.hunter / GAMEPLAY.tickRate);
+  closeTo(hunterFacing(moving), Math.min(-Math.PI / 2 + turnStep, EAST));
   step(moving, 1);
-  closeTo(moving.hunterFacing, Math.min(-Math.PI / 2 + turnStep, EAST), 1e-12);
+  closeTo(hunterFacing(moving), Math.min(-Math.PI / 2 + turnStep, EAST), 1e-12);
 });
 
 test('the action flag must be a boolean; the Creature press sprints but never lights anything', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
   for (const light of [1, 'true', null, undefined]) {
-    assert.equal(setInput(game, 'hunter', { ...input(game), light }), false);
+    assert.equal(setInput(game, hunterId(game), { ...input(game), light }), false);
   }
   const { light: _omitted, ...withoutLight } = input(game);
-  assert.equal(setInput(game, 'hunter', withoutLight), false);
-  assert.equal(game.inputs.hunter.light, false);
-  assert.equal(hunterView(game).light, false);
-  assert.equal(creatureView(game).hunterLight, false);
+  assert.equal(setInput(game, hunterId(game), withoutLight), false);
+  assert.equal(game.hunters[0].input.light, false);
+  assert.equal(ownView(hunterView(game)).light, false);
+  assert.equal(creatureView(game).hunters[0].light, false);
 
-  hold(game, 'creature', { light: true });
+  hold(game, creatureId(game), { light: true });
   stepGame(game);
   assert.equal(game.creatureState.sprinting, true);
   assert.equal(game.creatureState.lit, false);
   assert.equal(game.creatureState.hp, GAMEPLAY.creature.maxHp);
-  assert.equal(creatureView(game).hunterLight, false);
+  assert.equal(creatureView(game).hunters.every((hunter) => !hunter.light), true);
 
-  hold(game, 'hunter', { light: true });
-  assert.equal(hunterView(game).light, true);
-  assert.equal(creatureView(game).hunterLight, true);
+  hold(game, hunterId(game), { light: true });
+  assert.equal(ownView(hunterView(game)).light, true);
+  assert.equal(creatureView(game).hunters[0].light, true);
+  assert.equal(hunterView(game, 1).hunters[0].light, true, 'teammates see the beam too');
 });
 
 // Sprint: the Creature's own use of the Space / left mouse button.
@@ -450,25 +416,25 @@ test('holding the action button sprints the Creature at the configured speed, an
   assert.ok(sprintStep > creatureStep, 'sprint must be faster than walking');
   assert.ok(sprintStep < GAMEPLAY.arena.wallThickness, 'one sprint step must not cross a wall');
   const game = huntGame(SPRINT_HUNTER, SPRINT_CREATURE);
-  let x = game.players.creature!.x;
+  let x = creaturePosition(game).x;
   step(game, 1, {}, { right: true });
-  closeTo(game.players.creature!.x - x, creatureStep);
+  closeTo(creaturePosition(game).x - x, creatureStep);
   assert.equal(game.creatureState.sprinting, false);
-  x = game.players.creature!.x;
+  x = creaturePosition(game).x;
   step(game, 1, {}, { right: true, light: true });
-  closeTo(game.players.creature!.x - x, sprintStep);
+  closeTo(creaturePosition(game).x - x, sprintStep);
   assert.equal(game.creatureState.sprinting, true);
   assert.equal(creatureView(game).sprinting, true);
   // Diagonal sprinting is normalized like walking.
-  const before = { ...game.players.creature! };
+  const before = { ...creaturePosition(game) };
   step(game, 1, {}, { right: true, down: true, light: true });
-  closeTo(distance3D(game.players.creature!, before), sprintStep);
-  assert.equal(game.players.creature!.y, groundedY);
+  closeTo(distance3D(creaturePosition(game), before), sprintStep);
+  assert.equal(creaturePosition(game).y, groundedY);
   // The Hunter's button is the flashlight; the Hunter's speed never changes.
-  const hunterX = game.players.hunter!.x;
+  const hunterX = hunterPosition(game).x;
   step(game, 1, { left: true, light: true }, { right: true, light: true });
-  closeTo(hunterX - game.players.hunter!.x, GAMEPLAY.speed.hunter / GAMEPLAY.tickRate);
-  assert.equal(hunterView(game).light, true);
+  closeTo(hunterX - hunterPosition(game).x, GAMEPLAY.speed.hunter / GAMEPLAY.tickRate);
+  assert.equal(ownView(hunterView(game)).light, true);
   assert.equal(game.creatureState.lit, false, 'the Creature is far outside the beam');
 });
 
@@ -479,8 +445,8 @@ test('a sprinting Creature is revealed to the Hunter without any light, then lin
   assert.equal(game.creatureState.sprinting, true);
   assert.equal(isRevealed(game.creatureState), true);
   const seen = hunterView(game);
-  assert.equal(seen.light, false);
-  assert.deepEqual(seen.creature, { position: { ...game.players.creature! }, staggered: false, sprinting: true });
+  assert.equal(ownView(seen).light, false);
+  assert.deepEqual(seen.creature, { position: { ...creaturePosition(game) }, staggered: false, sprinting: true });
   assert.equal(seen.creatureHp, GAMEPLAY.creature.maxHp);
   const own = creatureView(game);
   assert.equal(own.sprinting, true);
@@ -495,7 +461,7 @@ test('a sprinting Creature is revealed to the Hunter without any light, then lin
   assert.equal(game.creatureState.hp, GAMEPLAY.creature.maxHp);
   assert.equal(game.creatureState.revealTicks, lingerTicks);
   assert.equal(hunterView(game).creature?.sprinting, true);
-  const lastSeen = { ...game.players.creature! };
+  const lastSeen = { ...creaturePosition(game) };
 
   // Release: the same linger as after the light, then the key is gone entirely.
   for (let tick = 1; tick < lingerTicks; tick++) {
@@ -519,34 +485,34 @@ test('a sprint that ends starts a short cooldown, and a held button resumes spri
   step(game, 3, {}, { right: true, light: true });
   assert.equal(creatureView(game).sprintCooldown, 0);
   // Release for one step: walking speed, and the cooldown begins.
-  let x = game.players.creature!.x;
+  let x = creaturePosition(game).x;
   step(game, 1, {}, { right: true });
-  closeTo(game.players.creature!.x - x, creatureStep);
+  closeTo(creaturePosition(game).x - x, creatureStep);
   assert.equal(game.creatureState.sprinting, false);
   closeTo(creatureView(game).sprintCooldown, GAMEPLAY.sprint.cooldownSeconds);
   // Holding again during the cooldown does nothing except show the timer. The linger
   // outlasts the cooldown, so a tap-tap never blinks the Creature out of view.
   assert.ok(sprintCooldownTicks < lingerTicks, 'cooldown must be shorter than the visibility linger');
   for (let tick = 1; tick < sprintCooldownTicks; tick++) {
-    x = game.players.creature!.x;
+    x = creaturePosition(game).x;
     step(game, 1, {}, { right: true, light: true });
-    closeTo(game.players.creature!.x - x, creatureStep);
+    closeTo(creaturePosition(game).x - x, creatureStep);
     assert.equal(game.creatureState.sprinting, false, `blocked at cooldown tick ${tick}`);
     assert.equal(creatureView(game).sprinting, false);
     assert.ok(creatureView(game).sprintCooldown > 0);
     assert.ok(hunterView(game).creature, 'still visible through the cooldown');
   }
   // The step the cooldown reaches zero, the held button sprints again without a re-press.
-  x = game.players.creature!.x;
+  x = creaturePosition(game).x;
   step(game, 1, {}, { right: true, light: true });
-  closeTo(game.players.creature!.x - x, sprintStep);
+  closeTo(creaturePosition(game).x - x, sprintStep);
   assert.equal(game.creatureState.sprinting, true);
   assert.equal(creatureView(game).sprintCooldown, 0);
 
-  // Restart clears the sprint, its cooldown, and the reveal along with the held button.
+  // A new round clears the sprint, its cooldown, and the reveal along with the held button.
   step(game, 1, {}, { right: true });
   assert.ok(game.creatureState.sprintCooldownTicks > 0);
-  restartGame(game);
+  startRound(game, PLAYERS);
   assert.equal(game.creatureState.sprinting, false);
   assert.equal(game.creatureState.sprintCooldownTicks, 0);
   assert.equal(creatureView(game).sprintCooldown, 0);
@@ -564,9 +530,9 @@ test('a flashlight hit ends the sprint: a staggered Creature cannot sprint, and 
   assert.equal(isStaggered(game.creatureState), true);
   assert.equal(game.creatureState.sprinting, true);
   // ...and from the next step the stagger freezes the Creature and the sprint is over.
-  const frozen = { ...game.players.creature! };
+  const frozen = { ...creaturePosition(game) };
   step(game, 1, {}, { right: true, light: true });
-  assert.deepEqual(game.players.creature, frozen);
+  assert.deepEqual(creaturePosition(game), frozen);
   assert.equal(game.creatureState.sprinting, false);
   assert.equal(creatureView(game).sprinting, false);
   assert.equal(hunterView(game).creature?.sprinting, false);
@@ -574,30 +540,40 @@ test('a flashlight hit ends the sprint: a staggered Creature cannot sprint, and 
   closeTo(creatureView(game).sprintCooldown, GAMEPLAY.sprint.cooldownSeconds);
   // Held for the rest of the stagger: still frozen, never sprinting.
   step(game, staggerTicks - 2, {}, { right: true, light: true });
-  assert.deepEqual(game.players.creature, frozen);
+  assert.deepEqual(creaturePosition(game), frozen);
   assert.equal(isStaggered(game.creatureState), true);
   assert.equal(game.creatureState.sprinting, false);
   // The step the stagger expires, the held button sprints at once: the cooldown ended long ago.
   step(game, 1, {}, { right: true, light: true });
   assert.equal(isStaggered(game.creatureState), false);
   assert.equal(game.creatureState.sprinting, true);
-  closeTo(game.players.creature!.x - frozen.x, sprintStep);
+  closeTo(creaturePosition(game).x - frozen.x, sprintStep);
 });
 
-test('a sprinting Creature can still tag, and a sprint begun in the tag step reveals nothing', () => {
+test('a sprinting Creature can still tag; a sprint in the tag step reveals it unless that tag ends the round', () => {
   // A gap one walking step cannot close in a single step, but one sprint step can.
   const gap = (creatureStep + sprintStep) / 2;
   const start = groundPosition(LANE_HUNTER.x + 2 * radius + gap, LANE_HUNTER.z);
   const walking = huntGame(LANE_HUNTER, start);
   step(walking, 1, {}, { left: true });
-  assert.equal(walking.roundState, 'running');
+  assert.equal(walking.hunters[0].down, false);
   const sprinting = huntGame(LANE_HUNTER, start);
   step(sprinting, 1, {}, { left: true, light: true });
-  assert.equal(sprinting.roundState, 'ended');
-  assert.equal(sprinting.result, 'caught');
-  assert.equal(hunterView(sprinting).result, 'caught');
-  assert.equal(creatureView(sprinting).result, 'caught');
-  // The tag resolves before the sprint reveal: the Hunter never learns where it came from.
-  assert.equal(isRevealed(sprinting.creatureState), false);
-  assert.equal('creature' in hunterView(sprinting), false);
+  assert.equal(sprinting.hunters[0].down, true);
+  assert.equal(sprinting.roundState, 'running');
+  // The round goes on, so the sprint reveal applies after the tag as it always does.
+  assert.equal(isRevealed(sprinting.creatureState), true);
+  assert.equal(hunterView(sprinting).creature?.sprinting, true);
+
+  // When that tag downs the last Hunter the round ends first: the Hunters never learn
+  // where the Creature came from.
+  const decisive = huntGame(LANE_HUNTER, start);
+  for (const hunter of decisive.hunters.slice(1)) hunter.down = true;
+  step(decisive, 1, {}, { left: true, light: true });
+  assert.equal(decisive.roundState, 'ended');
+  assert.equal(decisive.result, 'caught');
+  assert.equal(hunterView(decisive).result, 'caught');
+  assert.equal(creatureView(decisive).result, 'caught');
+  assert.equal(isRevealed(decisive.creatureState), false);
+  assert.equal('creature' in hunterView(decisive), false);
 });

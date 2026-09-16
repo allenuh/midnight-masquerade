@@ -3,25 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Creature Containment Crew — Prototype 2</title>
+    <title>Creature Containment Crew — Prototype 3</title>
   </head>
   <body>
     <header>
-      <span>Prototype 2 — The Hunt</span>
-      <span id="role">Role: unassigned</span>
+      <span>Prototype 3 — Full Multiplayer</span>
+      <span id="room" hidden></span>
+      <span id="role" hidden></span>
       <span id="proximity" hidden></span>
       <span id="creature-hp" hidden></span>
       <span id="creature-state" hidden></span>
-      <button id="restart" type="button" disabled>Restart round</button>
+      <span id="team" hidden></span>
+      <button id="start" type="button" hidden disabled>Start match</button>
     </header>
     <p id="status" role="status">Connecting…</p>
-    <main id="arena-container">
+    <section id="lobby" aria-label="Room">
+      <div id="menu" hidden>
+        <button id="create" type="button">Create room</button>
+        <form id="join-form">
+          <input id="code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code" />
+          <button id="join" type="submit">Join</button>
+        </form>
+      </div>
+      <p id="players" hidden></p>
+      <p id="waiting" hidden></p>
+    </section>
+    <main id="arena-container" hidden>
       <div id="arena-view">
-        <canvas id="arena" aria-label="3D hunt arena. Hunter: white sphere with a flashlight cone. Creature: orange octahedron, visible to the Hunter only while lit or sprinting."></canvas>
+        <canvas id="arena" aria-label="3D hunt arena. Hunters: spheres with flashlight cones, your own in white. Creature: orange octahedron, visible to Hunters only while lit or sprinting."></canvas>
         <div id="proximity-warning" data-state="SAFE" aria-hidden="true"></div>
+        <div id="overlay" hidden><p id="overlay-title"></p><p id="overlay-detail"></p></div>
       </div>
     </main>
-    <footer>WASD to move and turn. Hunter: hold Space or the left mouse button for the flashlight. Creature: hold Space or the left mouse button to sprint. First connection: Hunter. Second connection: Creature.</footer>
+    <footer>WASD to move and turn. Hunter: hold Space or the left mouse button for the flashlight; it reveals and damages the Creature and revives a downed teammate it shines on. Creature: hold Space or the left mouse button to sprint; touch a Hunter to incapacitate it.</footer>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

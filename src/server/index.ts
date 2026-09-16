@@ -55,8 +55,8 @@ if (!production) {
 }
 
 gameServer.server.listen(port, host, () => {
-  console.log(`Prototype 2 — The Hunt: http://${host}:${port}`);
-  console.log('Open two browser clients. First: Hunter. Second: Creature.');
+  console.log(`Prototype 3 — Full Multiplayer: http://${host}:${port}`);
+  console.log('Open five browser clients. Create a room in one, join its code from the other four, then start.');
 });
 
 let stopping = false;

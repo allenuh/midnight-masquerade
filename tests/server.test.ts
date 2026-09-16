@@ -3,30 +3,36 @@ import { once } from 'node:events';
 import test from 'node:test';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
-import { createGameServer } from '../src/server/server.js';
+import { ROOM_CODE_PATTERN, createGameServer } from '../src/server/server.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
-import type { Position } from '../src/shared/protocol.js';
+import type { HunterView, Position } from '../src/shared/protocol.js';
 import { wallDistance } from '../src/shared/raycast.js';
+import { HUNTER_PAYLOAD_KEYS, HUNTER_VIEW_KEYS } from './helpers/game.js';
 import { keysToward } from './helpers/navigate.js';
 
 type Message = {
   type: string;
+  reason?: string;
+  code?: string;
+  players?: number;
+  host?: boolean;
+  notice?: string | null;
   role?: 'hunter' | 'creature';
   roundId?: number;
   roundState?: string;
   result?: string | null;
-  hunter?: Position | null;
-  creature?: Position | { position: Position; staggered: boolean; sprinting: boolean };
+  hunters?: HunterView[];
+  self?: string;
   proximity?: string;
-  facing?: number;
-  light?: boolean;
   creatureHp?: number;
+  creature?: Position | { position: Position; staggered: boolean; sprinting: boolean };
   hp?: number;
-  hunterFacing?: number | null;
-  hunterLight?: boolean;
+  attackCooldown?: number;
 };
 
 const idle = { up: false, down: false, left: false, right: false, light: false };
+const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
+const groundedY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
 
 class Peer {
   readonly messages: Message[] = [];
@@ -68,6 +74,10 @@ class Peer {
     });
   }
 
+  latest(): Message | undefined {
+    return this.messages.at(-1);
+  }
+
   async close() {
     if (this.socket.readyState === WebSocket.CLOSED) return;
     const closed = once(this.socket, 'close');
@@ -78,30 +88,33 @@ class Peer {
   }
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function assertHunterMessage(message: Message) {
-  // `creature` may appear only while revealed; this file never turns the light on.
+  // `creature` may appear only while revealed; these tests never use the light or the sprint.
   assert.equal('creature' in message, false, 'hidden Creature never appears on the wire');
-  assert.deepEqual(Object.keys(message).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'facing', 'light', 'proximity', 'creatureHp',
-  ].sort());
-  assert.equal(typeof message.facing, 'number');
-  assert.equal(message.light, false);
-  assert.equal(message.creatureHp, GAMEPLAY.creature.maxHp);
+  assert.deepEqual(Object.keys(message).sort(), HUNTER_PAYLOAD_KEYS);
   assert.equal(message.type, 'snapshot');
   assert.equal(message.role, 'hunter');
-  assert.ok(message.hunter);
-  assert.deepEqual(Object.keys(message.hunter).sort(), ['x', 'y', 'z']);
-  assert.equal(typeof message.hunter.x, 'number');
-  assert.equal(typeof message.hunter.y, 'number');
-  assert.equal(typeof message.hunter.z, 'number');
-  assert.equal(message.hunter.y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
   assert.equal(typeof message.roundId, 'number');
-  assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(message.proximity!));
-  assert.ok(['waiting', 'running', 'ended'].includes(message.roundState!));
+  assert.ok(['reveal', 'running', 'ended'].includes(message.roundState!));
   assert.ok(message.result === null || message.result === 'caught' || message.result === 'defeated');
+  assert.ok(['H1', 'H2', 'H3', 'H4'].includes(message.self!));
+  assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(message.proximity!));
+  assert.equal(message.creatureHp, GAMEPLAY.creature.maxHp);
+  assert.equal(message.hunters!.length, GAMEPLAY.players.hunters);
+  for (const hunter of message.hunters!) {
+    assert.deepEqual(Object.keys(hunter).sort(), HUNTER_VIEW_KEYS);
+    assert.deepEqual(Object.keys(hunter.position).sort(), ['x', 'y', 'z']);
+    assert.equal(hunter.position.y, groundedY);
+    assert.equal(typeof hunter.facing, 'number');
+    assert.equal(hunter.light, false);
+  }
 }
 
-test('real sockets enforce roles, hidden payloads, tagging, restart, and vacant-slot reuse', { timeout: 40_000 }, async (t) => {
+const own = (message: Message): HunterView => message.hunters!.find((hunter) => hunter.id === message.self)!;
+
+async function startServer(t: test.TestContext) {
   const { server, close } = createGameServer();
   const peers: Peer[] = [];
   t.after(async () => {
@@ -116,124 +129,221 @@ test('real sockets enforce roles, hidden payloads, tagging, restart, and vacant-
     peers.push(peer);
     return peer;
   };
+  return { connect };
+}
 
-  const hunter = await connect();
-  const waiting = await hunter.waitFor((message) => message.roundState === 'waiting');
-  assertHunterMessage(waiting);
-  const creature = await connect();
-  const initial = await creature.waitFor((message) => message.roundState === 'running');
-  assert.equal(initial.role, 'creature');
-  assert.ok(initial.creature && initial.hunter);
+// Creates a room with the first peer and joins the rest; returns the full room.
+async function fillRoom(connect: () => Promise<Peer>) {
+  const host = await connect();
+  host.send({ type: 'create' });
+  const created = await host.waitFor((message) => message.type === 'room');
+  const code = created.code!;
+  const guests: Peer[] = [];
+  for (let index = 1; index < PLAYER_COUNT; index++) {
+    const guest = await connect();
+    guest.send({ type: 'join', code });
+    await guest.waitFor((message) => message.type === 'room' && message.players === index + 1);
+    guests.push(guest);
+  }
+  await host.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT);
+  return { host, guests, code, players: [host, ...guests] };
+}
+
+test('real sockets run the room flow: codes, joins, private roles, hidden payloads, downing, and disconnects', { timeout: 60_000 }, async (t) => {
+  const { connect } = await startServer(t);
+
+  const host = await connect();
+  host.send({ type: 'create' });
+  const created = await host.waitFor((message) => message.type === 'room');
+  assert.match(created.code!, ROOM_CODE_PATTERN);
+  assert.deepEqual(created, { type: 'room', code: created.code, players: 1, host: true, notice: null });
+  const code = created.code!;
+
+  // A code that cannot exist is rejected without side effects; the real code joins even
+  // in lower case, and every member learns the new count.
+  const second = await connect();
+  second.send({ type: 'join', code: '0000' });
+  assert.deepEqual(await second.waitFor((message) => message.type === 'error'), { type: 'error', reason: 'not-found' });
+  second.send({ type: 'join', code: code.toLowerCase() });
+  assert.deepEqual(await second.waitFor((message) => message.type === 'room'), { type: 'room', code, players: 2, host: false, notice: null });
+  assert.deepEqual(await host.waitFor((message) => message.type === 'room' && message.players === 2), { type: 'room', code, players: 2, host: true, notice: null });
+
+  // Starting needs a full room: nothing happens with two players.
+  const earlyStart = host.messages.length;
+  host.send({ type: 'start' });
+  await sleep(300);
+  assert.equal(host.messages.length, earlyStart);
+
+  const guests = [second];
+  for (let count = 3; count <= PLAYER_COUNT; count++) {
+    const guest = await connect();
+    guest.send({ type: 'join', code });
+    await guest.waitFor((message) => message.type === 'room' && message.players === count);
+    guests.push(guest);
+  }
+  await host.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT);
+  const players = [host, ...guests];
+
+  const sixth = await connect();
+  sixth.send({ type: 'join', code });
+  assert.deepEqual(await sixth.waitFor((message) => message.type === 'error'), { type: 'error', reason: 'full' });
+  await sixth.close();
+
+  // Only the host can start.
+  const before = players.map((peer) => peer.messages.length);
+  second.send({ type: 'start' });
+  await sleep(300);
+  assert.deepEqual(players.map((peer) => peer.messages.length), before);
+
+  host.send({ type: 'start' });
+  const reveals = await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'snapshot')));
+  assert.equal(reveals.filter((message) => message.role === 'creature').length, 1);
+  assert.deepEqual(reveals.filter((message) => message.role === 'hunter').map((message) => message.self).sort(), ['H1', 'H2', 'H3', 'H4']);
+  for (const message of reveals) assert.equal(message.roundState, 'reveal');
+  const creature = players[reveals.findIndex((message) => message.role === 'creature')];
+  const hunters = players.filter((peer) => peer !== creature);
+  const roundId = reveals[0].roundId!;
+  const initial = reveals.find((message) => message.role === 'creature')!;
+  assert.ok(initial.creature && initial.hunters);
   assert.deepEqual(Object.keys(initial.creature).sort(), ['x', 'y', 'z']);
-  assert.equal((initial.creature as Position).y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
+  assert.equal((initial.creature as Position).y, groundedY);
   assert.equal(initial.hp, GAMEPLAY.creature.maxHp);
-  assert.equal(initial.hunterLight, false);
-  assert.equal(typeof initial.hunterFacing, 'number');
-  assert.deepEqual(Object.keys(initial).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'creature', 'hunter', 'hunterFacing', 'hunterLight',
-    'hp', 'lit', 'revealed', 'staggered', 'staggerCooldown', 'sprinting', 'sprintCooldown',
-  ].sort());
-  const runningHunter = await hunter.waitFor((message) => message.roundState === 'running');
+  assert.equal(initial.hunters.length, GAMEPLAY.players.hunters);
+
+  // Nobody moves during the reveal, then the round runs for everyone.
+  const revealHunter = reveals.find((message) => message.role === 'hunter')!;
+  await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'running')));
+  const runningHunter = hunters[0].latest()!;
   assert.equal(runningHunter.proximity, 'SAFE');
-  assert.deepEqual(runningHunter.hunter, initial.hunter);
+  assert.deepEqual(runningHunter.hunters!.map((hunter) => hunter.position), revealHunter.hunters!.map((hunter) => hunter.position));
 
-  const third = await connect();
-  assert.deepEqual(await third.waitFor((message) => message.type === 'full'), { type: 'full' });
-  await third.close();
-
-  const stationaryPosition = { ...runningHunter.hunter! };
-  const spoofStart = hunter.messages.length;
-  hunter.send({ type: 'position', x: 1, y: 1, z: 1 });
-  hunter.send({
-    type: 'input', roundId: runningHunter.roundId,
+  // Spoofed positions, foreign fields, and a non-host start are ignored outright.
+  const spoofed = hunters.find((peer) => peer !== host)!;
+  const stationaryPosition = { ...own(spoofed.latest()!).position };
+  const spoofStart = spoofed.messages.length;
+  spoofed.send({ type: 'position', x: 1, y: 1, z: 1 });
+  spoofed.send({
+    type: 'input', roundId,
     ...idle, right: true,
-    role: 'creature', x: 1, y: 1, z: 1, speed: 99_999,
+    role: 'creature', self: 'H1', x: 1, y: 1, z: 1, speed: 99_999,
   });
-  const afterSpoof = await hunter.waitFor(() => hunter.messages.length >= spoofStart + 3, spoofStart);
-  assert.deepEqual(afterSpoof.hunter, stationaryPosition);
+  spoofed.send({ type: 'start' });
+  const afterSpoof = await spoofed.waitFor(() => spoofed.messages.length >= spoofStart + 3, spoofStart);
+  assert.deepEqual(own(afterSpoof).position, stationaryPosition);
 
   // This test controls only the Creature using coordinates that role may receive,
-  // steering around the interior walls with the shared blockout geometry.
+  // steering around the interior walls toward the nearest active Hunter.
   const chase = (message: Message) => {
-    if (message.role !== 'creature' || message.roundState !== 'running' || !message.hunter || !message.creature) return;
-    const own = message.creature as Position;
-    assert.equal(own.y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
-    creature.send({ type: 'input', roundId: message.roundId, ...keysToward(own, message.hunter), light: false });
+    if (message.role !== 'creature' || message.roundState !== 'running' || !message.hunters || !message.creature) return;
+    const position = message.creature as Position;
+    assert.equal(position.y, groundedY);
+    const targets = message.hunters.filter((hunter) => !hunter.down);
+    const nearest = targets.reduce((best, hunter) =>
+      Math.hypot(hunter.position.x - position.x, hunter.position.z - position.z) <
+      Math.hypot(best.position.x - position.x, best.position.z - position.z) ? hunter : best);
+    creature.send({ type: 'input', roundId: message.roundId, ...keysToward(position, nearest.position), light: false });
   };
   creature.listeners.add(chase);
-  chase(initial);
-  const caught = await creature.waitFor((message) => message.roundState === 'ended', 0, 20_000);
+  chase(creature.latest()!);
+  const tagged = await creature.waitFor((message) => !!message.hunters?.some((hunter) => hunter.down), 0, 25_000);
   creature.listeners.delete(chase);
-  const hunterCaught = await hunter.waitFor((message) => message.roundState === 'ended');
-  assert.equal(caught.result, 'caught');
-  assert.equal(hunterCaught.result, 'caught');
-  assert.equal(hunterCaught.roundId, caught.roundId);
-  assert.deepEqual(new Set(hunter.messages.map((message) => message.proximity)), new Set([
-    'SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE',
-  ]));
+  creature.send({ type: 'input', roundId, ...idle });
+  assert.equal(tagged.roundState, 'running', 'one Hunter down does not end the round');
+  assert.equal(tagged.result, null);
+  assert.equal(tagged.hunters!.filter((hunter) => hunter.down).length, 1);
+  assert.ok(tagged.attackCooldown! > 0);
+  const downedId = tagged.hunters!.find((hunter) => hunter.down)!.id;
+  const downed = hunters.find((peer) => peer.latest()!.self === downedId)!;
+  const downedView = await downed.waitFor((message) => !!message.hunters && own(message).down);
+  assert.equal(downedView.roundState, 'running');
+  assert.equal(own(downedView).revive, 0);
+  // Its own warning climbed as the Creature closed in; the others still know nothing.
+  assert.ok(downed.messages.some((message) => message.proximity === 'IMMEDIATE' || message.proximity === 'DANGER'));
+  // Its input is now refused: the body stays where it fell.
+  const fell = { ...own(downedView).position };
+  const downedStart = downed.messages.length;
+  downed.send({ type: 'input', roundId, ...idle, up: true, light: true });
+  const later = await downed.waitFor(() => downed.messages.length >= downedStart + 5, downedStart);
+  assert.deepEqual(own(later).position, fell);
+  assert.equal(own(later).light, false);
+  // Every teammate and the Creature see the same downed slot.
+  for (const peer of players) assert.equal(peer.latest()!.hunters!.find((hunter) => hunter.id === downedId)!.down, true);
 
-  const restartStart = hunter.messages.length;
-  hunter.send({ type: 'restart' });
-  const restarted = await hunter.waitFor((message) => message.roundState === 'running' && message.roundId === caught.roundId! + 1, restartStart);
-  assert.equal(restarted.result, null);
-  assert.equal(restarted.proximity, 'SAFE');
-  const creatureRestarted = await creature.waitFor((message) => message.roundId === restarted.roundId);
-  assert.equal(creatureRestarted.roundState, 'running');
+  // Disconnect policy: a guest leaving mid-round abandons the round and returns the rest
+  // to the room with a notice; snapshots stop.
+  const leaver = guests.find((peer) => peer !== downed && peer !== creature) ?? guests[0];
+  const remaining = players.filter((peer) => peer !== leaver);
+  const leaveStart = remaining.map((peer) => peer.messages.length);
+  await leaver.close();
+  await Promise.all(remaining.map((peer, index) => peer.waitFor((message) => message.type === 'room', leaveStart[index])));
+  for (const peer of remaining) {
+    const notice = peer.latest()!;
+    assert.deepEqual(notice, { type: 'room', code, players: PLAYER_COUNT - 1, host: peer === host, notice: 'disconnected' });
+  }
+  await sleep(200);
+  for (const peer of remaining) assert.equal(peer.latest()!.type, 'room', 'no snapshots without a round');
 
-  const leaveStart = hunter.messages.length;
-  await creature.close();
-  const alone = await hunter.waitFor((message) => message.roundState === 'waiting', leaveStart);
-  assert.equal(alone.proximity, 'SAFE');
+  // A replacement fills the room and the host starts a fresh round with new roles.
   const replacement = await connect();
-  const replacementRound = await replacement.waitFor((message) => message.roundState === 'running');
-  assert.equal(replacementRound.role, 'creature');
-  assert.equal(replacementRound.roundId, restarted.roundId! + 1);
+  replacement.send({ type: 'join', code });
+  await Promise.all([...remaining, replacement].map((peer) =>
+    peer.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT && message.notice === null)));
+  const restartStart = [...remaining, replacement].map((peer) => peer.messages.length);
+  host.send({ type: 'start' });
+  const restarted = await Promise.all([...remaining, replacement].map((peer, index) =>
+    peer.waitFor((message) => message.type === 'snapshot', restartStart[index])));
+  for (const message of restarted) {
+    assert.equal(message.roundId, roundId + 1);
+    assert.equal(message.roundState, 'reveal');
+    assert.equal(message.result, null);
+  }
+  assert.equal(restarted.filter((message) => message.role === 'creature').length, 1);
+  assert.equal(restarted.every((message) => message.hunters!.every((hunter) => !hunter.down)), true);
 
-  const hunterLeaveStart = replacement.messages.length;
-  await hunter.close();
-  const loneCreature = await replacement.waitFor((message) => message.roundState === 'waiting', hunterLeaveStart);
-  assert.equal(loneCreature.role, 'creature');
-  assert.equal(loneCreature.hunter, null);
-  const replacementHunter = await connect();
-  const replacementHunterRound = await replacementHunter.waitFor((message) => message.roundState === 'running');
-  assert.equal(replacementHunterRound.role, 'hunter');
-  assert.equal(replacementHunterRound.roundId, replacementRound.roundId! + 1);
+  // Every Hunter payload seen so far, in every round state, matched the allowlist.
+  for (const peer of [...hunters, replacement]) {
+    for (const message of peer.messages) if (message.type === 'snapshot' && message.role === 'hunter') assertHunterMessage(message);
+  }
 
-  // Inspect the actual wire payload, including waiting, running, and ended rounds.
-  hunter.messages.forEach(assertHunterMessage);
-  replacementHunter.messages.forEach(assertHunterMessage);
+  // Host disconnect: the room closes and everyone else is told, then dropped.
+  const others = [...remaining, replacement].filter((peer) => peer !== host);
+  const hostLeaveStart = others.map((peer) => peer.messages.length);
+  await host.close();
+  await Promise.all(others.map((peer, index) => peer.waitFor((message) => message.type === 'error', hostLeaveStart[index])));
+  for (const peer of others) {
+    assert.deepEqual(peer.latest(), { type: 'error', reason: 'host-left' });
+    if (peer.socket.readyState !== WebSocket.CLOSED) await once(peer.socket, 'close');
+  }
+  const late = await connect();
+  late.send({ type: 'join', code });
+  assert.deepEqual(await late.waitFor((message) => message.type === 'error'), { type: 'error', reason: 'not-found' });
 });
 
-test('server stops movement when input messages expire', { timeout: 10_000 }, async (t) => {
-  const { server, close } = createGameServer();
-  const peers: Peer[] = [];
-  t.after(async () => {
-    await Promise.all(peers.map((peer) => peer.close()));
-    await close();
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
-  const hunter = await Peer.connect(url);
-  peers.push(hunter);
-  const creature = await Peer.connect(url);
-  peers.push(creature);
-  const initial = await hunter.waitFor((message) => message.roundState === 'running');
+test('server stops movement when input messages expire', { timeout: 20_000 }, async (t) => {
+  const { connect } = await startServer(t);
+  const { host, players } = await fillRoom(connect);
+  host.send({ type: 'start' });
+  const running = await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'running', 0, 10_000)));
+  const hunter = players[running.findIndex((message) => message.role === 'hunter')];
+  const initial = hunter.latest()!;
   const start = hunter.messages.length;
   // Random spawns may face a wall: move along X toward the side with more open floor.
-  const clearance = (sign: number) => wallDistance(initial.hunter!, { x: sign, y: 0, z: 0 }, Infinity);
+  const origin = own(initial).position;
+  const clearance = (sign: number) => wallDistance(origin, { x: sign, y: 0, z: 0 }, Infinity);
   const goRight = clearance(1) >= clearance(-1);
   hunter.send({ type: 'input', roundId: initial.roundId, ...idle, left: !goRight, right: goRight });
   const expired = await hunter.waitFor(() => hunter.messages.length >= start + 20, start);
-  const distance = Math.hypot(
-    expired.hunter!.x - initial.hunter!.x,
-    expired.hunter!.y - initial.hunter!.y,
-    expired.hunter!.z - initial.hunter!.z,
-  );
+  const moved = own(expired).position;
+  const distance = Math.hypot(moved.x - origin.x, moved.y - origin.y, moved.z - origin.z);
   assert.ok(distance > 0, 'one valid input moves the player');
   assert.ok(distance <= GAMEPLAY.speed.hunter * (GAMEPLAY.inputTimeoutMs / 1000 + 1 / GAMEPLAY.tickRate) + 1e-8);
   const stoppedStart = hunter.messages.length;
   const stopped = await hunter.waitFor(() => hunter.messages.length >= stoppedStart + 10, stoppedStart);
-  assert.deepEqual(stopped.hunter, expired.hunter, 'expired input stays stopped');
+  assert.deepEqual(own(stopped).position, moved, 'expired input stays stopped');
   assert.equal(stopped.roundState, 'running');
+  // Teammates and the Creature saw the same movement.
+  for (const peer of players) {
+    if (peer === hunter) continue;
+    assert.deepEqual(peer.latest()!.hunters!.find((view) => view.id === initial.self)!.position, moved);
+  }
 });

@@ -20,13 +20,19 @@ import {
 } from 'three';
 import { WALL_BOXES } from '../shared/arena.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
-import type { Position, ServerMessage } from '../shared/protocol.js';
+import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { CAMERA } from './camera-config.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 // Rays across the cone for the drawn flashlight fan. Purely visual resolution.
 const FAN_RAYS = 32;
+// Flat Hunter colours: the viewer's own Hunter, every other Hunter, and a downed Hunter.
+const SELF_COLOR = '#e6e7e4';
+const TEAMMATE_COLOR = '#8fa3b8';
+const DOWN_COLOR = '#8a3a4a';
+// A downed Hunter is the same sphere squashed flat onto the floor.
+const DOWN_HEIGHT = 0.35;
 
 export function createScene(canvas: HTMLCanvasElement) {
   const renderer = new WebGLRenderer({ canvas, antialias: true });
@@ -62,37 +68,52 @@ export function createScene(canvas: HTMLCanvasElement) {
   light.position.set(-300, 900, 500);
   scene.add(light);
 
-  // Hunter: sphere plus a small dark nose so the facing reads even with the light off.
-  // The nose points along local +X; the group is rotated to the server's facing angle.
-  const hunter = new Group();
-  hunter.add(new Mesh(
-    new SphereGeometry(GAMEPLAY.playerRadius, 16, 12),
-    new MeshLambertMaterial({ color: '#e6e7e4' }),
-  ));
-  const nose = new Mesh(new BoxGeometry(10, 6, 6), new MeshLambertMaterial({ color: '#2b2f2c' }));
-  nose.position.set(GAMEPLAY.playerRadius, 0, 0);
-  hunter.add(nose);
-  hunter.visible = false;
-  scene.add(hunter);
+  // Hunter: sphere plus a small dark nose so the facing reads even with the light off,
+  // and a flashlight fan of its own. The nose points along local +X; the group is
+  // rotated to the server's facing angle. One set per Hunter slot, created on demand.
+  type HunterMesh = {
+    group: Group; body: Mesh; material: MeshLambertMaterial; nose: Mesh;
+    fan: Mesh; fanPositions: Float32Array; fanGeometry: BufferGeometry;
+  };
+  const hunters = new Map<HunterId, HunterMesh>();
 
-  // Flashlight: a translucent fan on the floor. Each ray is cut by the same wall
-  // boxes the server uses for line of sight, so the drawn light stops where hits stop.
-  // This is gameplay feedback, not lighting.
-  const fanPositions = new Float32Array((FAN_RAYS + 2) * 3);
-  const fanGeometry = new BufferGeometry();
-  fanGeometry.setAttribute('position', new BufferAttribute(fanPositions, 3));
-  const fanIndex: number[] = [];
-  for (let ray = 1; ray <= FAN_RAYS; ray++) fanIndex.push(0, ray, ray + 1);
-  fanGeometry.setIndex(fanIndex);
-  const fan = new Mesh(fanGeometry, new MeshBasicMaterial({
-    color: '#f2e8a8', transparent: true, opacity: 0.35, side: DoubleSide, depthWrite: false,
-  }));
-  fan.visible = false;
-  scene.add(fan);
+  function ensureHunter(id: HunterId): HunterMesh {
+    const existing = hunters.get(id);
+    if (existing) return existing;
+    const group = new Group();
+    const material = new MeshLambertMaterial({ color: SELF_COLOR });
+    const body = new Mesh(new SphereGeometry(GAMEPLAY.playerRadius, 16, 12), material);
+    group.add(body);
+    const nose = new Mesh(new BoxGeometry(10, 6, 6), new MeshLambertMaterial({ color: '#2b2f2c' }));
+    nose.position.set(GAMEPLAY.playerRadius, 0, 0);
+    group.add(nose);
+    group.visible = false;
+    scene.add(group);
 
-  function updateFan(origin: Position, facing: number): void {
+    // Flashlight: a translucent fan on the floor. Each ray is cut by the same wall
+    // boxes the server uses for line of sight, so the drawn light stops where hits stop.
+    // This is gameplay feedback, not lighting.
+    const fanPositions = new Float32Array((FAN_RAYS + 2) * 3);
+    const fanGeometry = new BufferGeometry();
+    fanGeometry.setAttribute('position', new BufferAttribute(fanPositions, 3));
+    const fanIndex: number[] = [];
+    for (let ray = 1; ray <= FAN_RAYS; ray++) fanIndex.push(0, ray, ray + 1);
+    fanGeometry.setIndex(fanIndex);
+    const fan = new Mesh(fanGeometry, new MeshBasicMaterial({
+      color: '#f2e8a8', transparent: true, opacity: 0.35, side: DoubleSide, depthWrite: false,
+    }));
+    fan.visible = false;
+    scene.add(fan);
+
+    const mesh = { group, body, material, nose, fan, fanPositions, fanGeometry };
+    hunters.set(id, mesh);
+    return mesh;
+  }
+
+  function updateFan(mesh: HunterMesh, origin: Position, facing: number): void {
     const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
     const floorHeight = GAMEPLAY.arena.floorY + 1;
+    const { fanPositions, fanGeometry } = mesh;
     fanPositions[0] = origin.x;
     fanPositions[1] = floorHeight;
     fanPositions[2] = origin.z;
@@ -110,7 +131,7 @@ export function createScene(canvas: HTMLCanvasElement) {
   }
 
   // The Creature mesh exists only while this client holds a Creature position:
-  // always for the Creature itself, and for the Hunter only while the server
+  // always for the Creature itself, and for a Hunter only while the server
   // says the Creature is revealed. There is no hidden mesh, shadow, or reflection.
   let creature: { group: Group; outline: Mesh; ring: Mesh } | null = null;
 
@@ -155,17 +176,25 @@ export function createScene(canvas: HTMLCanvasElement) {
   }
 
   function render(snapshot: Snapshot | null): void {
-    const hunterPosition = snapshot?.hunter ?? null;
-    const facing = snapshot?.role === 'hunter' ? snapshot.facing : snapshot?.hunterFacing ?? null;
-    const lightOn = snapshot?.role === 'hunter' ? snapshot.light : snapshot?.hunterLight ?? false;
-    hunter.visible = !!hunterPosition;
-    if (hunterPosition) {
-      hunter.position.set(hunterPosition.x, hunterPosition.y, hunterPosition.z);
-      // A positive rotation about Y turns local +X toward -Z; the facing angle runs +X toward +Z.
-      hunter.rotation.y = -(facing ?? 0);
+    for (const mesh of hunters.values()) {
+      mesh.group.visible = false;
+      mesh.fan.visible = false;
     }
-    fan.visible = !!hunterPosition && facing !== null && lightOn;
-    if (hunterPosition && facing !== null && lightOn) updateFan(hunterPosition, facing);
+    const self = snapshot?.role === 'hunter' ? snapshot.self : null;
+    for (const view of snapshot?.hunters ?? []) {
+      const mesh = ensureHunter(view.id);
+      mesh.group.visible = true;
+      mesh.group.position.set(view.position.x, view.position.y, view.position.z);
+      // A positive rotation about Y turns local +X toward -Z; the facing angle runs +X toward +Z.
+      mesh.group.rotation.y = -view.facing;
+      mesh.material.color.set(view.down ? DOWN_COLOR : view.id === self ? SELF_COLOR : TEAMMATE_COLOR);
+      // Down: squash the sphere onto the floor and hide the nose; it cannot turn or shine.
+      mesh.body.scale.y = view.down ? DOWN_HEIGHT : 1;
+      mesh.body.position.y = view.down ? -GAMEPLAY.playerRadius * (1 - DOWN_HEIGHT) : 0;
+      mesh.nose.visible = !view.down;
+      mesh.fan.visible = view.light;
+      if (view.light) updateFan(mesh, view.position, view.facing);
+    }
 
     const creatureView = snapshot?.role === 'creature'
       ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting }

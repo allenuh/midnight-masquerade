@@ -10,6 +10,11 @@
   box-sizing: border-box;
 }
 
+/* The hidden attribute must win over the display rules below. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   padding: 12px;
@@ -27,22 +32,30 @@ header {
   gap: 12px 24px;
 }
 
-button {
-  margin-left: auto;
+button,
+input {
   padding: 5px 9px;
   border: 1px solid #858a85;
   border-radius: 0;
   background: #282c2a;
   color: inherit;
   font: inherit;
+}
+
+button {
   cursor: pointer;
+}
+
+#start {
+  margin-left: auto;
 }
 
 button:hover:enabled {
   background: #3b413d;
 }
 
-button:focus-visible {
+button:focus-visible,
+input:focus-visible {
   outline: 2px solid #e6e7e4;
   outline-offset: 3px;
 }
@@ -53,9 +66,36 @@ button:disabled {
   cursor: default;
 }
 
+input {
+  width: 7ch;
+  text-transform: uppercase;
+}
+
 #status {
   margin: 0;
   min-height: 1.2em;
+}
+
+/* Room screen: a few lines of text and the two controls needed to enter a room. */
+#lobby {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#lobby p {
+  margin: 0;
+}
+
+#menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+#join-form {
+  display: flex;
+  gap: 6px;
 }
 
 #arena-container {
@@ -94,6 +134,31 @@ canvas {
 
 #proximity-warning[data-state='IMMEDIATE'] {
   border: 16px solid #e46448;
+}
+
+/* Role reveal and incapacitation: plain centred text over the arena, nothing else. */
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+#overlay p {
+  margin: 0;
+  padding: 4px 10px;
+  background: #161918;
+}
+
+#overlay-title {
+  font-size: 20px;
+  letter-spacing: 0.12em;
+}
+
+#overlay-detail:empty {
+  display: none;
 }
 
 footer {

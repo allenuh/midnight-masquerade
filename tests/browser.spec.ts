@@ -1,7 +1,7 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
-import type { Position, ServerMessage } from '../src/shared/protocol.js';
+import type { HunterView, Position, RoomMessage, ServerMessage } from '../src/shared/protocol.js';
 import { wallDistance } from '../src/shared/raycast.js';
 import { findLane, keysToward, type Keys } from './helpers/navigate.js';
 
@@ -9,7 +9,9 @@ type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 type HunterSnapshot = Extract<Snapshot, { role: 'hunter' }>;
 type CreatureSnapshot = Extract<Snapshot, { role: 'creature' }>;
 
-const HUNTER_KEYS = ['type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'facing', 'light', 'proximity', 'creatureHp'].sort();
+const HUNTER_KEYS = ['type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'self', 'proximity', 'creatureHp'].sort();
+const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'down', 'revive'].sort();
+const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 const groundedY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
 
 function observeGame(page: Page) {
@@ -22,8 +24,14 @@ function observeGame(page: Page) {
   });
   return {
     messages,
+    last(): ServerMessage | undefined {
+      return messages.at(-1);
+    },
     latest(): Snapshot | undefined {
       return messages.filter((message): message is Snapshot => message.type === 'snapshot').at(-1);
+    },
+    room(): RoomMessage | undefined {
+      return messages.filter((message): message is RoomMessage => message.type === 'room').at(-1);
     },
     hunter(): HunterSnapshot {
       const snapshot = this.latest();
@@ -35,12 +43,24 @@ function observeGame(page: Page) {
       if (snapshot?.role !== 'creature') throw new Error('Expected the Creature snapshot.');
       return snapshot;
     },
+    // This Hunter's own entry in its team list.
+    own(): HunterView {
+      const snapshot = this.hunter();
+      return snapshot.hunters.find((hunter) => hunter.id === snapshot.self)!;
+    },
+    // A snapshot's view of the named Hunter, from either role.
+    teammate(id: string): HunterView {
+      return this.latest()!.hunters.find((hunter) => hunter.id === id)!;
+    },
   };
 }
+type Network = ReturnType<typeof observeGame>;
+type Player = { page: Page; network: Network };
 
-// Basic lighting shades the primitives, so count color ranges rather than exact
-// material RGB values. The floor, walls, and translucent light fan are neutrals or
-// pale yellows that match neither the white Hunter nor the orange Creature.
+// Basic lighting shades the primitives, so count colour ranges rather than exact
+// material RGB values. The floor, walls, and translucent light fan are neutrals or pale
+// yellows that match none of: the viewer's own white Hunter, the blue-grey teammates, or
+// the orange Creature. Only meaningful while no text overlay covers the arena.
 async function visiblePlayerColors(page: Page) {
   const screenshot = await page.locator('#arena').screenshot();
   return page.evaluate(async (base64) => {
@@ -55,17 +75,19 @@ async function visiblePlayerColors(page: Page) {
     // Skip the outer margin: the amber proximity-warning border overlays the canvas edges.
     const margin = 24;
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let hunterPixels = 0;
+    let selfPixels = 0;
+    let teammatePixels = 0;
     let creaturePixels = 0;
     for (let y = margin; y < canvas.height - margin; y++) {
       for (let x = margin; x < canvas.width - margin; x++) {
         const index = (y * canvas.width + x) * 4;
         const [red, green, blue] = [pixels[index], pixels[index + 1], pixels[index + 2]];
-        if (red > 200 && green > 200 && blue > 200 && Math.abs(red - blue) < 20) hunterPixels++;
+        if (red > 200 && green > 200 && blue > 200 && Math.abs(red - blue) < 20) selfPixels++;
+        if (blue > 140 && blue > red + 30 && green > red) teammatePixels++;
         if (red > 100 && red > green + 25 && green > blue + 10) creaturePixels++;
       }
     }
-    return { hunterPixels, creaturePixels };
+    return { selfPixels, teammatePixels, creaturePixels };
   }, screenshot.toString('base64'));
 }
 
@@ -93,7 +115,7 @@ async function drive(
   options: { avoid?: Position[]; arrive: number; running: () => boolean; timeoutMs?: number },
 ): Promise<boolean> {
   const held = new Set<string>();
-  const deadline = Date.now() + (options.timeoutMs ?? 15_000);
+  const deadline = Date.now() + (options.timeoutMs ?? 20_000);
   try {
     while (Date.now() < deadline) {
       if (!options.running()) return false;
@@ -108,45 +130,193 @@ async function drive(
   }
 }
 
-const wrapAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
-
-async function openPair(browser: Browser) {
-  const hunter = await browser.newPage();
-  const creature = await browser.newPage();
-  const hunterNetwork = observeGame(hunter);
-  const creatureNetwork = observeGame(creature);
-  const pageErrors: string[] = [];
-  for (const page of [hunter, creature]) {
-    page.on('pageerror', (error) => pageErrors.push(error.message));
-  }
-  return { hunter, creature, hunterNetwork, creatureNetwork, pageErrors };
+// Turn a Hunter to face east or west with the movement keys (the facing chases the held direction).
+async function face(hunter: Player, direction: 'east' | 'west'): Promise<void> {
+  const wrapAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
+  const key = direction === 'east' ? 'KeyD' : 'KeyA';
+  const target = direction === 'east' ? 0 : Math.PI;
+  await hunter.page.keyboard.down(key);
+  await expect.poll(() => Math.abs(wrapAngle(hunter.network.own().facing - target))).toBeLessThan(0.05);
+  await hunter.page.keyboard.up(key);
+  let last = { ...hunter.network.own().position };
+  await expect.poll(() => {
+    const now = hunter.network.own().position;
+    const moved = now.x !== last.x || now.z !== last.z;
+    last = { ...now };
+    return moved;
+  }).toBe(false);
 }
 
-test('two players can chase through the blockout, receive private snapshots, tag, and restart', async ({ browser }, testInfo) => {
-  // Separate pages model two real players without sharing page state.
-  const { hunter, creature, hunterNetwork, creatureNetwork, pageErrors } = await openPair(browser);
+const distance = (a: Position, b: Position) => Math.hypot(a.x - b.x, a.z - b.z);
+
+// The arena corner farthest from every listed position: a safe place to send a player.
+function farCorner(others: Position[]): Position {
+  const inset = 60;
+  const corners = [
+    { x: inset, y: groundedY, z: inset },
+    { x: GAMEPLAY.arena.width - inset, y: groundedY, z: inset },
+    { x: inset, y: groundedY, z: GAMEPLAY.arena.depth - inset },
+    { x: GAMEPLAY.arena.width - inset, y: groundedY, z: GAMEPLAY.arena.depth - inset },
+  ];
+  return corners.reduce((best, corner) =>
+    Math.min(...others.map((other) => distance(corner, other))) > Math.min(...others.map((other) => distance(best, other))) ? corner : best);
+}
+
+async function openPlayers(browser: Browser) {
+  const players: Player[] = [];
+  const pageErrors: string[] = [];
+  for (let index = 0; index < PLAYER_COUNT; index++) {
+    // Separate pages model real players without sharing page state.
+    const page = await browser.newPage();
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+    players.push({ page, network: observeGame(page) });
+  }
+  return { players, pageErrors, close: () => Promise.all(players.map((player) => player.page.close())) };
+}
+
+async function createRoom(host: Player): Promise<string> {
+  await host.page.goto('/');
+  await host.page.getByRole('button', { name: 'Create room' }).click();
+  await expect(host.page.locator('#room')).toContainText('Room: ');
+  const code = (await host.page.locator('#room').textContent())!.replace('Room:', '').trim();
+  expect(code).toMatch(/^[A-Z0-9]{4}$/);
+  return code;
+}
+
+// Everyone else joins by URL, which is the same as typing the code.
+async function fillRoom(players: Player[]): Promise<string> {
+  const code = await createRoom(players[0]);
+  for (const guest of players.slice(1)) {
+    await guest.page.goto(`/?room=${code}`);
+    await expect(guest.page.locator('#room')).toHaveText(`Room: ${code}`);
+  }
+  for (const player of players) await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+  return code;
+}
+
+// The host starts; every page reaches the reveal and then the running round.
+async function startMatch(host: Player, players: Player[], previousRoundId?: number) {
+  await host.page.getByRole('button', { name: /Start match|Restart match/ }).click();
+  for (const player of players) {
+    await expect.poll(() => {
+      const snapshot = player.network.latest();
+      return snapshot !== undefined && snapshot.roundId !== previousRoundId;
+    }, { timeout: 10_000 }).toBe(true);
+  }
+  const reveals = players.map((player) => player.network.latest()!);
+  expect(new Set(reveals.map((snapshot) => snapshot.roundId)).size).toBe(1);
+  expect(reveals.every((snapshot) => snapshot.roundState === 'reveal' || snapshot.roundState === 'running')).toBe(true);
+  const creature = players.filter((player) => player.network.latest()!.role === 'creature');
+  expect(creature).toHaveLength(1);
+  const hunters = players.filter((player) => player.network.latest()!.role === 'hunter');
+  expect(hunters.map((hunter) => hunter.network.hunter().self).sort()).toEqual(['H1', 'H2', 'H3', 'H4']);
+  for (const player of players) await expect.poll(() => player.network.latest()?.roundState, { timeout: 10_000 }).toBe('running');
+  return { creature: creature[0], hunters, roundId: reveals[0].roundId };
+}
+
+// Checks every Hunter payload in plain JavaScript and asserts once: each expect() is a
+// traced step, and four Hunters produce thousands of snapshots per test.
+function assertHunterWire(network: Network) {
+  const snapshots = network.messages.filter((message): message is HunterSnapshot => message.type === 'snapshot' && message.role === 'hunter');
+  expect(snapshots.length).toBeGreaterThan(10);
+  const problems: string[] = [];
+  const sameKeys = (value: object, expected: string[]) => Object.keys(value).sort().join() === expected.join();
+  for (const message of snapshots) {
+    if (Object.keys(message).filter((key) => key !== 'creature').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
+    if (message.hunters.length !== GAMEPLAY.players.hunters) problems.push(`hunter count ${message.hunters.length}`);
+    for (const hunter of message.hunters) {
+      if (!sameKeys(hunter, HUNTER_VIEW_KEYS)) problems.push(`hunter view keys: ${Object.keys(hunter).join()}`);
+      if (!sameKeys(hunter.position, ['x', 'y', 'z']) || hunter.position.y !== groundedY) problems.push(`hunter position ${JSON.stringify(hunter.position)}`);
+    }
+    if (message.creature) {
+      if (!sameKeys(message.creature, ['position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
+      if (!sameKeys(message.creature.position, ['x', 'y', 'z']) || message.creature.position.y !== groundedY) problems.push(`creature position ${JSON.stringify(message.creature.position)}`);
+    }
+  }
+  expect(problems.slice(0, 5)).toEqual([]);
+}
+
+test('five players fill a room, receive private roles, move, see only permitted state, and survive a disconnect', async ({ browser }, testInfo) => {
+  const { players, pageErrors, close } = await openPlayers(browser);
+  const [host, second] = players;
   try {
     const privateModulePath = fileURLToPath(new URL('../src/server/game.ts', import.meta.url)).replaceAll('\\', '/');
-    const privateModule = await hunter.request.get(`/@fs/${encodeURI(privateModulePath)}`);
+    const privateModule = await host.page.request.get(`/@fs/${encodeURI(privateModulePath)}`);
     expect(privateModule.status()).toBe(403);
-    await hunter.goto('/');
-    await expect(hunter.locator('#role')).toContainText('Hunter');
-    await expect(hunter.locator('#status')).toContainText('Waiting');
-    await creature.goto('/');
-    await expect(creature.locator('#role')).toContainText('Creature');
-    await expect(creature.locator('#proximity')).toBeHidden();
-    await expect.poll(() => hunterNetwork.latest()?.roundState).toBe('running');
-    await expect.poll(() => creatureNetwork.latest()?.roundState).toBe('running');
-    await expect(hunter.locator('#proximity')).toHaveText('Proximity: SAFE');
-    await expect(hunter.locator('#creature-hp')).toHaveText(`Creature HP: ${GAMEPLAY.creature.maxHp}`);
-    await expect(hunter.locator('#creature-state')).toHaveText('Creature: hidden');
-    await expect(creature.locator('#creature-state')).toHaveText('State: hidden');
+
+    // Room screen: a code, a count, and a start button only the host has.
+    const code = await createRoom(host);
+    await expect(host.page.locator('#players')).toHaveText(`Players: 1 / ${PLAYER_COUNT}`);
+    await expect(host.page.locator('#waiting')).toHaveText('Waiting for players…');
+    await expect(host.page.locator('#start')).toBeVisible();
+    await expect(host.page.locator('#start')).toBeDisabled();
+    await expect(host.page.locator('#arena-container')).toBeHidden();
+
+    // A wrong code is refused; the form then joins with the real one, typed in lower case.
+    await second.page.goto('/');
+    await second.page.locator('#code').fill('0000');
+    await second.page.getByRole('button', { name: 'Join' }).click();
+    await expect(second.page.locator('#status')).toHaveText('No room has that code.');
+    await second.page.locator('#code').fill(code.toLowerCase());
+    await second.page.getByRole('button', { name: 'Join' }).click();
+    await expect(second.page.locator('#room')).toHaveText(`Room: ${code}`);
+    await expect(second.page.locator('#players')).toHaveText(`Players: 2 / ${PLAYER_COUNT}`);
+    await expect(second.page.locator('#start')).toBeHidden();
+    await expect(host.page.locator('#players')).toHaveText(`Players: 2 / ${PLAYER_COUNT}`);
+
+    for (const guest of players.slice(2)) {
+      await guest.page.goto(`/?room=${code}`);
+      await expect(guest.page.locator('#room')).toHaveText(`Room: ${code}`);
+    }
+    for (const player of players) await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+    await expect(host.page.locator('#waiting')).toHaveText('Everyone is here. Start the match.');
+    await expect(second.page.locator('#waiting')).toHaveText('Everyone is here. Waiting for the host to start.');
+    await expect(host.page.locator('#start')).toBeEnabled();
+
+    // A sixth client is refused.
+    const sixth = await browser.newPage();
+    try {
+      await sixth.goto(`/?room=${code}`);
+      await expect(sixth.locator('#status')).toHaveText('That room is full.');
+      await expect(sixth.locator('#room')).toBeHidden();
+    } finally {
+      await sixth.close();
+    }
+
+    // Start: every page privately shows its own role, then the round runs.
+    await host.page.getByRole('button', { name: 'Start match' }).click();
+    for (const player of players) await expect.poll(() => player.network.latest()?.roundState, { timeout: 10_000 }).toBe('reveal');
+    const creaturePages = players.filter((player) => player.network.latest()!.role === 'creature');
+    expect(creaturePages).toHaveLength(1);
+    const creature = creaturePages[0];
+    const hunters = players.filter((player) => player !== creature);
+    await expect(creature.page.locator('#overlay-title')).toHaveText('YOU ARE THE CREATURE');
+    await expect(creature.page.locator('#role')).toContainText('Creature');
+    await expect(creature.page.locator('#proximity')).toBeHidden();
+    for (const hunter of hunters) {
+      await expect(hunter.page.locator('#overlay-title')).toHaveText('YOU ARE A HUNTER');
+      await expect(hunter.page.locator('#overlay-detail')).toHaveText(hunter.network.hunter().self);
+      await expect(hunter.page.locator('#role')).toContainText(`Hunter ${hunter.network.hunter().self}`);
+    }
+    await creature.page.screenshot({ path: testInfo.outputPath('creature-reveal.png') });
+    for (const player of players) await expect.poll(() => player.network.latest()?.roundState, { timeout: 10_000 }).toBe('running');
+    for (const player of players) {
+      await expect(player.page.locator('#overlay')).toBeHidden();
+      await expect(player.page.locator('#team')).toHaveText(teamLine(player, () => 'ACTIVE'));
+      await expect(player.page.locator('#arena-container')).toBeVisible();
+      await expect(player.page.locator('#lobby')).toBeHidden();
+    }
+    for (const hunter of hunters) {
+      await expect(hunter.page.locator('#team')).toContainText(`${hunter.network.hunter().self}* ACTIVE`);
+      await expect(hunter.page.locator('#proximity')).toHaveText('Proximity: SAFE');
+      await expect(hunter.page.locator('#creature-hp')).toHaveText(`Creature HP: ${GAMEPLAY.creature.maxHp}`);
+      await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: hidden');
+    }
+    await expect(creature.page.locator('#creature-state')).toHaveText('State: hidden');
 
     // Require a real WebGL scene using a perspective projection in its shader.
-    // Inspect screenshots rather than the drawing buffer, which WebGL may clear
-    // after presentation. Neither check needs a game-state or renderer debug hook.
-    for (const page of [hunter, creature]) {
-      expect(await page.locator('#arena').evaluate((element) => {
+    for (const player of [hunters[0], creature]) {
+      expect(await player.page.locator('#arena').evaluate((element) => {
         const context = (element as HTMLCanvasElement).getContext('webgl2');
         if (!(context instanceof WebGL2RenderingContext) || context.isContextLost()) return false;
         const program = context.getParameter(context.CURRENT_PROGRAM) as WebGLProgram | null;
@@ -157,245 +327,277 @@ test('two players can chase through the blockout, receive private snapshots, tag
         return projection[11] === -1 && projection[15] === 0;
       })).toBe(true);
     }
-    await creature.screenshot({ path: testInfo.outputPath('creature-view.png') });
-    await expect.poll(async () => (await visiblePlayerColors(creature)).hunterPixels).toBeGreaterThan(20);
-    await expect.poll(async () => (await visiblePlayerColors(creature)).creaturePixels).toBeGreaterThan(20);
-    expect((await visiblePlayerColors(hunter)).creaturePixels).toBe(0);
+    // The Creature sees four Hunters and itself; a Hunter sees itself, three teammates, no Creature.
+    await creature.page.screenshot({ path: testInfo.outputPath('creature-view.png') });
+    await expect.poll(async () => (await visiblePlayerColors(creature.page)).teammatePixels).toBeGreaterThan(60);
+    await expect.poll(async () => (await visiblePlayerColors(creature.page)).creaturePixels).toBeGreaterThan(20);
+    const hunterColors = await visiblePlayerColors(hunters[0].page);
+    expect(hunterColors.selfPixels).toBeGreaterThan(20);
+    expect(hunterColors.teammatePixels).toBeGreaterThan(40);
+    expect(hunterColors.creaturePixels).toBe(0);
+    await hunters[0].page.screenshot({ path: testInfo.outputPath('hunter-view.png') });
 
-    // A smaller desktop viewport must retain both players and the full arena.
-    // Save both sizes so the fixed oblique camera framing can be inspected.
-    await creature.setViewportSize({ width: 900, height: 700 });
-    await expect.poll(async () => (await visiblePlayerColors(creature)).hunterPixels).toBeGreaterThan(10);
-    await expect.poll(async () => (await visiblePlayerColors(creature)).creaturePixels).toBeGreaterThan(10);
-    await creature.screenshot({ path: testInfo.outputPath('creature-view-small.png') });
-    await creature.setViewportSize({ width: 1280, height: 800 });
-
-    // Verify each WASD direction through server snapshots, including replication
-    // to the Creature. No test sends positions or calls the simulation directly.
-    for (const [axis, negativeKey, positiveKey] of [
-      ['z', 'KeyW', 'KeyS'],
-      ['x', 'KeyA', 'KeyD'],
-    ] as const) {
+    // Movement by one Hunter is replicated to its teammates and to the Creature; the
+    // Creature's own movement reaches only the Creature.
+    const mover = hunters[1];
+    const moverId = mover.network.hunter().self;
+    for (const [axis, negativeKey, positiveKey] of [['z', 'KeyW', 'KeyS'], ['x', 'KeyA', 'KeyD']] as const) {
       // Random spawns may be beside a wall: first move toward the side with more open floor.
-      const origin = hunterNetwork.hunter().hunter;
+      const origin = mover.network.own().position;
       const clearance = (sign: number) => wallDistance(origin, { x: axis === 'x' ? sign : 0, y: 0, z: axis === 'z' ? sign : 0 }, Infinity);
       const firstSign = clearance(1) >= clearance(-1) ? 1 : -1;
       for (const sign of [firstSign, -firstSign]) {
         const key = sign === 1 ? positiveKey : negativeKey;
-        const before = hunterNetwork.hunter().hunter[axis];
-        await hunter.keyboard.down(key);
-        await expect.poll(() => (hunterNetwork.hunter().hunter[axis] - before) * sign).toBeGreaterThan(12);
-        await hunter.keyboard.up(key);
-        await expect.poll(() => (creatureNetwork.creature().hunter![axis] - before) * sign).toBeGreaterThan(12);
+        const before = mover.network.own().position[axis];
+        await mover.page.keyboard.down(key);
+        await expect.poll(() => (mover.network.own().position[axis] - before) * sign).toBeGreaterThan(12);
+        await mover.page.keyboard.up(key);
+        await expect.poll(() => (creature.network.teammate(moverId).position[axis] - before) * sign).toBeGreaterThan(12);
+        await expect.poll(() => (hunters[0].network.teammate(moverId).position[axis] - before) * sign).toBeGreaterThan(12);
       }
     }
-    // Movement turned the facing gradually; the Creature is told where the light points.
-    expect(hunterNetwork.messages.filter((m) => m.type === 'snapshot' && m.role === 'hunter').map((m) => (m as HunterSnapshot).facing)
-      .some((facing, index, all) => index > 0 && facing !== all[index - 1])).toBe(true);
-    expect(creatureNetwork.creature().hunterFacing).toBeCloseTo(hunterNetwork.hunter().facing, 5);
+    expect(creature.network.teammate(moverId).facing).toBeCloseTo(mover.network.own().facing, 5);
+    const creatureStart = { ...creature.network.creature().creature };
+    const creatureSign = wallDistance(creatureStart, { x: 1, y: 0, z: 0 }, Infinity) >= wallDistance(creatureStart, { x: -1, y: 0, z: 0 }, Infinity) ? 1 : -1;
+    await creature.page.keyboard.down(creatureSign === 1 ? 'KeyD' : 'KeyA');
+    await expect.poll(() => (creature.network.creature().creature.x - creatureStart.x) * creatureSign).toBeGreaterThan(12);
+    await creature.page.keyboard.up(creatureSign === 1 ? 'KeyD' : 'KeyA');
+    for (const hunter of hunters) expect('creature' in hunter.network.hunter()).toBe(false);
 
-    const thirdPlayer = await browser.newPage();
-    const thirdNetwork = observeGame(thirdPlayer);
+    // Sprint: every Hunter page receives the Creature while it sprints, then loses it again.
+    await creature.page.keyboard.down('Space');
+    for (const hunter of hunters) await expect.poll(() => hunter.network.hunter().creature?.sprinting).toBe(true);
+    for (const hunter of hunters) await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: SPRINTING');
+    await expect(creature.page.locator('#creature-state')).toHaveText('State: SPRINTING');
+    await expect.poll(async () => (await visiblePlayerColors(hunters[0].page)).creaturePixels).toBeGreaterThan(20);
+    await hunters[0].page.screenshot({ path: testInfo.outputPath('hunter-sprint.png') });
+    await creature.page.keyboard.up('Space');
+    for (const hunter of hunters) await expect.poll(() => 'creature' in hunter.network.hunter()).toBe(false);
+    await expect.poll(async () => (await visiblePlayerColors(hunters[0].page)).creaturePixels).toBe(0);
+    for (const hunter of hunters) await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: hidden');
+    expect(hunters[0].network.hunter().creatureHp).toBe(GAMEPLAY.creature.maxHp);
+
+    // Wire allowlists for every Hunter page: no hidden transform ever, and the Creature
+    // only in its revealed shape while it sprinted.
+    for (const hunter of hunters) {
+      assertHunterWire(hunter.network);
+      const withCreature = hunter.network.messages.filter((message) => message.type === 'snapshot' && message.role === 'hunter' && 'creature' in message);
+      expect(withCreature.length).toBeGreaterThan(0);
+    }
+
+    // Disconnect policy: a guest closing mid-round sends everyone else back to the room.
+    const leaver = hunters.find((hunter) => hunter !== host) ?? creature;
+    const remaining = players.filter((player) => player !== leaver);
+    const roundId = creature.network.latest()!.roundId;
+    await leaver.page.close();
+    for (const player of remaining) {
+      await expect(player.page.locator('#status')).toHaveText('A player disconnected, so the round was ended. Waiting for players…');
+      await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT - 1} / ${PLAYER_COUNT}`);
+      await expect(player.page.locator('#arena-container')).toBeHidden();
+      expect(player.network.room()?.notice).toBe('disconnected');
+    }
+    await expect(host.page.locator('#start')).toBeDisabled();
+
+    // A replacement joins and the host starts a fresh round with new roles.
+    const replacement = await browser.newPage();
+    const replacementNetwork = observeGame(replacement);
     try {
-      await thirdPlayer.goto('/');
-      await expect(thirdPlayer.locator('#status')).toContainText('Both player slots are occupied');
-      expect(thirdNetwork.messages).toEqual([{ type: 'full' }]);
-      // The empty blockout also checks that the color detector cannot mistake
-      // lit floor or walls for either player.
-      expect(await visiblePlayerColors(thirdPlayer)).toEqual({ hunterPixels: 0, creaturePixels: 0 });
-    } finally {
-      await thirdPlayer.close();
-    }
-
-    // Chase: steering uses only the coordinates legitimately delivered to the Creature,
-    // routed around the interior walls with the shared blockout geometry.
-    const creatureStart = { ...creatureNetwork.creature().creature };
-    let savedWarning = false;
-    const held = new Set<string>();
-    const deadline = Date.now() + 15_000;
-    while (creatureNetwork.creature().roundState === 'running' && Date.now() < deadline) {
-      const snapshot = creatureNetwork.creature();
-      await applyKeys(creature, held, keysToward(snapshot.creature, snapshot.hunter!));
-      const hunterSnapshot = hunterNetwork.latest();
-      if (!savedWarning && hunterSnapshot?.role === 'hunter' && hunterSnapshot.proximity === 'DANGER') {
-        await hunter.screenshot({ path: testInfo.outputPath('hunter-warning.png') });
-        savedWarning = true;
+      await replacement.goto(`/?room=${code}`);
+      const everyone = [...remaining, { page: replacement, network: replacementNetwork }];
+      for (const player of everyone) await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+      const again = await startMatch(host, everyone, roundId);
+      expect(again.roundId).toBe(roundId + 1);
+      for (const player of everyone) {
+        expect(player.network.latest()!.result).toBeNull();
+        expect(player.network.latest()!.hunters.every((hunter) => !hunter.down)).toBe(true);
       }
-      await creature.waitForTimeout(50);
-    }
-    for (const key of held) await creature.keyboard.up(key);
-    expect(creatureNetwork.creature().creature).not.toEqual(creatureStart);
-    await expect(hunter.locator('#status')).toContainText('Hunter caught. Creature wins.');
-    await expect(creature.locator('#status')).toContainText('Hunter caught. Creature wins.');
-    expect(hunterNetwork.latest()?.roundState).toBe('ended');
-    expect(creatureNetwork.creature().roundState).toBe('ended');
-    expect(hunterNetwork.latest()?.result).toBe('caught');
-    expect(creatureNetwork.creature().result).toBe('caught');
-
-    const warningStates = hunterNetwork.messages.flatMap((message) =>
-      message.type === 'snapshot' && message.role === 'hunter' ? [message.proximity] : []);
-    expect([...new Set(warningStates)]).toEqual(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE']);
-
-    const endedRoundId = creatureNetwork.creature().roundId;
-    await hunter.getByRole('button', { name: 'Restart round' }).click();
-    await expect.poll(() => hunterNetwork.latest()?.roundState).toBe('running');
-    await expect.poll(() => creatureNetwork.latest()?.roundState).toBe('running');
-    expect(creatureNetwork.creature().roundId).not.toBe(endedRoundId);
-    expect(creatureNetwork.creature().result).toBeNull();
-    await expect(hunter.locator('#proximity')).toHaveText('Proximity: SAFE');
-    const restarted = creatureNetwork.creature().creature;
-    const restartedDirection = wallDistance(restarted, { x: 1, y: 0, z: 0 }, Infinity) >= wallDistance(restarted, { x: -1, y: 0, z: 0 }, Infinity) ? 1 : -1;
-    await creature.keyboard.down(restartedDirection === 1 ? 'KeyD' : 'KeyA');
-    await expect.poll(() => (creatureNetwork.creature().creature.x - restarted.x) * restartedDirection).toBeGreaterThan(12);
-    await creature.keyboard.up(restartedDirection === 1 ? 'KeyD' : 'KeyA');
-
-    // Strict allowlists catch accidental additions, including nested transforms,
-    // exact distances, spawn data, or revealing the Creature after a tag/reset.
-    // The light was never used here, so no Hunter message may carry a Creature.
-    expect(hunterNetwork.messages.length).toBeGreaterThan(10);
-    for (const message of hunterNetwork.messages) {
-      expect(message.type).toBe('snapshot');
-      if (message.type !== 'snapshot') throw new Error('Unexpected Hunter message.');
-      expect(message.role).toBe('hunter');
-      if (message.role !== 'hunter') throw new Error('Unexpected Hunter message.');
-      expect(Object.keys(message).sort()).toEqual(HUNTER_KEYS);
-      expect(Object.keys(message.hunter).sort()).toEqual(['x', 'y', 'z']);
-      expect(message.hunter.y).toBe(groundedY);
-      expect(message.light).toBe(false);
-    }
-    for (const message of creatureNetwork.messages) {
-      if (message.type !== 'snapshot' || message.role !== 'creature') continue;
-      expect(message.creature.y).toBe(groundedY);
-      expect(message.revealed).toBe(false);
-      expect(message.hp).toBe(GAMEPLAY.creature.maxHp);
+    } finally {
+      await replacement.close();
     }
     expect(pageErrors).toEqual([]);
   } finally {
-    await hunter.close();
-    await creature.close();
+    await close();
   }
 });
 
-test('the Hunter reveals, staggers, damages, and defeats the Creature with the flashlight', async ({ browser }, testInfo) => {
-  const { hunter, creature, hunterNetwork, creatureNetwork, pageErrors } = await openPair(browser);
-  const isHunterMessage = (message: ServerMessage): message is HunterSnapshot => message.type === 'snapshot' && message.role === 'hunter';
-  const isCreatureMessage = (message: ServerMessage): message is CreatureSnapshot => message.type === 'snapshot' && message.role === 'creature';
+// The compact team line as a page should show it: the viewer's own slot carries an asterisk.
+function teamLine(player: Player, state: (id: string) => string): string {
+  const snapshot = player.network.latest();
+  const self = snapshot?.role === 'hunter' ? snapshot.self : null;
+  return ['H1', 'H2', 'H3', 'H4'].map((id) => `${id}${id === self ? '*' : ''} ${state(id)}`).join(' · ');
+}
+
+test('Hunters reveal and damage the Creature, a downed Hunter is revived by a teammate, the Creature is defeated, and the room plays again', async ({ browser }, testInfo) => {
+  test.setTimeout(240_000);
+  const { players, pageErrors, close } = await openPlayers(browser);
+  const host = players[0];
   try {
-    await hunter.goto('/');
-    await creature.goto('/');
-    await expect.poll(() => hunterNetwork.latest()?.roundState).toBe('running');
-    await expect.poll(() => creatureNetwork.latest()?.roundState).toBe('running');
-    const running = () => hunterNetwork.latest()?.roundState === 'running';
+    await fillRoom(players);
+    const { creature, hunters, roundId } = await startMatch(host, players);
+    const running = () => creature.network.latest()?.roundState === 'running';
+    const creaturePosition = () => creature.network.creature().creature;
+    const positionOf = (hunter: Player) => hunter.network.own().position;
+    const othersFor = (player: Player) => players.filter((other) => other !== player).map((other) =>
+      other === creature ? creaturePosition() : creature.network.teammate(other.network.hunter().self).position);
 
-    // Stage the encounter with each role's own legitimate information plus the
-    // shared blockout: the Hunter walks to an open lane and turns east; the Creature,
-    // which sees the Hunter and its facing, parks 100 units in front of it.
-    const creatureStart = { ...creatureNetwork.creature().creature };
-    const lane = findLane(360, [creatureStart]);
-    expect(await drive(hunter, () => hunterNetwork.hunter().hunter, lane.start, { avoid: [creatureStart], arrive: 10, running })).toBe(true);
-    await hunter.keyboard.down('KeyD');
-    await expect.poll(() => Math.abs(wrapAngle(hunterNetwork.hunter().facing))).toBeLessThan(0.05);
-    await hunter.keyboard.up('KeyD');
-    let hunterPosition = { ...hunterNetwork.hunter().hunter };
-    await expect.poll(() => {
-      const now = hunterNetwork.hunter().hunter;
-      const moved = now.x !== hunterPosition.x || now.z !== hunterPosition.z;
-      hunterPosition = { ...now };
-      return moved;
-    }).toBe(false);
-    const front = { ...hunterPosition, x: hunterPosition.x + 100 };
-    expect(await drive(creature, () => creatureNetwork.creature().creature, front, { avoid: [hunterPosition], arrive: 10, running })).toBe(true);
-    expect('creature' in hunterNetwork.hunter()).toBe(false);
-    expect((await visiblePlayerColors(hunter)).creaturePixels).toBe(0);
-    await expect(creature.locator('#creature-state')).toHaveText('State: hidden');
+    // Stage the encounter with each role's own legitimate information plus the shared
+    // blockout: Hunter A walks to an open lane and turns east; the Creature, which sees
+    // every Hunter and its facing, parks 100 units in front of A.
+    const [a, b] = hunters;
+    const lane = findLane(300, othersFor(a));
+    expect(await drive(a.page, () => positionOf(a), lane.start, { avoid: othersFor(a), arrive: 10, running })).toBe(true);
+    await face(a, 'east');
+    const front = { ...positionOf(a), x: positionOf(a).x + 100 };
+    expect(await drive(creature.page, creaturePosition, front, { avoid: othersFor(creature), arrive: 10, running })).toBe(true);
+    for (const hunter of hunters) expect('creature' in hunter.network.hunter()).toBe(false);
 
-    // Sprint: the Creature's own action button reveals it with no light involved,
-    // costs no HP, and the reveal ends after the linger once the button is released.
-    await creature.keyboard.down('Space');
-    await expect.poll(() => hunterNetwork.hunter().creature?.sprinting).toBe(true);
-    expect(hunterNetwork.hunter().light).toBe(false);
-    expect(hunterNetwork.hunter().creature!.staggered).toBe(false);
-    await expect(hunter.locator('#creature-state')).toHaveText('Creature: SPRINTING');
-    await expect(creature.locator('#creature-state')).toHaveText('State: SPRINTING');
-    await expect.poll(async () => (await visiblePlayerColors(hunter)).creaturePixels).toBeGreaterThan(20);
-    await hunter.screenshot({ path: testInfo.outputPath('hunter-sprint.png') });
-    await creature.keyboard.up('Space');
-    await expect.poll(() => creatureNetwork.creature().sprinting).toBe(false);
-    await expect.poll(() => 'creature' in hunterNetwork.hunter()).toBe(false);
-    await expect.poll(async () => (await visiblePlayerColors(hunter)).creaturePixels).toBe(0);
-    await expect(hunter.locator('#creature-state')).toHaveText('Creature: hidden');
-    expect(hunterNetwork.hunter().creatureHp).toBe(GAMEPLAY.creature.maxHp);
-    expect(creatureNetwork.creature().hp).toBe(GAMEPLAY.creature.maxHp);
+    // A's light reveals and staggers the Creature for every Hunter and drains HP.
+    await a.page.keyboard.down('Space');
+    await expect.poll(() => a.network.own().light).toBe(true);
+    for (const hunter of hunters) await expect.poll(() => hunter.network.hunter().creature?.staggered).toBe(true);
+    expect(a.network.hunter().creature!.position).toEqual(creaturePosition());
+    for (const hunter of hunters) await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: STAGGERED');
+    await expect(creature.page.locator('#creature-state')).toContainText('State: STAGGERED');
+    await expect.poll(async () => (await visiblePlayerColors(b.page)).creaturePixels).toBeGreaterThan(20);
+    await b.page.screenshot({ path: testInfo.outputPath('teammate-sees-reveal.png') });
+    const hpAtReveal = a.network.hunter().creatureHp;
+    await expect.poll(() => a.network.hunter().creatureHp).toBeLessThan(hpAtReveal - 1);
+    await a.page.keyboard.up('Space');
+    for (const hunter of hunters) await expect.poll(() => 'creature' in hunter.network.hunter()).toBe(false);
 
-    // Light on: the Creature is revealed and staggered, and its HP drains.
-    await hunter.keyboard.down('Space');
-    await expect.poll(() => hunterNetwork.hunter().light).toBe(true);
-    await expect.poll(() => hunterNetwork.hunter().creature?.staggered).toBe(true);
-    expect(hunterNetwork.hunter().creature!.position).toEqual(creatureNetwork.creature().creature);
-    await expect(hunter.locator('#creature-state')).toHaveText('Creature: STAGGERED');
-    await expect(creature.locator('#creature-state')).toContainText('State: STAGGERED');
-    await expect(creature.locator('#creature-state')).toContainText('stagger cooldown');
-    await expect.poll(async () => (await visiblePlayerColors(hunter)).creaturePixels).toBeGreaterThan(20);
-    await hunter.screenshot({ path: testInfo.outputPath('hunter-reveal.png') });
-    await creature.screenshot({ path: testInfo.outputPath('creature-staggered.png') });
-    const hpAtReveal = hunterNetwork.hunter().creatureHp;
-    await expect.poll(() => hunterNetwork.hunter().creatureHp).toBeLessThan(hpAtReveal - 1);
-    expect(creatureNetwork.creature().hp).toBeLessThan(GAMEPLAY.creature.maxHp);
+    // Once free, the Creature attacks A: A is down, the round goes on, and everyone sees it.
+    await expect.poll(() => creature.network.creature().staggered, { timeout: 10_000 }).toBe(false);
+    const aId = a.network.hunter().self;
+    await drive(creature.page, creaturePosition, positionOf(a), { arrive: 0, running: () => running() && !creature.network.teammate(aId).down });
+    for (const player of players) await expect.poll(() => player.network.teammate(aId).down).toBe(true);
+    expect(creature.network.creature().roundState).toBe('running');
+    expect(creature.network.creature().attackCooldown).toBeGreaterThan(0);
+    await expect(a.page.locator('#overlay-title')).toHaveText('INCAPACITATED');
+    await expect(a.page.locator('#overlay-detail')).toHaveText('REVIVE 0%');
+    for (const player of players) await expect(player.page.locator('#team')).toContainText(`${aId}${player === a ? '*' : ''} DOWN 0%`);
+    await a.page.screenshot({ path: testInfo.outputPath('hunter-down.png') });
+    // A's keys do nothing now.
+    const fell = { ...positionOf(a) };
+    await a.page.keyboard.down('KeyD');
+    await a.page.waitForTimeout(400);
+    await a.page.keyboard.up('KeyD');
+    expect(positionOf(a)).toEqual(fell);
 
-    // Release: the Creature lingers for the configured window, then leaves both the
-    // wire and the screen, and stays gone while the light is off.
-    await hunter.keyboard.up('Space');
-    const releaseIndex = hunterNetwork.messages.length;
-    await expect.poll(() => hunterNetwork.hunter().light).toBe(false);
-    await expect.poll(() => 'creature' in hunterNetwork.hunter()).toBe(false);
-    await expect.poll(async () => (await visiblePlayerColors(hunter)).creaturePixels).toBe(0);
-    await expect(hunter.locator('#creature-state')).toHaveText('Creature: hidden');
-    await hunter.waitForTimeout(500);
-    const afterRelease = hunterNetwork.messages.slice(releaseIndex).filter(isHunterMessage);
-    const lingering = afterRelease.filter((message) => !message.light && 'creature' in message).length;
-    expect(lingering).toBeGreaterThan(0);
-    expect(lingering).toBeLessThanOrEqual(Math.round(GAMEPLAY.creature.visibilityLingerSeconds * GAMEPLAY.tickRate) + 3);
-    const firstHidden = afterRelease.findIndex((message) => !message.light && !('creature' in message));
-    expect(afterRelease.slice(firstHidden).every((message) => !('creature' in message))).toBe(true);
+    // The Creature retreats, then B walks up west of the body, faces it, and shines.
+    const away = farCorner([fell, ...hunters.filter((hunter) => hunter !== a).map(positionOf)]);
+    expect(await drive(creature.page, creaturePosition, away, { avoid: hunters.map(positionOf), arrive: 30, running })).toBe(true);
+    // Approach from the west unless the body lies against the west wall.
+    const fromWest = fell.x - 90 >= 60;
+    const approach = { ...fell, x: fromWest ? fell.x - 90 : fell.x + 90 };
+    expect(await drive(b.page, () => positionOf(b), approach, { avoid: othersFor(b), arrive: 10, running })).toBe(true);
+    await face(b, fromWest ? 'east' : 'west');
+    await b.page.keyboard.down('Space');
+    await expect.poll(() => b.network.teammate(aId).revive).toBeGreaterThan(0);
+    await expect(a.page.locator('#overlay-detail')).toHaveText(/REVIVE [1-9]\d?%/);
+    await expect(b.page.locator('#team')).toContainText(new RegExp(`${aId} DOWN [1-9]\\d?%`));
+    await b.page.screenshot({ path: testInfo.outputPath('hunter-reviving.png') });
+    await expect.poll(() => b.network.teammate(aId).down, { timeout: GAMEPLAY.revive.seconds * 1000 + 15_000 }).toBe(false);
+    await b.page.keyboard.up('Space');
+    await expect(a.page.locator('#overlay')).toBeHidden();
+    for (const player of players) await expect(player.page.locator('#team')).toContainText(`${aId}${player === a ? '*' : ''} ACTIVE`);
+    // Revived: A can move again (toward whichever side has more open floor).
+    const revivedAt = { ...positionOf(a) };
+    const zClearance = (sign: number) => wallDistance(revivedAt, { x: 0, y: 0, z: sign }, Infinity);
+    const zSign = zClearance(1) >= zClearance(-1) ? 1 : -1;
+    await a.page.keyboard.down(zSign === 1 ? 'KeyS' : 'KeyW');
+    await expect.poll(() => (positionOf(a).z - revivedAt.z) * zSign).toBeGreaterThan(12);
+    await a.page.keyboard.up(zSign === 1 ? 'KeyS' : 'KeyW');
 
-    // Hold the light until the Creature is defeated. Along the way the stagger
-    // expires while the Creature is still lit, then the cooldown lets it stagger again.
-    await hunter.keyboard.down('Space');
-    await expect.poll(() => hunterNetwork.latest()?.result, { timeout: 45_000 }).toBe('defeated');
-    await hunter.keyboard.up('Space');
-    await expect(hunter.locator('#status')).toContainText('Creature defeated. Hunter wins.');
-    await expect(creature.locator('#status')).toContainText('Creature defeated. Hunter wins.');
-    await expect(hunter.locator('#creature-hp')).toHaveText('Creature HP: 0');
-    expect(creatureNetwork.creature().result).toBe('defeated');
-    expect(creatureNetwork.creature().hp).toBe(0);
-    const creatureMessages = creatureNetwork.messages.filter(isCreatureMessage);
+    // Defeat: A leaves the lane, the Creature is parked in front of B, and B holds the
+    // light until the Creature's HP reaches zero. Along the way the stagger expires while
+    // the Creature is still lit, then the cooldown lets it stagger again.
+    expect(await drive(a.page, () => positionOf(a), farCorner(othersFor(a)), { avoid: othersFor(a), arrive: 30, running })).toBe(true);
+    const frontOfB = { ...positionOf(b), x: positionOf(b).x + (fromWest ? 100 : -100) };
+    expect(await drive(creature.page, creaturePosition, frontOfB, { avoid: othersFor(creature), arrive: 10, running })).toBe(true);
+    await b.page.keyboard.down('Space');
+    await expect.poll(() => b.network.hunter().creature?.staggered).toBe(true);
+    await expect.poll(() => creature.network.latest()?.result, { timeout: 45_000 }).toBe('defeated');
+    await b.page.keyboard.up('Space');
+    for (const player of players) await expect(player.page.locator('#status')).toContainText('Creature defeated. Hunters win.');
+    await expect(host.page.locator('#status')).toContainText('Start the match to play again.');
+    await expect(host.page.locator('#start')).toHaveText('Start match');
+    await expect(host.page.locator('#start')).toBeEnabled();
+    for (const player of players.filter((player) => player !== host)) {
+      await expect(player.page.locator('#status')).toContainText('Waiting for the host to start the next round.');
+      await expect(player.page.locator('#start')).toBeHidden();
+    }
+    for (const hunter of hunters) await expect(hunter.page.locator('#creature-hp')).toHaveText('Creature HP: 0');
+    expect(creature.network.creature().hp).toBe(0);
+    const creatureMessages = creature.network.messages.filter((message): message is CreatureSnapshot => message.type === 'snapshot' && message.role === 'creature');
     const staggerStarts = creatureMessages.filter((message, index) => message.staggered && !creatureMessages[index - 1]?.staggered).length;
     expect(staggerStarts).toBeGreaterThanOrEqual(2);
     expect(creatureMessages.some((message) => message.lit && !message.staggered)).toBe(true);
-    await hunter.screenshot({ path: testInfo.outputPath('hunter-victory.png') });
+    await b.page.screenshot({ path: testInfo.outputPath('hunter-victory.png') });
 
-    // Restart resets HP, hides the Creature, and starts a new round.
-    await creature.getByRole('button', { name: 'Restart round' }).click();
-    await expect.poll(() => hunterNetwork.latest()?.roundState).toBe('running');
-    await expect.poll(() => creatureNetwork.latest()?.roundState).toBe('running');
-    expect(hunterNetwork.hunter().creatureHp).toBe(GAMEPLAY.creature.maxHp);
-    expect('creature' in hunterNetwork.hunter()).toBe(false);
-    await expect(hunter.locator('#creature-state')).toHaveText('Creature: hidden');
+    for (const hunter of hunters) assertHunterWire(hunter.network);
 
-    // Wire allowlist: every Hunter message has exactly the base keys, plus
-    // `creature` only in its { position, staggered, sprinting } shape while revealed.
-    for (const message of hunterNetwork.messages) {
-      if (!isHunterMessage(message)) throw new Error('Unexpected Hunter message.');
-      expect(Object.keys(message).filter((key) => key !== 'creature').sort()).toEqual(HUNTER_KEYS);
-      if (message.creature) {
-        expect(Object.keys(message.creature).sort()).toEqual(['position', 'sprinting', 'staggered']);
-        expect(Object.keys(message.creature.position).sort()).toEqual(['x', 'y', 'z']);
-        expect(message.creature.position.y).toBe(groundedY);
-      }
+    // Rematch without recreating the room: fresh roles, full HP, nobody down, nothing revealed.
+    const again = await startMatch(host, players, roundId);
+    expect(again.roundId).toBe(roundId + 1);
+    for (const hunter of again.hunters) {
+      expect(hunter.network.hunter().creatureHp).toBe(GAMEPLAY.creature.maxHp);
+      expect('creature' in hunter.network.hunter()).toBe(false);
+      await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: hidden');
     }
+    expect(again.creature.network.creature().hunters.every((hunter) => !hunter.down)).toBe(true);
     expect(pageErrors).toEqual([]);
   } finally {
-    await hunter.close();
-    await creature.close();
+    await close();
+  }
+});
+
+test('the Creature wins by downing all four Hunters, and the room can start again', async ({ browser }, testInfo) => {
+  test.setTimeout(180_000);
+  const { players, pageErrors, close } = await openPlayers(browser);
+  const host = players[0];
+  try {
+    await fillRoom(players);
+    const { creature, hunters, roundId } = await startMatch(host, players);
+    const creaturePosition = () => creature.network.creature().creature;
+
+    // Chase the nearest active Hunter, one after another, until every Hunter is down.
+    const held = new Set<string>();
+    const deadline = Date.now() + 120_000;
+    let downs = 0;
+    while (creature.network.creature().roundState === 'running' && Date.now() < deadline) {
+      const snapshot = creature.network.creature();
+      const targets = snapshot.hunters.filter((hunter) => !hunter.down);
+      const position = creaturePosition();
+      const nearest = targets.reduce((best, hunter) => (distance(hunter.position, position) < distance(best.position, position) ? hunter : best));
+      await applyKeys(creature.page, held, keysToward(position, nearest.position));
+      const downNow = snapshot.hunters.filter((hunter) => hunter.down).length;
+      if (downNow > downs) {
+        downs = downNow;
+        expect(snapshot.result).toBeNull();
+        if (downNow === 1) await creature.page.screenshot({ path: testInfo.outputPath('creature-first-down.png') });
+      }
+      await creature.page.waitForTimeout(50);
+    }
+    for (const key of held) await creature.page.keyboard.up(key);
+    expect(creature.network.creature().roundState).toBe('ended');
+    expect(creature.network.creature().result).toBe('caught');
+    for (const player of players) {
+      await expect(player.page.locator('#status')).toContainText('Every Hunter is down. Creature wins.');
+      await expect(player.page.locator('#team')).toHaveText(/H1\*? DOWN \d+% · H2\*? DOWN \d+% · H3\*? DOWN \d+% · H4\*? DOWN \d+%/);
+    }
+    // A hidden Creature stays hidden after winning: no Hunter page ever received it.
+    for (const hunter of hunters) {
+      expect(hunter.network.hunter().result).toBe('caught');
+      expect(hunter.network.messages.some((message) => message.type === 'snapshot' && 'creature' in message)).toBe(false);
+      assertHunterWire(hunter.network);
+    }
+    await hunters[0].page.screenshot({ path: testInfo.outputPath('creature-victory.png') });
+
+    const again = await startMatch(host, players, roundId);
+    expect(again.roundId).toBe(roundId + 1);
+    for (const player of players) expect(player.network.latest()!.hunters.every((hunter) => !hunter.down)).toBe(true);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await close();
   }
 });

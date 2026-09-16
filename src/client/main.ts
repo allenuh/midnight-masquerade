@@ -1,18 +1,35 @@
-import type { ClientMessage, InputState, ServerMessage } from '../shared/protocol.js';
+import { GAMEPLAY } from '../shared/gameplay-config.js';
+import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { CAMERA } from './camera-config.js';
 import { createScene } from './scene.js';
 import './style.css';
 
-const canvas = document.querySelector<HTMLCanvasElement>('#arena')!;
-const container = document.querySelector<HTMLElement>('#arena-container')!;
-const arenaView = document.querySelector<HTMLElement>('#arena-view')!;
-const warning = document.querySelector<HTMLElement>('#proximity-warning')!;
-const roleText = document.querySelector<HTMLElement>('#role')!;
-const proximityText = document.querySelector<HTMLElement>('#proximity')!;
-const creatureHpText = document.querySelector<HTMLElement>('#creature-hp')!;
-const creatureStateText = document.querySelector<HTMLElement>('#creature-state')!;
-const statusText = document.querySelector<HTMLElement>('#status')!;
-const restartButton = document.querySelector<HTMLButtonElement>('#restart')!;
+const element = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
+const canvas = element<HTMLCanvasElement>('#arena');
+const container = element('#arena-container');
+const arenaView = element('#arena-view');
+const warning = element('#proximity-warning');
+const lobby = element('#lobby');
+const menu = element('#menu');
+const createButton = element<HTMLButtonElement>('#create');
+const joinForm = element<HTMLFormElement>('#join-form');
+const codeInput = element<HTMLInputElement>('#code');
+const joinButton = element<HTMLButtonElement>('#join');
+const roomText = element('#room');
+const playersText = element('#players');
+const waitingText = element('#waiting');
+const roleText = element('#role');
+const proximityText = element('#proximity');
+const creatureHpText = element('#creature-hp');
+const creatureStateText = element('#creature-state');
+const teamText = element('#team');
+const statusText = element('#status');
+const startButton = element<HTMLButtonElement>('#start');
+const overlay = element('#overlay');
+const overlayTitle = element('#overlay-title');
+const overlayDetail = element('#overlay-detail');
+
+const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 
 function start(): void {
   let scene: ReturnType<typeof createScene>;
@@ -24,8 +41,12 @@ function start(): void {
   }
 
   type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
+  // The last room message (membership, host flag) and the last round snapshot, if a
+  // round exists. A room message replaces the snapshot: it means there is no round.
+  let room: RoomMessage | null = null;
   let snapshot: Snapshot | null = null;
-  let serverFull = false;
+  let menuNotice: string | null = null;
+  let closedReason: string | null = null;
   const input: InputState = { up: false, down: false, left: false, right: false, light: false };
   // Movement keys also steer the Hunter's facing. Space (or the left mouse button
   // on the arena) is the held action button: the Hunter's flashlight, the Creature's sprint.
@@ -69,20 +90,79 @@ function start(): void {
     sendInput();
   }
 
-  function updateHud(): void {
+  function joinRoom(code: string): void {
+    const normalized = code.trim().toUpperCase();
+    if (normalized) send({ type: 'join', code: normalized });
+  }
+
+  function showOverlay(title: string, detail = ''): void {
+    overlay.hidden = false;
+    overlayTitle.textContent = title;
+    overlayDetail.textContent = detail;
+  }
+
+  function resultText(result: Snapshot['result']): string {
+    return result === 'defeated'
+      ? 'Creature defeated. Hunters win.'
+      : 'Every Hunter is down. Creature wins.';
+  }
+
+  // The whole page is derived from the connection, the room, and the latest snapshot.
+  function updateUi(): void {
+    const connected = socket.readyState === WebSocket.OPEN;
+    const inRound = snapshot !== null;
+    lobby.hidden = inRound;
+    container.hidden = !inRound;
+    menu.hidden = !connected || room !== null || closedReason !== null;
+    createButton.disabled = joinButton.disabled = !connected;
+    roomText.hidden = room === null;
+    if (room) roomText.textContent = `Room: ${room.code}`;
+    playersText.hidden = waitingText.hidden = room === null || inRound;
+    if (room && !inRound) {
+      playersText.textContent = `Players: ${room.players} / ${PLAYER_COUNT}`;
+      waitingText.textContent = room.players < PLAYER_COUNT
+        ? 'Waiting for players…'
+        : room.host ? 'Everyone is here. Start the match.' : 'Everyone is here. Waiting for the host to start.';
+    }
+    startButton.hidden = !room?.host;
+    startButton.disabled = !connected || !room || room.players < PLAYER_COUNT;
+    startButton.textContent = snapshot && snapshot.roundState !== 'ended' ? 'Restart match' : 'Start match';
+
+    roleText.hidden = creatureHpText.hidden = creatureStateText.hidden = teamText.hidden = !inRound;
+    proximityText.hidden = snapshot?.role !== 'hunter';
+    overlay.hidden = true;
+    warning.dataset.state = 'SAFE';
+
+    if (closedReason) {
+      statusText.textContent = closedReason;
+    } else if (!snapshot) {
+      statusText.textContent = !connected
+        ? 'Connecting…'
+        : !room
+          ? (menuNotice ?? 'Create a room, or enter a room code to join one.')
+          : room.notice === 'disconnected'
+            ? 'A player disconnected, so the round was ended. Waiting for players…'
+            : 'Share the room code. The host can start once five players are connected.';
+    }
     if (!snapshot) return;
-    roleText.textContent = `Role: ${snapshot.role === 'hunter' ? 'Hunter (white sphere)' : 'Creature (orange octahedron)'}`;
-    proximityText.hidden = snapshot.role !== 'hunter';
-    creatureHpText.hidden = false;
-    creatureStateText.hidden = false;
+
+    // Compact team state, shared by both roles; the Hunter's own slot is marked.
+    const self = snapshot.role === 'hunter' ? snapshot.self : null;
+    teamText.textContent = snapshot.hunters
+      .map((hunter) => `${hunter.id}${hunter.id === self ? '*' : ''} ${hunter.down ? `DOWN ${Math.floor(hunter.revive * 100)}%` : 'ACTIVE'}`)
+      .join(' · ');
+
     if (snapshot.role === 'hunter') {
+      roleText.textContent = `Role: Hunter ${snapshot.self} (white sphere)`;
       proximityText.textContent = `Proximity: ${snapshot.proximity}`;
       creatureHpText.textContent = `Creature HP: ${Math.ceil(snapshot.creatureHp)}`;
       const seen = snapshot.creature;
       const state = !seen ? 'HIDDEN' : seen.staggered ? 'STAGGERED' : seen.sprinting ? 'SPRINTING' : 'REVEALED';
       creatureStateText.dataset.state = state;
       creatureStateText.textContent = `Creature: ${state === 'HIDDEN' ? 'hidden' : state}`;
+      if (snapshot.roundState === 'running') warning.dataset.state = snapshot.proximity;
     } else {
+      roleText.textContent = 'Role: Creature (orange octahedron)';
       creatureHpText.textContent = `HP: ${Math.ceil(snapshot.hp)}`;
       const state = snapshot.staggered ? 'STAGGERED'
         : snapshot.lit ? 'LIT'
@@ -92,61 +172,89 @@ function start(): void {
       const cooldowns = [
         snapshot.staggerCooldown > 0 ? ` · stagger cooldown ${snapshot.staggerCooldown.toFixed(1)} s` : '',
         snapshot.sprintCooldown > 0 ? ` · sprint cooldown ${snapshot.sprintCooldown.toFixed(1)} s` : '',
+        snapshot.attackCooldown > 0 ? ` · attack cooldown ${snapshot.attackCooldown.toFixed(1)} s` : '',
       ].join('');
       creatureStateText.textContent = `State: ${state === 'HIDDEN' ? 'hidden' : state}${cooldowns}`;
     }
-    warning.dataset.state = snapshot.role === 'hunter' && snapshot.roundState === 'running'
-      ? snapshot.proximity
-      : 'SAFE';
+
+    const own = self === null ? undefined : snapshot.hunters.find((hunter) => hunter.id === self);
     switch (snapshot.roundState) {
-      case 'waiting':
-        statusText.textContent = `Waiting for the ${snapshot.role === 'hunter' ? 'Creature' : 'Hunter'}. Open a second browser client.`;
+      case 'reveal':
+        if (snapshot.role === 'creature') showOverlay('YOU ARE THE CREATURE');
+        else showOverlay('YOU ARE A HUNTER', snapshot.self);
+        statusText.textContent = 'Roles are assigned. The round starts in a moment.';
         break;
       case 'running':
-        statusText.textContent = snapshot.role === 'hunter'
-          ? 'Find the Creature. Hold Space or the left mouse button to shine the flashlight; it staggers and damages a lit Creature.'
-          : 'Touch the Hunter to win. Hold Space or the left mouse button to sprint: faster, but visible. Stay out of the flashlight: being lit staggers you and drains HP.';
+        if (own?.down) {
+          showOverlay('INCAPACITATED', `REVIVE ${Math.floor(own.revive * 100)}%`);
+          statusText.textContent = 'You are down. A teammate revives you by holding a flashlight on you.';
+        } else {
+          statusText.textContent = snapshot.role === 'hunter'
+            ? 'Find the Creature. Hold Space or the left mouse button for the flashlight: it reveals and damages the Creature and revives a downed teammate.'
+            : 'Touch Hunters to incapacitate them; down all four to win. Hold Space or the left mouse button to sprint: faster, but visible. Being lit staggers you and drains HP.';
+        }
         break;
       case 'ended':
-        statusText.textContent = snapshot.result === 'defeated'
-          ? 'Creature defeated. Hunter wins. Restart to play again.'
-          : 'Hunter caught. Creature wins. Restart to play again.';
+        statusText.textContent = `${resultText(snapshot.result)} ${room?.host ? 'Start the match to play again.' : 'Waiting for the host to start the next round.'}`;
         break;
     }
-    restartButton.disabled = socket.readyState !== WebSocket.OPEN || snapshot.roundState === 'waiting';
   }
+
+  socket.addEventListener('open', () => {
+    // A code in the URL is just a typed code: prefill it and join.
+    const code = new URLSearchParams(location.search).get('room');
+    if (code) {
+      codeInput.value = code.trim().toUpperCase();
+      joinRoom(code);
+    }
+    updateUi();
+  });
 
   socket.addEventListener('message', (event: MessageEvent<string>) => {
     const message = JSON.parse(event.data) as ServerMessage;
-    if (message.type === 'full') {
-      serverFull = true;
-      clearInput();
-      restartButton.disabled = true;
-      statusText.textContent = 'Both player slots are occupied. Close a player client, then reload this page.';
+    if (message.type === 'error') {
+      if (message.reason === 'host-left') {
+        closedReason = 'The host disconnected, so the room was closed. Reload this page to create or join a room.';
+        room = null;
+        snapshot = null;
+        clearInput();
+      } else {
+        menuNotice = message.reason === 'full' ? 'That room is full.' : 'No room has that code.';
+      }
+      updateUi();
       return;
     }
-
+    if (message.type === 'room') {
+      room = message;
+      snapshot = null;
+      menuNotice = null;
+      clearInput();
+      updateUi();
+      return;
+    }
     const roundChanged = snapshot?.roundId !== message.roundId;
     snapshot = message;
     if (roundChanged || snapshot.roundState !== 'running') clearInput();
-    updateHud();
+    updateUi();
   });
 
   socket.addEventListener('close', () => {
     clearInput();
-    warning.dataset.state = 'SAFE';
-    restartButton.disabled = true;
-    if (!serverFull) statusText.textContent = 'Disconnected. Reload this page to reconnect.';
+    snapshot = null;
+    closedReason ??= 'Disconnected. Reload this page to reconnect.';
+    updateUi();
   });
 
   socket.addEventListener('error', () => {
     clearInput();
-    warning.dataset.state = 'SAFE';
-    restartButton.disabled = true;
-    if (!serverFull) statusText.textContent = 'Connection failed. Check that the server is running, then reload.';
+    snapshot = null;
+    closedReason ??= 'Connection failed. Check that the server is running, then reload.';
+    updateUi();
   });
 
   function handleKey(event: KeyboardEvent, pressed: boolean): void {
+    // Typing a room code must never be read as movement.
+    if (event.target instanceof HTMLInputElement) return;
     const key = keyBindings[event.code];
     if (!key) return;
     event.preventDefault();
@@ -169,12 +277,17 @@ function start(): void {
     if (document.hidden) releaseInput();
   });
 
-  restartButton.addEventListener('click', () => {
-    if (restartButton.disabled) return;
-    // Drop focus so a later Space press works the flashlight instead of this button.
-    restartButton.blur();
+  createButton.addEventListener('click', () => send({ type: 'create' }));
+  joinForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    joinRoom(codeInput.value);
+  });
+  startButton.addEventListener('click', () => {
+    if (startButton.disabled) return;
+    // Drop focus so a later Space press works the action button instead of this button.
+    startButton.blur();
     releaseInput();
-    send({ type: 'restart' });
+    send({ type: 'start' });
   });
 
   // Held flags are refreshed so the server can stop a stalled client's input.
@@ -199,6 +312,7 @@ function start(): void {
   resizeObserver.observe(container);
   resizeArena();
   draw();
+  updateUi();
 
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
