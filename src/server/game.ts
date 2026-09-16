@@ -1,4 +1,5 @@
 import { randomInt } from 'node:crypto';
+import { flashlightRange } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import { segmentBlocked } from '../shared/raycast.js';
 import { constrainToWalls, distance3D, sphereInCone, spheresTouchDuringStep } from './spatial.js';
@@ -27,27 +28,44 @@ export type CreatureState = {
 };
 
 // Team state is two flags per Hunter: `down` (incapacitated: no movement, turning, light,
-// reviving, or being tagged again) and the revival work accumulated while down.
+// reviving, or being tagged again) and the revival work accumulated while down. `battery`
+// is the authoritative flashlight energy: the client never reports or claims it.
 export type Hunter = {
   id: HunterId;
   player: PlayerId;
   position: Position;
   facing: number;
   input: InputState;
+  battery: number;
   down: boolean;
   reviveTicks: number;
 };
 
 export type Creature = { player: PlayerId; position: Position; input: InputState };
 
+// The single battery on the map: `at` is the spawn point holding it, or null while none
+// is out, in which case `spawnTicks` counts down to the next one.
+export type PickupState = { at: number | null; spawnTicks: number };
+
+// Round-end playtest data. Counters only: no storage, no identifiers, no analytics.
+export type RoundStats = {
+  incapacitations: number;
+  revives: number;
+  pickupsCollected: number;
+  lightTicks: Record<HunterId, number>;
+};
+
 export type Game = {
   hunters: Hunter[]; // empty in the lobby; H1..H4 in join order during a round
   creature: Creature | null;
   creatureState: CreatureState;
+  pickup: PickupState;
   roundId: number;
   roundState: RoundState;
   revealTicks: number; // role-reveal countdown while roundState is 'reveal'
+  timeTicks: number; // match clock; counts down only while roundState is 'running'
   result: RoundResult | null;
+  stats: RoundStats;
 };
 
 export const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
@@ -63,7 +81,28 @@ export const REVIVE_TICKS = secondsToTicks(GAMEPLAY.revive.seconds);
 // Radians on the ground plane: direction = (cos, 0, sin). -PI/2 is -Z, "up" on screen.
 export const SPAWN_FACING = -Math.PI / 2;
 
+// Match length in seconds. MATCH_SECONDS shortens or lengthens a playtest match without
+// editing the tunables; it is a server-side knob only and never reaches a client.
+export const MATCH_SECONDS = ((): number => {
+  const override = Number(process.env.MATCH_SECONDS);
+  return Number.isFinite(override) && override > 0 ? override : GAMEPLAY.round.matchSeconds;
+})();
+export const MATCH_TICKS = secondsToTicks(MATCH_SECONDS);
+// The wait before a round's first battery, and the wait after each one is collected.
+export const PICKUP_FIRST_SPAWN_TICKS = secondsToTicks(GAMEPLAY.batteryPickup.firstSpawnSeconds);
+export const PICKUP_RESPAWN_TICKS = secondsToTicks(GAMEPLAY.batteryPickup.respawnSeconds);
+// Center-to-center distance at which an active Hunter picks a battery up.
+export const PICKUP_REACH = GAMEPLAY.playerRadius + GAMEPLAY.batteryPickup.radius;
+// World positions of the public pickup points, grounded like every other sphere.
+export const PICKUP_POSITIONS: readonly Position[] = GAMEPLAY.batteryPickup.spawns.map(({ x, z }) => ({
+  x, y: GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius, z,
+}));
+
 export const emptyInput = (): InputState => ({ up: false, down: false, left: false, right: false, light: false });
+// A Hunter's beam exists only while it is active, holding the button, and has battery left.
+export const hasBeam = (hunter: Hunter): boolean => !hunter.down && hunter.input.light && hunter.battery > 0;
+// The public pickup list: the one point holding a battery, or nothing at all.
+export const activePickups = (game: Game): number[] => (game.pickup.at === null ? [] : [game.pickup.at]);
 export const isRevealed = (state: CreatureState): boolean => state.revealTicks > 0;
 export const isStaggered = (state: CreatureState): boolean => state.staggerTicks > 0;
 export const isOnStaggerCooldown = (state: CreatureState): boolean => state.staggerCooldownTicks > 0;
@@ -76,15 +115,29 @@ const freshCreatureState = (): CreatureState => ({
   revealTicks: 0, staggerTicks: 0, staggerCooldownTicks: 0, sprintCooldownTicks: 0, attackCooldownTicks: 0,
 });
 
+// A round starts with an empty map: Hunters are on a full charge, so the first battery
+// waits out the long delay before it appears.
+const freshPickup = (): PickupState => ({ at: null, spawnTicks: PICKUP_FIRST_SPAWN_TICKS });
+
+const freshStats = (): RoundStats => ({
+  incapacitations: 0,
+  revives: 0,
+  pickupsCollected: 0,
+  lightTicks: { H1: 0, H2: 0, H3: 0, H4: 0 },
+});
+
 export function createGame(): Game {
   return {
     hunters: [],
     creature: null,
     creatureState: freshCreatureState(),
+    pickup: freshPickup(),
     roundId: 0,
     roundState: 'lobby',
     revealTicks: 0,
+    timeTicks: MATCH_TICKS,
     result: null,
+    stats: freshStats(),
   };
 }
 
@@ -106,7 +159,8 @@ function randomPosition(): Position {
 
 // Private independent randomness: Hunter coordinates / public round IDs do not determine
 // the Creature's spawn. The Creature is placed first so every Hunter can be kept outside
-// its UNEASY radius; Hunters are also kept from overlapping each other.
+// its UNEASY radius; Hunters are also kept from overlapping each other. No battery is on
+// the map at round start, so there is nothing to keep a spawn clear of.
 function spawnPositions(): { creature: Position; hunters: Position[] } {
   const creature = randomPosition();
   const hunters: Position[] = [];
@@ -144,13 +198,19 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
     .filter((_, index) => index !== creatureIndex)
     .map((player, slot) => ({
       id: HUNTER_IDS[slot], player, position: spawns.hunters[slot], facing: SPAWN_FACING,
-      input: emptyInput(), down: false, reviveTicks: 0,
+      input: emptyInput(), battery: GAMEPLAY.battery.max, down: false, reviveTicks: 0,
     }));
+  // Every resource is rebuilt here, so nothing leaks from the previous round: HP and the
+  // Creature countdowns, full batteries, an empty map with the first-battery delay reset,
+  // a full match clock, and empty statistics.
   game.creatureState = freshCreatureState();
+  game.pickup = freshPickup();
   game.roundId += 1;
   game.roundState = 'reveal';
   game.revealTicks = secondsToTicks(GAMEPLAY.roleRevealSeconds);
+  game.timeTicks = MATCH_TICKS;
   game.result = null;
+  game.stats = freshStats();
 }
 
 // Disconnect policy: a round cannot continue without all five players, so it is
@@ -159,9 +219,12 @@ export function abandonRound(game: Game): void {
   game.hunters = [];
   game.creature = null;
   game.creatureState = freshCreatureState();
+  game.pickup = freshPickup();
   game.roundState = 'lobby';
   game.revealTicks = 0;
+  game.timeTicks = MATCH_TICKS;
   game.result = null;
+  game.stats = freshStats();
 }
 
 function clearInputs(game: Game): void {
@@ -241,12 +304,22 @@ export function proximityForDistance(value: number): ProximityState {
   return 'SAFE';
 }
 
+// One Hunter's own band. Keeping the distance behind this function means nothing outside
+// this module has to touch the Creature's position to ask how close a Hunter is.
+export function hunterProximity(game: Game, hunter: Hunter): ProximityState {
+  if (!game.creature) return 'SAFE';
+  return proximityForDistance(distance3D(hunter.position, game.creature.position));
+}
+
 // The flashlight originates at the Hunter's center, which collision keeps out of
 // every wall. A target sphere (the Creature, or a downed teammate) is lit when it
 // overlaps the cone and the straight line from the origin to its center crosses no
-// wall box. The same test decides Creature hits and revival exposure.
-export function flashlightReaches(hunter: Position, facing: number, target: Position): boolean {
-  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius) && !segmentBlocked(hunter, target);
+// wall box. The same test decides Creature hits and revival exposure. `range` is the
+// battery stage's reach; it defaults to the full-battery range.
+export function flashlightReaches(
+  hunter: Position, facing: number, target: Position, range: number = GAMEPLAY.flashlight.range,
+): boolean {
+  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius, range) && !segmentBlocked(hunter, target);
 }
 
 function endRound(game: Game, result: RoundResult): void {
@@ -255,11 +328,12 @@ function endRound(game: Game, result: RoundResult): void {
   clearInputs(game);
 }
 
-// Step order: the role reveal counts down; countdowns expire; active Hunters turn and
-// move; the Creature moves (at sprint speed while sprinting); one tag is resolved; the
-// flashlights and the sprint reveal are applied; revival exposure accumulates. A tag
-// that occurs this step therefore still downs the Hunter even when the same step
-// would have revealed the Creature, and that Hunter's beam is void from this step on.
+// Step order: the role reveal counts down; the match clock and every countdown expire;
+// the battery spawn countdown runs; active Hunters turn and move; the Creature moves (at sprint speed while
+// sprinting); one tag is resolved; batteries are collected; the flashlights and the sprint
+// reveal are applied; revival exposure accumulates; batteries drain; the round result is
+// evaluated. A tag that occurs this step therefore still downs the Hunter even when the
+// same step would have revealed the Creature, and that Hunter's beam is void from this step on.
 export function stepGame(game: Game): void {
   if (game.roundState === 'reveal') {
     game.revealTicks = Math.max(0, game.revealTicks - 1);
@@ -269,6 +343,19 @@ export function stepGame(game: Game): void {
   const creature = game.creature;
   if (game.roundState !== 'running' || !creature) return;
   const state = game.creatureState;
+
+  // The match clock only runs here, so it starts when gameplay starts and stops the
+  // moment a round ends: an ended round never reaches this line again.
+  game.timeTicks = Math.max(0, game.timeTicks - 1);
+
+  // The map holds at most one battery. While none is out a countdown runs — the long
+  // first-spawn delay at the start of a round, the shorter respawn after each collection —
+  // and reaching zero puts one at a point chosen by private server randomness. Repeats are
+  // allowed: the same point can come up twice in a row.
+  if (game.pickup.at === null) {
+    game.pickup.spawnTicks = Math.max(0, game.pickup.spawnTicks - 1);
+    if (game.pickup.spawnTicks === 0) game.pickup.at = randomInt(PICKUP_POSITIONS.length);
+  }
 
   state.revealTicks = Math.max(0, state.revealTicks - 1);
   state.staggerTicks = Math.max(0, state.staggerTicks - 1);
@@ -307,6 +394,7 @@ export function stepGame(game: Game): void {
       target.reviveTicks = 0;
       target.input = emptyInput();
       state.attackCooldownTicks = secondsToTicks(GAMEPLAY.creature.attackCooldownSeconds);
+      game.stats.incapacitations += 1;
       if (allHuntersDown(game)) {
         endRound(game, 'caught');
         return;
@@ -314,11 +402,35 @@ export function stepGame(game: Game): void {
     }
   }
 
+  // Battery collection: server-authoritative in every respect. The client never claims a
+  // collection, an amount, or a disappearance. An incapacitated Hunter collects nothing;
+  // with two Hunters on the battery the lower slot (H1 first) takes it, and a Hunter
+  // already at full battery still consumes it. Taking it clears the map and starts the
+  // respawn countdown, so a battery spawning on the step a Hunter is already standing
+  // there is simply collected that same step.
+  if (game.pickup.at !== null) {
+    const point = PICKUP_POSITIONS[game.pickup.at];
+    const collector = game.hunters.find((hunter) =>
+      !hunter.down && distance3D(hunter.position, point) <= PICKUP_REACH);
+    if (collector) {
+      collector.battery = Math.min(GAMEPLAY.battery.max, collector.battery + GAMEPLAY.batteryPickup.restores);
+      game.pickup = { at: null, spawnTicks: PICKUP_RESPAWN_TICKS };
+      game.stats.pickupsCollected += 1;
+    }
+  }
+
+  // The beams for this step: an active Hunter holding the button with battery left, each
+  // reaching as far as its own battery stage allows. Creature hits and revival exposure
+  // share this list, so an empty flashlight does neither.
+  const beams = game.hunters
+    .filter(hasBeam)
+    .map((hunter) => ({ hunter, range: flashlightRange(hunter.battery) }));
+
   // Flashlights: the Creature is lit when any active Hunter's beam reaches it. Damage,
   // the linger, and the stagger are evaluated once per step regardless of how many
   // beams overlap, so extra Hunters neither multiply damage nor bypass the cooldown.
-  state.lit = activeHunters(game).some((hunter) =>
-    hunter.input.light && flashlightReaches(hunter.position, hunter.facing, creature.position));
+  state.lit = beams.some(({ hunter, range }) =>
+    flashlightReaches(hunter.position, hunter.facing, creature.position, range));
   if (state.lit) {
     state.hp = Math.max(0, state.hp - GAMEPLAY.flashlight.damagePerSecond * STEP_SECONDS);
     // Every lit step refreshes the linger. Only a hit outside the cooldown staggers,
@@ -339,17 +451,28 @@ export function stepGame(game: Game): void {
   // work per step (beams stack). Progress is kept while no beam reaches the Hunter.
   for (const downed of game.hunters) {
     if (!downed.down) continue;
-    const beams = activeHunters(game).filter((hunter) =>
-      hunter.input.light && flashlightReaches(hunter.position, hunter.facing, downed.position)).length;
-    if (beams === 0) continue;
-    downed.reviveTicks += beams;
+    const reaching = beams.filter(({ hunter, range }) =>
+      flashlightReaches(hunter.position, hunter.facing, downed.position, range)).length;
+    if (reaching === 0) continue;
+    downed.reviveTicks += reaching;
     if (downed.reviveTicks >= REVIVE_TICKS) {
       downed.down = false;
       downed.reviveTicks = 0;
+      game.stats.revives += 1;
     }
   }
 
+  // Drain, in simulation time, after the effects: a Hunter gets the reveal, damage, or
+  // revival work the battery it just spent paid for. Nothing recharges it.
+  for (const { hunter } of beams) {
+    hunter.battery = Math.max(0, hunter.battery - GAMEPLAY.battery.drainPerSecond * STEP_SECONDS);
+    game.stats.lightTicks[hunter.id] += 1;
+  }
+
+  // Result priority: HP first, so a kill on the final tick is still a Hunter victory.
+  // An expired clock is a Creature victory; `caught` already returned above.
   if (state.hp <= 0) endRound(game, 'defeated');
+  else if (game.timeTicks === 0) endRound(game, 'expired');
 }
 
 const copyPosition = (position: Position): Position => ({ x: position.x, y: position.y, z: position.z });
@@ -365,7 +488,9 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     id: hunter.id,
     position: copyPosition(hunter.position),
     facing: hunter.facing,
-    light: !hunter.down && hunter.input.light,
+    // An empty battery reads as no light at all: the beam does nothing and is not drawn.
+    light: hasBeam(hunter),
+    battery: hunter.battery,
     down: hunter.down,
     revive: hunter.down ? hunter.reviveTicks / REVIVE_TICKS : 0,
   }));
@@ -375,6 +500,11 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     roundState,
     result: game.result,
     hunters,
+    // Both roles share the clock and the public pickup state; neither carries a position.
+    // The clock is rounded to hundredths: it is a countdown to display, and the raw
+    // tick quotient would put a long float on the wire thirty times a second.
+    timeRemaining: Math.round(game.timeTicks * STEP_SECONDS * 100) / 100,
+    pickups: activePickups(game),
   };
 
   // SECURITY: construct an allowlist for each role. Never serialize game.creature,
@@ -386,7 +516,7 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
       role: 'hunter',
       self: role,
       // This Hunter's own distance only; each Hunter is told a different band.
-      proximity: proximityForDistance(distance3D(self.position, game.creature.position)),
+      proximity: hunterProximity(game, self),
       creatureHp: state.hp,
     };
     // The Creature position exists in this payload only while revealed. Once the

@@ -9,10 +9,18 @@ type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 type HunterSnapshot = Extract<Snapshot, { role: 'hunter' }>;
 type CreatureSnapshot = Extract<Snapshot, { role: 'creature' }>;
 
-const HUNTER_KEYS = ['type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'self', 'proximity', 'creatureHp'].sort();
-const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'down', 'revive'].sort();
+const HUNTER_KEYS = [
+  'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
+  'self', 'proximity', 'creatureHp',
+].sort();
+const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'battery', 'down', 'revive'].sort();
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 const groundedY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
+const MAX_BATTERY = GAMEPLAY.battery.max;
+const PICKUP_COUNT = GAMEPLAY.batteryPickup.spawns.length;
+const pickupPoint = (index: number): Position => ({
+  x: GAMEPLAY.batteryPickup.spawns[index].x, y: groundedY, z: GAMEPLAY.batteryPickup.spawns[index].z,
+});
 
 function observeGame(page: Page) {
   const messages: ServerMessage[] = [];
@@ -228,6 +236,13 @@ function assertHunterWire(network: Network) {
       if (!sameKeys(hunter, HUNTER_VIEW_KEYS)) problems.push(`hunter view keys: ${Object.keys(hunter).join()}`);
       if (!sameKeys(hunter.position, ['x', 'y', 'z']) || hunter.position.y !== groundedY) problems.push(`hunter position ${JSON.stringify(hunter.position)}`);
     }
+    // The clock is a number of seconds and the pickup list is spawn-point indices: neither
+    // may ever become an object that could carry a position.
+    if (typeof message.timeRemaining !== 'number' || message.timeRemaining < 0) problems.push(`time ${message.timeRemaining}`);
+    if (message.pickups.length > 1) problems.push(`more than one battery: ${JSON.stringify(message.pickups)}`);
+    if (message.pickups.some((index) => !Number.isInteger(index) || index < 0 || index >= PICKUP_COUNT)) {
+      problems.push(`pickups ${JSON.stringify(message.pickups)}`);
+    }
     if (message.creature) {
       if (!sameKeys(message.creature, ['position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
       if (!sameKeys(message.creature.position, ['x', 'y', 'z']) || message.creature.position.y !== groundedY) problems.push(`creature position ${JSON.stringify(message.creature.position)}`);
@@ -311,8 +326,19 @@ test('five players fill a room, receive private roles, move, see only permitted 
       await expect(hunter.page.locator('#proximity')).toHaveText('Proximity: SAFE');
       await expect(hunter.page.locator('#creature-hp')).toHaveText(`Creature HP: ${GAMEPLAY.creature.maxHp}`);
       await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: hidden');
+      // Prototype 4 HUD: a full battery at the FULL stage, and an empty map — nothing
+      // spawns until the first-spawn delay has run, because everyone starts fully charged.
+      await expect(hunter.page.locator('#battery')).toHaveText(`Battery: ${MAX_BATTERY} FULL`);
+      expect(hunter.network.hunter().pickups).toHaveLength(0);
     }
     await expect(creature.page.locator('#creature-state')).toHaveText('State: hidden');
+    // The clock is authoritative and identical for both roles; the Creature has no battery.
+    for (const player of players) await expect(player.page.locator('#timer')).toHaveText(/^Time: \d+:\d{2}$/);
+    await expect(creature.page.locator('#battery')).toBeHidden();
+    expect(creature.network.creature().pickups).toEqual(hunters[0].network.hunter().pickups);
+    const clockAt = creature.network.creature().timeRemaining;
+    await expect.poll(() => creature.network.creature().timeRemaining).toBeLessThan(clockAt);
+    await expect.poll(() => hunters[0].network.hunter().timeRemaining).toBeLessThan(clockAt);
 
     // Require a real WebGL scene using a perspective projection in its shader.
     for (const player of [hunters[0], creature]) {
@@ -363,6 +389,19 @@ test('five players fill a room, receive private roles, move, see only permitted 
     await expect.poll(() => (creature.network.creature().creature.x - creatureStart.x) * creatureSign).toBeGreaterThan(12);
     await creature.page.keyboard.up(creatureSign === 1 ? 'KeyD' : 'KeyA');
     for (const hunter of hunters) expect('creature' in hunter.network.hunter()).toBe(false);
+
+    // Holding the flashlight drains the battery on the server and on every client that
+    // draws this Hunter's cone; releasing it stops the drain with no recharge.
+    const lighter = hunters[0];
+    await lighter.page.keyboard.down('Space');
+    await expect.poll(() => lighter.network.own().battery).toBeLessThan(MAX_BATTERY);
+    await expect.poll(() => creature.network.teammate(lighter.network.hunter().self).battery).toBeLessThan(MAX_BATTERY);
+    await lighter.page.keyboard.up('Space');
+    await expect.poll(() => lighter.network.own().light).toBe(false);
+    const drained = lighter.network.own().battery;
+    await expect(lighter.page.locator('#battery')).toHaveText(`Battery: ${Math.ceil(drained)} FULL`);
+    await lighter.page.waitForTimeout(500);
+    expect(lighter.network.own().battery).toBe(drained);
 
     // Sprint: every Hunter page receives the Creature while it sprints, then loses it again.
     await creature.page.keyboard.down('Space');
@@ -483,21 +522,26 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     await a.page.keyboard.up('KeyD');
     expect(positionOf(a)).toEqual(fell);
 
-    // The Creature retreats, then B walks up west of the body, faces it, and shines.
+    // The Creature retreats, then a teammate walks up beside the body, faces it, and shines.
     const away = farCorner([fell, ...hunters.filter((hunter) => hunter !== a).map(positionOf)]);
     expect(await drive(creature.page, creaturePosition, away, { avoid: hunters.map(positionOf), arrive: 30, running })).toBe(true);
+    // The Creature can catch a bystander on its way out, so the rescue is carried out by
+    // whichever teammate is still standing rather than by a fixed slot.
+    const standing = () => hunters.filter((hunter) => hunter !== a && !hunter.network.own().down);
+    const rescuer = standing()[0];
+    expect(rescuer, 'at least one teammate is still up to revive A').toBeDefined();
     // Approach from the west unless the body lies against the west wall.
     const fromWest = fell.x - 90 >= 60;
     const approach = { ...fell, x: fromWest ? fell.x - 90 : fell.x + 90 };
-    expect(await drive(b.page, () => positionOf(b), approach, { avoid: othersFor(b), arrive: 10, running })).toBe(true);
-    await face(b, fromWest ? 'east' : 'west');
-    await b.page.keyboard.down('Space');
-    await expect.poll(() => b.network.teammate(aId).revive).toBeGreaterThan(0);
+    expect(await drive(rescuer.page, () => positionOf(rescuer), approach, { avoid: othersFor(rescuer), arrive: 10, running })).toBe(true);
+    await face(rescuer, fromWest ? 'east' : 'west');
+    await rescuer.page.keyboard.down('Space');
+    await expect.poll(() => rescuer.network.teammate(aId).revive).toBeGreaterThan(0);
     await expect(a.page.locator('#overlay-detail')).toHaveText(/REVIVE [1-9]\d?%/);
-    await expect(b.page.locator('#team')).toContainText(new RegExp(`${aId} DOWN [1-9]\\d?%`));
-    await b.page.screenshot({ path: testInfo.outputPath('hunter-reviving.png') });
-    await expect.poll(() => b.network.teammate(aId).down, { timeout: GAMEPLAY.revive.seconds * 1000 + 15_000 }).toBe(false);
-    await b.page.keyboard.up('Space');
+    await expect(rescuer.page.locator('#team')).toContainText(new RegExp(`${aId} DOWN [1-9]\\d?%`));
+    await rescuer.page.screenshot({ path: testInfo.outputPath('hunter-reviving.png') });
+    await expect.poll(() => rescuer.network.teammate(aId).down, { timeout: GAMEPLAY.revive.seconds * 1000 + 15_000 }).toBe(false);
+    await rescuer.page.keyboard.up('Space');
     await expect(a.page.locator('#overlay')).toBeHidden();
     for (const player of players) await expect(player.page.locator('#team')).toContainText(`${aId}${player === a ? '*' : ''} ACTIVE`);
     // Revived: A can move again (toward whichever side has more open floor).
@@ -508,16 +552,43 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     await expect.poll(() => (positionOf(a).z - revivedAt.z) * zSign).toBeGreaterThan(12);
     await a.page.keyboard.up(zSign === 1 ? 'KeyS' : 'KeyW');
 
-    // Defeat: A leaves the lane, the Creature is parked in front of B, and B holds the
-    // light until the Creature's HP reaches zero. Along the way the stagger expires while
-    // the Creature is still lit, then the cooldown lets it stagger again.
+    // The rescue cost the reviver most of a battery, and a pickup is the only way to get
+    // it back. The map holds at most one battery and none at all early on, so wait for one
+    // to appear, then walk to it: it refills the Hunter, disappears for every client, and
+    // starts the respawn countdown on the server. Nobody else is moving at this point, so
+    // the battery cannot be taken on the way.
+    const spent = rescuer.network.own().battery;
+    expect(spent).toBeLessThan(MAX_BATTERY);
+    await expect.poll(() => rescuer.network.hunter().pickups.length, { timeout: 90_000 }).toBe(1);
+    const target = rescuer.network.hunter().pickups[0];
+    expect(await drive(rescuer.page, () => positionOf(rescuer), pickupPoint(target), {
+      avoid: [creaturePosition()], arrive: 10, running, timeoutMs: 40_000,
+    })).toBe(true);
+    await expect.poll(() => rescuer.network.own().battery).toBe(MAX_BATTERY);
+    expect(rescuer.network.hunter().pickups).not.toContain(target);
+    expect(creature.network.creature().pickups).not.toContain(target);
+    await expect(rescuer.page.locator('#battery')).toHaveText(`Battery: ${MAX_BATTERY} FULL`);
+    await rescuer.page.screenshot({ path: testInfo.outputPath('hunter-battery-pickup.png') });
+
+    // Defeat: A leaves the lane, the Creature is parked close in front of C — the Hunter
+    // that has not spent any battery yet — and C holds the light until the Creature's HP
+    // reaches zero. Along the way the stagger expires while the Creature is still lit, then
+    // the cooldown lets it stagger again. The distance is short enough that the beam still
+    // reaches after the battery has dropped through its stages.
     expect(await drive(a.page, () => positionOf(a), farCorner(othersFor(a)), { avoid: othersFor(a), arrive: 30, running })).toBe(true);
-    const frontOfB = { ...positionOf(b), x: positionOf(b).x + (fromWest ? 100 : -100) };
-    expect(await drive(creature.page, creaturePosition, frontOfB, { avoid: othersFor(creature), arrive: 10, running })).toBe(true);
-    await b.page.keyboard.down('Space');
-    await expect.poll(() => b.network.hunter().creature?.staggered).toBe(true);
-    await expect.poll(() => creature.network.latest()?.result, { timeout: 45_000 }).toBe('defeated');
-    await b.page.keyboard.up('Space');
+    const killer = standing().find((hunter) => hunter !== rescuer && hunter.network.own().battery === MAX_BATTERY) ?? rescuer;
+    expect(killer.network.own().battery).toBe(MAX_BATTERY);
+    const killLane = findLane(200, othersFor(killer));
+    expect(await drive(killer.page, () => positionOf(killer), killLane.start, { avoid: othersFor(killer), arrive: 10, running })).toBe(true);
+    await face(killer, 'east');
+    const frontOfKiller = { ...positionOf(killer), x: positionOf(killer).x + 55 };
+    expect(await drive(creature.page, creaturePosition, frontOfKiller, { avoid: othersFor(creature), arrive: 6, running })).toBe(true);
+    await killer.page.keyboard.down('Space');
+    await expect.poll(() => killer.network.hunter().creature?.staggered).toBe(true);
+    await expect.poll(() => creature.network.latest()?.result, { timeout: 60_000 }).toBe('defeated');
+    await killer.page.keyboard.up('Space');
+    // Killing the Creature outright costs most of one battery.
+    expect(killer.network.own().battery).toBeLessThan(0.6 * MAX_BATTERY);
     for (const player of players) await expect(player.page.locator('#status')).toContainText('Creature defeated. Hunters win.');
     await expect(host.page.locator('#status')).toContainText('Start the match to play again.');
     await expect(host.page.locator('#start')).toHaveText('Start match');
@@ -532,17 +603,23 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     const staggerStarts = creatureMessages.filter((message, index) => message.staggered && !creatureMessages[index - 1]?.staggered).length;
     expect(staggerStarts).toBeGreaterThanOrEqual(2);
     expect(creatureMessages.some((message) => message.lit && !message.staggered)).toBe(true);
-    await b.page.screenshot({ path: testInfo.outputPath('hunter-victory.png') });
+    await killer.page.screenshot({ path: testInfo.outputPath('hunter-victory.png') });
 
     for (const hunter of hunters) assertHunterWire(hunter.network);
 
     // Rematch without recreating the room: fresh roles, full HP, nobody down, nothing revealed.
+    const clockAtEnd = creature.network.creature().timeRemaining;
     const again = await startMatch(host, players, roundId);
     expect(again.roundId).toBe(roundId + 1);
     for (const hunter of again.hunters) {
       expect(hunter.network.hunter().creatureHp).toBe(GAMEPLAY.creature.maxHp);
       expect('creature' in hunter.network.hunter()).toBe(false);
       await expect(hunter.page.locator('#creature-state')).toHaveText('Creature: hidden');
+      // Prototype 4 resources reset with the round: full batteries, an empty map with the
+      // first-spawn delay running again, and a fresh clock — nothing carried over.
+      await expect(hunter.page.locator('#battery')).toHaveText(`Battery: ${MAX_BATTERY} FULL`);
+      expect(hunter.network.hunter().pickups).toHaveLength(0);
+      expect(hunter.network.hunter().timeRemaining).toBeGreaterThan(clockAtEnd);
     }
     expect(again.creature.network.creature().hunters.every((hunter) => !hunter.down)).toBe(true);
     expect(pageErrors).toEqual([]);

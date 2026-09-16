@@ -3,13 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Creature Containment Crew — Prototype 3</title>
+    <title>Creature Containment Crew — Prototype 4</title>
   </head>
   <body>
     <header>
-      <span>Prototype 3 — Full Multiplayer</span>
+      <span>Prototype 4 — Resource Game</span>
       <span id="room" hidden></span>
+      <span id="timer" hidden></span>
       <span id="role" hidden></span>
+      <span id="battery" hidden></span>
       <span id="proximity" hidden></span>
       <span id="creature-hp" hidden></span>
       <span id="creature-state" hidden></span>
@@ -30,12 +32,13 @@
     </section>
     <main id="arena-container" hidden>
       <div id="arena-view">
-        <canvas id="arena" aria-label="3D hunt arena. Hunters: spheres with flashlight cones, your own in white. Creature: orange octahedron, visible to Hunters only while lit or sprinting."></canvas>
+        <canvas id="arena" aria-label="3D hunt arena. Hunters: spheres with flashlight cones, your own in white. Creature: orange octahedron, visible to Hunters only while lit or sprinting. Green blocks: battery pickups."></canvas>
         <div id="proximity-warning" data-state="SAFE" aria-hidden="true"></div>
         <div id="overlay" hidden><p id="overlay-title"></p><p id="overlay-detail"></p></div>
+        <pre id="debug" hidden></pre>
       </div>
     </main>
-    <footer>WASD to move and turn. Hunter: hold Space or the left mouse button for the flashlight; it reveals and damages the Creature and revives a downed teammate it shines on. Creature: hold Space or the left mouse button to sprint; touch a Hunter to incapacitate it.</footer>
+    <footer>WASD to move and turn. Hunter: hold Space or the left mouse button for the flashlight; it drains battery, reveals and damages the Creature, and revives a downed teammate it shines on. Walk over a green block to refill. Creature: hold Space or the left mouse button to sprint; touch a Hunter to incapacitate it. The Creature wins if the timer runs out.</footer>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

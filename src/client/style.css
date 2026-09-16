@@ -175,3 +175,32 @@ footer {
 #creature-state[data-state='SPRINTING'] {
   color: #e8d27a;
 }
+
+/* Battery and clock: colour only where it changes what a player can do or how long
+   they have. HALF is still a working flashlight, so only LOW and OFF are marked. */
+#battery[data-state='LOW'] {
+  color: #e8d27a;
+}
+
+#battery[data-state='OFF'] {
+  color: #e46448;
+}
+
+#timer[data-state='final'] {
+  color: #e46448;
+}
+
+/* Playtest overlay (?debug=1): plain text over the arena corner, never in a normal build. */
+#debug {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  margin: 0;
+  padding: 4px 8px;
+  background: #161918;
+  color: #aeb5ae;
+  font: inherit;
+  line-height: 1.35;
+  white-space: pre;
+  pointer-events: none;
+}

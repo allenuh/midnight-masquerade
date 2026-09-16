@@ -98,7 +98,7 @@ function assertHunterMessage(message: Message) {
   assert.equal(message.role, 'hunter');
   assert.equal(typeof message.roundId, 'number');
   assert.ok(['reveal', 'running', 'ended'].includes(message.roundState!));
-  assert.ok(message.result === null || message.result === 'caught' || message.result === 'defeated');
+  assert.ok(message.result === null || ['caught', 'defeated', 'expired'].includes(message.result!));
   assert.ok(['H1', 'H2', 'H3', 'H4'].includes(message.self!));
   assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(message.proximity!));
   assert.equal(message.creatureHp, GAMEPLAY.creature.maxHp);

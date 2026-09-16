@@ -1,3 +1,4 @@
+import { flashlightStage } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { CAMERA } from './camera-config.js';
@@ -16,9 +17,11 @@ const joinForm = element<HTMLFormElement>('#join-form');
 const codeInput = element<HTMLInputElement>('#code');
 const joinButton = element<HTMLButtonElement>('#join');
 const roomText = element('#room');
+const timerText = element('#timer');
 const playersText = element('#players');
 const waitingText = element('#waiting');
 const roleText = element('#role');
+const batteryText = element('#battery');
 const proximityText = element('#proximity');
 const creatureHpText = element('#creature-hp');
 const creatureStateText = element('#creature-state');
@@ -28,8 +31,12 @@ const startButton = element<HTMLButtonElement>('#start');
 const overlay = element('#overlay');
 const overlayTitle = element('#overlay-title');
 const overlayDetail = element('#overlay-detail');
+const debugPanel = element('#debug');
 
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
+// Playtest overlay, off unless the page is opened with ?debug=1. It shows only what this
+// client already received: a Hunter page has no Creature position to put in it.
+const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
 function start(): void {
   let scene: ReturnType<typeof createScene>;
@@ -102,9 +109,44 @@ function start(): void {
   }
 
   function resultText(result: Snapshot['result']): string {
-    return result === 'defeated'
-      ? 'Creature defeated. Hunters win.'
-      : 'Every Hunter is down. Creature wins.';
+    if (result === 'defeated') return 'Creature defeated. Hunters win.';
+    if (result === 'expired') return 'Time expired. Creature wins.';
+    return 'Every Hunter is down. Creature wins.';
+  }
+
+  // Whole seconds, rounded up so the clock only reads 0 when the round is actually over.
+  const clockText = (seconds: number): string => {
+    const total = Math.ceil(seconds);
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  };
+
+  // One compact line per player, built from that client's own snapshot.
+  function debugText(snapshot: Snapshot): string {
+    const lines = [
+      `time     ${snapshot.timeRemaining.toFixed(1)} s`,
+      // The spawn countdown is deliberately not on the wire: knowing when the next battery
+      // is due would let Hunters camp a point, so only the server log has it.
+      `battery  ${snapshot.pickups.length === 0 ? 'none on the map' : `at point ${snapshot.pickups[0]}`}`,
+      `hunters  ${snapshot.hunters.filter((hunter) => !hunter.down).length} active,` +
+      ` ${snapshot.hunters.filter((hunter) => hunter.down).length} down`,
+    ];
+    for (const hunter of snapshot.hunters) {
+      lines.push(
+        `  ${hunter.id}     battery ${hunter.battery.toFixed(1)} ${flashlightStage(hunter.battery)}` +
+        `${hunter.light ? ' LIT' : ''} ${hunter.down ? `DOWN ${Math.floor(hunter.revive * 100)}%` : 'ACTIVE'}`,
+      );
+    }
+    if (snapshot.role === 'hunter') {
+      lines.push(`creature hp ${snapshot.creatureHp.toFixed(1)}, ${snapshot.creature ? 'revealed' : 'hidden'}`);
+      lines.push(`proximity ${snapshot.proximity} (own band only)`);
+    } else {
+      lines.push(`creature hp ${snapshot.hp.toFixed(1)} ${snapshot.staggered ? 'STAGGERED' : ''}`);
+      lines.push(
+        `cooldowns sprint ${snapshot.sprintCooldown.toFixed(1)}` +
+        ` stagger ${snapshot.staggerCooldown.toFixed(1)} attack ${snapshot.attackCooldown.toFixed(1)}`,
+      );
+    }
+    return lines.join('\n');
   }
 
   // The whole page is derived from the connection, the room, and the latest snapshot.
@@ -129,7 +171,9 @@ function start(): void {
     startButton.textContent = snapshot && snapshot.roundState !== 'ended' ? 'Restart match' : 'Start match';
 
     roleText.hidden = creatureHpText.hidden = creatureStateText.hidden = teamText.hidden = !inRound;
-    proximityText.hidden = snapshot?.role !== 'hunter';
+    timerText.hidden = !inRound;
+    proximityText.hidden = batteryText.hidden = snapshot?.role !== 'hunter';
+    debugPanel.hidden = !DEBUG || !inRound;
     overlay.hidden = true;
     warning.dataset.state = 'SAFE';
 
@@ -152,8 +196,20 @@ function start(): void {
       .map((hunter) => `${hunter.id}${hunter.id === self ? '*' : ''} ${hunter.down ? `DOWN ${Math.floor(hunter.revive * 100)}%` : 'ACTIVE'}`)
       .join(' · ');
 
+    // The authoritative clock, shown to both roles. The final stretch only changes colour.
+    timerText.textContent = `Time: ${clockText(snapshot.timeRemaining)}`;
+    timerText.dataset.state = snapshot.roundState === 'running' && snapshot.timeRemaining <= GAMEPLAY.round.finalWarningSeconds
+      ? 'final' : 'normal';
+    if (DEBUG) debugPanel.textContent = debugText(snapshot);
+
     if (snapshot.role === 'hunter') {
       roleText.textContent = `Role: Hunter ${snapshot.self} (white sphere)`;
+      // `self` rather than `snapshot.self`: the snapshot is reassigned on every message,
+      // so it does not stay narrowed inside a callback.
+      const battery = snapshot.hunters.find((hunter) => hunter.id === self)?.battery ?? 0;
+      const stage = flashlightStage(battery);
+      batteryText.textContent = `Battery: ${Math.ceil(battery)} ${stage}`;
+      batteryText.dataset.state = stage;
       proximityText.textContent = `Proximity: ${snapshot.proximity}`;
       creatureHpText.textContent = `Creature HP: ${Math.ceil(snapshot.creatureHp)}`;
       const seen = snapshot.creature;
@@ -188,10 +244,14 @@ function start(): void {
         if (own?.down) {
           showOverlay('INCAPACITATED', `REVIVE ${Math.floor(own.revive * 100)}%`);
           statusText.textContent = 'You are down. A teammate revives you by holding a flashlight on you.';
+        } else if (snapshot.role === 'hunter') {
+          // An empty flashlight is the one thing a Hunter has to be told in words: the
+          // cone simply stops appearing, and only a pickup brings it back.
+          statusText.textContent = (own?.battery ?? 0) > 0
+            ? 'Find the Creature. Hold Space or the left mouse button for the flashlight: it drains battery, reveals and damages the Creature, and revives a downed teammate.'
+            : 'Battery empty. Your flashlight does nothing until you walk over a green battery block.';
         } else {
-          statusText.textContent = snapshot.role === 'hunter'
-            ? 'Find the Creature. Hold Space or the left mouse button for the flashlight: it reveals and damages the Creature and revives a downed teammate.'
-            : 'Touch Hunters to incapacitate them; down all four to win. Hold Space or the left mouse button to sprint: faster, but visible. Being lit staggers you and drains HP.';
+          statusText.textContent = 'Touch Hunters to incapacitate them; down all four to win, or outlast the timer. Hold Space or the left mouse button to sprint: faster, but visible. Being lit staggers you and drains HP.';
         }
         break;
       case 'ended':

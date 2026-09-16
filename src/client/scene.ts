@@ -19,6 +19,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { WALL_BOXES } from '../shared/arena.js';
+import { flashlightRange } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
@@ -33,6 +34,9 @@ const TEAMMATE_COLOR = '#8fa3b8';
 const DOWN_COLOR = '#8a3a4a';
 // A downed Hunter is the same sphere squashed flat onto the floor.
 const DOWN_HEIGHT = 0.35;
+// Battery pickup: a small upright block, deliberately unlike any player colour.
+const PICKUP_COLOR = '#6f9a52';
+const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
 
 export function createScene(canvas: HTMLCanvasElement) {
   const renderer = new WebGLRenderer({ canvas, antialias: true });
@@ -67,6 +71,19 @@ export function createScene(canvas: HTMLCanvasElement) {
   const light = new DirectionalLight('#ffffff', 1.8);
   light.position.set(-300, 900, 500);
   scene.add(light);
+
+  // Battery pickups: one block per public spawn point, shown while the server lists that
+  // point as active. Both roles see the same set; nothing here is hidden information.
+  const pickups = GAMEPLAY.batteryPickup.spawns.map(({ x, z }) => {
+    const mesh = new Mesh(
+      new BoxGeometry(PICKUP_SIZE.x, PICKUP_SIZE.y, PICKUP_SIZE.z),
+      new MeshLambertMaterial({ color: PICKUP_COLOR }),
+    );
+    mesh.position.set(x, GAMEPLAY.arena.floorY + PICKUP_SIZE.y / 2, z);
+    mesh.visible = false;
+    scene.add(mesh);
+    return mesh;
+  });
 
   // Hunter: sphere plus a small dark nose so the facing reads even with the light off,
   // and a flashlight fan of its own. The nose points along local +X; the group is
@@ -110,7 +127,9 @@ export function createScene(canvas: HTMLCanvasElement) {
     return mesh;
   }
 
-  function updateFan(mesh: HunterMesh, origin: Position, facing: number): void {
+  // `range` is the battery stage's reach, so the drawn fan shortens exactly when the
+  // authoritative cone does: that shortening is the stage feedback.
+  function updateFan(mesh: HunterMesh, origin: Position, facing: number, range: number): void {
     const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
     const floorHeight = GAMEPLAY.arena.floorY + 1;
     const { fanPositions, fanGeometry } = mesh;
@@ -120,7 +139,7 @@ export function createScene(canvas: HTMLCanvasElement) {
     for (let ray = 0; ray <= FAN_RAYS; ray++) {
       const angle = facing - halfAngle + (2 * halfAngle * ray) / FAN_RAYS;
       const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
-      const reach = wallDistance(origin, direction, GAMEPLAY.flashlight.range);
+      const reach = wallDistance(origin, direction, range);
       const offset = (ray + 1) * 3;
       fanPositions[offset] = origin.x + direction.x * reach;
       fanPositions[offset + 1] = floorHeight;
@@ -192,9 +211,11 @@ export function createScene(canvas: HTMLCanvasElement) {
       mesh.body.scale.y = view.down ? DOWN_HEIGHT : 1;
       mesh.body.position.y = view.down ? -GAMEPLAY.playerRadius * (1 - DOWN_HEIGHT) : 0;
       mesh.nose.visible = !view.down;
+      // `light` is already false on an empty battery, so a depleted flashlight draws nothing.
       mesh.fan.visible = view.light;
-      if (view.light) updateFan(mesh, view.position, view.facing);
+      if (view.light) updateFan(mesh, view.position, view.facing, flashlightRange(view.battery));
     }
+    for (const [index, mesh] of pickups.entries()) mesh.visible = snapshot?.pickups.includes(index) ?? false;
 
     const creatureView = snapshot?.role === 'creature'
       ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting }

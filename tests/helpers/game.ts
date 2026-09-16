@@ -90,13 +90,15 @@ export function closeTo(actual: number, expected: number, tolerance = 1e-8): voi
 }
 
 export const HUNTER_PAYLOAD_KEYS = [
-  'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'self', 'proximity', 'creatureHp',
+  'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
+  'self', 'proximity', 'creatureHp',
 ].sort();
 export const CREATURE_PAYLOAD_KEYS = [
-  'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'creature', 'hp', 'lit', 'revealed', 'staggered',
+  'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
+  'creature', 'hp', 'lit', 'revealed', 'staggered',
   'staggerCooldown', 'sprinting', 'sprintCooldown', 'attackCooldown',
 ].sort();
-export const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'down', 'revive'].sort();
+export const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'battery', 'down', 'revive'].sort();
 
 // Strict allowlist over the serialized Hunter payload, including every teammate entry.
 // `creature` is optional: present only while the Creature is revealed.
@@ -108,10 +110,19 @@ export function assertHunterPayload(value: unknown): void {
   assert.equal(payload.role, 'hunter');
   assert.equal(typeof payload.roundId, 'number');
   assert.ok(['reveal', 'running', 'ended'].includes(payload.roundState));
-  assert.ok(payload.result === null || payload.result === 'caught' || payload.result === 'defeated');
+  assert.ok(payload.result === null || ['caught', 'defeated', 'expired'].includes(payload.result));
   assert.ok(['H1', 'H2', 'H3', 'H4'].includes(payload.self));
   assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(payload.proximity));
   assert.equal(typeof payload.creatureHp, 'number');
+  // The clock and the public pickup list: seconds and spawn-point indices, never positions.
+  assert.equal(typeof payload.timeRemaining, 'number');
+  assert.ok(payload.timeRemaining >= 0);
+  assert.ok(Array.isArray(payload.pickups));
+  // The map holds at most one battery, so this is either empty or a single valid point.
+  assert.ok(payload.pickups.length <= 1, 'at most one battery is ever on the map');
+  for (const index of payload.pickups) {
+    assert.ok(Number.isInteger(index) && index >= 0 && index < GAMEPLAY.batteryPickup.spawns.length);
+  }
   assert.equal(payload.hunters.length, GAMEPLAY.players.hunters);
   assert.deepEqual(payload.hunters.map((hunter: { id: string }) => hunter.id), ['H1', 'H2', 'H3', 'H4']);
   for (const hunter of payload.hunters) {
@@ -122,6 +133,9 @@ export function assertHunterPayload(value: unknown): void {
     assert.equal(typeof hunter.position.z, 'number');
     assert.equal(typeof hunter.facing, 'number');
     assert.equal(typeof hunter.light, 'boolean');
+    assert.equal(typeof hunter.battery, 'number');
+    assert.ok(hunter.battery >= 0 && hunter.battery <= GAMEPLAY.battery.max);
+    if (hunter.battery === 0) assert.equal(hunter.light, false, 'an empty battery is never lit');
     assert.equal(typeof hunter.down, 'boolean');
     assert.equal(typeof hunter.revive, 'number');
     assert.ok(hunter.revive >= 0 && hunter.revive <= 1);

@@ -18,6 +18,8 @@ export default defineConfig({
     reuseExistingServer: false,
     stdout: 'pipe',
     timeout: 30_000,
-    env: { HOST: '127.0.0.1', PORT: '5173' },
+    // A long match: these scripted rounds take minutes of driving, and the real 180 s
+    // clock would expire mid-test. Timer expiry itself is covered in tests/resource.test.ts.
+    env: { HOST: '127.0.0.1', PORT: '5173', MATCH_SECONDS: '900' },
   },
 });

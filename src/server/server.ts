@@ -2,10 +2,12 @@ import { randomInt } from 'node:crypto';
 import { createServer } from 'node:http';
 import { performance } from 'node:perf_hooks';
 import { WebSocket, WebSocketServer } from 'ws';
+import { flashlightStage } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { RoomMessage, ServerMessage } from '../shared/protocol.js';
 import {
-  PLAYER_COUNT, abandonRound, createGame, expireInput, setInput, snapshotFor, startRound, stepGame, type Game,
+  MATCH_SECONDS, PLAYER_COUNT, REVIVE_TICKS, STEP_SECONDS, abandonRound, createGame, expireInput,
+  hunterProximity, setInput, snapshotFor, startRound, stepGame, type Game,
 } from './game.js';
 
 type Client = { id: string; socket: WebSocket; lastInput: number; alive: boolean; room: Room | null };
@@ -48,6 +50,46 @@ export function createGameServer() {
     if (room.game.roundState === 'lobby') return;
     // Each player's role is bound to its connection id, never supplied by a message.
     for (const player of room.players) send(player, snapshotFor(room.game, player.id));
+  }
+
+  // One line of playtest data per finished round, on the server console. Counters only:
+  // no storage, no player identity, no telemetry service.
+  function logRoundStats(room: Room): void {
+    const { game } = room;
+    const { stats } = game;
+    const lightSeconds = Object.entries(stats.lightTicks)
+      .map(([id, ticks]) => `${id} ${(ticks * STEP_SECONDS).toFixed(1)}s`).join(' ');
+    console.log(
+      `[round] room=${room.code} id=${game.roundId} result=${game.result}` +
+      ` duration=${(MATCH_SECONDS - game.timeTicks * STEP_SECONDS).toFixed(1)}s` +
+      ` creatureHp=${game.creatureState.hp.toFixed(1)} downs=${stats.incapacitations} revives=${stats.revives}` +
+      ` batteries=${stats.pickupsCollected} light=[${lightSeconds}]`,
+    );
+  }
+
+  // DEBUG_SERVER=1 prints the whole balance picture once a second, including every
+  // Hunter's proximity band. Deliberately server-side: no client is ever sent the four
+  // bands together, because that would locate the Creature by triangulation.
+  const debugServer = process.env.DEBUG_SERVER === '1';
+  function logDebugState(room: Room): void {
+    const { game, code } = room;
+    const state = game.creatureState;
+    // The one place the battery's spawn countdown appears: clients are told where the
+    // battery is, never when the next one is due.
+    const battery = game.pickup.at === null
+      ? `none (next in ${(game.pickup.spawnTicks * STEP_SECONDS).toFixed(1)}s)`
+      : `point ${game.pickup.at}`;
+    const hunters = game.hunters.map((hunter) =>
+      `${hunter.id} ${hunter.battery.toFixed(0)}/${flashlightStage(hunter.battery)}` +
+      ` ${hunter.down ? `DOWN ${Math.floor(100 * hunter.reviveTicks / REVIVE_TICKS)}%` : 'ACTIVE'}` +
+      ` ${hunterProximity(game, hunter)}`).join(' | ');
+    console.log(
+      `[debug] room=${code} t=${(game.timeTicks * STEP_SECONDS).toFixed(1)}s hp=${state.hp.toFixed(1)}` +
+      ` sprintCd=${(state.sprintCooldownTicks * STEP_SECONDS).toFixed(1)}` +
+      ` staggerCd=${(state.staggerCooldownTicks * STEP_SECONDS).toFixed(1)}` +
+      ` battery=${battery}` +
+      ` active=${game.hunters.filter((hunter) => !hunter.down).length} :: ${hunters}`,
+    );
   }
 
   function newCode(): string {
@@ -161,15 +203,20 @@ export function createGameServer() {
 
   // Input volume cannot advance simulation time. A stalled loop slows the game
   // instead of applying a large catch-up step or accepting a client's delta time.
+  let debugTicks = 0;
   const tick = setInterval(() => {
     const now = performance.now();
+    debugTicks += 1;
     for (const room of rooms.values()) {
       if (room.game.roundState === 'lobby') continue;
       for (const player of room.players) {
         if (now - player.lastInput > GAMEPLAY.inputTimeoutMs) expireInput(room.game, player.id);
       }
+      const wasRunning = room.game.roundState === 'running';
       stepGame(room.game);
       broadcastSnapshots(room);
+      if (wasRunning && room.game.roundState === 'ended') logRoundStats(room);
+      if (debugServer && room.game.roundState === 'running' && debugTicks % GAMEPLAY.tickRate === 0) logDebugState(room);
     }
   }, Math.ceil(1000 / GAMEPLAY.tickRate));
 

@@ -7,7 +7,8 @@ export type ProximityState = 'SAFE' | 'UNEASY' | 'DANGER' | 'IMMEDIATE';
 export type RoundState = 'lobby' | 'reveal' | 'running' | 'ended';
 // 'caught': every Hunter is incapacitated at once (Creature wins).
 // 'defeated': Creature HP reached zero under the flashlight (Hunters win).
-export type RoundResult = 'caught' | 'defeated';
+// 'expired': the match clock ran out with the Creature alive (Creature wins).
+export type RoundResult = 'caught' | 'defeated' | 'expired';
 // Authoritative world-space sphere center. Y is height, not a screen coordinate.
 export type Position = { x: number; y: number; z: number };
 // Held keys only. `light` is the Space / left mouse button held flag: the flashlight for the
@@ -22,14 +23,18 @@ export type ClientMessage =
   | ({ type: 'input'; roundId: number } & InputState);
 
 // What every player in a round learns about each Hunter: public position and facing,
-// whether the server counts its flashlight as on, and its team state. Never a proximity
-// band or anything about the Creature.
+// whether the server counts its flashlight as on, its remaining battery, and its team
+// state. Never a proximity band or anything about the Creature.
 export type HunterView = {
   id: HunterId;
   position: Position;
   // Facing angle in radians on the ground plane: direction = (cos, 0, sin). W (up) is -PI/2.
   facing: number;
+  // False while down or out of battery: a beam that produces no gameplay effect is not drawn.
   light: boolean;
+  // Remaining battery, 0..GAMEPLAY.battery.max. Public because the beam it powers is
+  // visible in the world: every client derives this Hunter's cone length from it.
+  battery: number;
   down: boolean;
   // Revival progress 0..1 while down; always 0 while active.
   revive: number;
@@ -53,6 +58,13 @@ type RoundSnapshot = {
   roundState: Exclude<RoundState, 'lobby'>;
   result: RoundResult | null;
   hunters: HunterView[];
+  // Authoritative seconds left on the match clock. It is full during the reveal, counts
+  // down only while running, and holds its final value once the round ends. Clients display
+  // it; they never decide expiration.
+  timeRemaining: number;
+  // Indices into GAMEPLAY.batteryPickup.spawns that currently hold a pickup. The points
+  // themselves are public map data both roles already have, so no coordinates are sent.
+  pickups: number[];
 };
 
 // Separate shapes make accidental hidden-state serialization harder to introduce.
