@@ -6,6 +6,8 @@ import WebSocket from 'ws';
 import { createGameServer } from '../src/server/server.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { Position } from '../src/shared/protocol.js';
+import { wallDistance } from '../src/shared/raycast.js';
+import { keysToward } from './helpers/navigate.js';
 
 type Message = {
   type: string;
@@ -14,9 +16,17 @@ type Message = {
   roundState?: string;
   result?: string | null;
   hunter?: Position | null;
-  creature?: Position;
+  creature?: Position | { position: Position; staggered: boolean; sprinting: boolean };
   proximity?: string;
+  facing?: number;
+  light?: boolean;
+  creatureHp?: number;
+  hp?: number;
+  hunterFacing?: number | null;
+  hunterLight?: boolean;
 };
+
+const idle = { up: false, down: false, left: false, right: false, light: false };
 
 class Peer {
   readonly messages: Message[] = [];
@@ -69,9 +79,14 @@ class Peer {
 }
 
 function assertHunterMessage(message: Message) {
+  // `creature` may appear only while revealed; this file never turns the light on.
+  assert.equal('creature' in message, false, 'hidden Creature never appears on the wire');
   assert.deepEqual(Object.keys(message).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'proximity',
+    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'facing', 'light', 'proximity', 'creatureHp',
   ].sort());
+  assert.equal(typeof message.facing, 'number');
+  assert.equal(message.light, false);
+  assert.equal(message.creatureHp, GAMEPLAY.creature.maxHp);
   assert.equal(message.type, 'snapshot');
   assert.equal(message.role, 'hunter');
   assert.ok(message.hunter);
@@ -83,10 +98,10 @@ function assertHunterMessage(message: Message) {
   assert.equal(typeof message.roundId, 'number');
   assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(message.proximity!));
   assert.ok(['waiting', 'running', 'ended'].includes(message.roundState!));
-  assert.ok(message.result === null || message.result === 'caught');
+  assert.ok(message.result === null || message.result === 'caught' || message.result === 'defeated');
 }
 
-test('real sockets enforce roles, hidden payloads, tagging, restart, and vacant-slot reuse', { timeout: 20_000 }, async (t) => {
+test('real sockets enforce roles, hidden payloads, tagging, restart, and vacant-slot reuse', { timeout: 40_000 }, async (t) => {
   const { server, close } = createGameServer();
   const peers: Peer[] = [];
   t.after(async () => {
@@ -110,9 +125,13 @@ test('real sockets enforce roles, hidden payloads, tagging, restart, and vacant-
   assert.equal(initial.role, 'creature');
   assert.ok(initial.creature && initial.hunter);
   assert.deepEqual(Object.keys(initial.creature).sort(), ['x', 'y', 'z']);
-  assert.equal(initial.creature.y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
+  assert.equal((initial.creature as Position).y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
+  assert.equal(initial.hp, GAMEPLAY.creature.maxHp);
+  assert.equal(initial.hunterLight, false);
+  assert.equal(typeof initial.hunterFacing, 'number');
   assert.deepEqual(Object.keys(initial).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'creature', 'hunter',
+    'type', 'role', 'roundId', 'roundState', 'result', 'creature', 'hunter', 'hunterFacing', 'hunterLight',
+    'hp', 'lit', 'revealed', 'staggered', 'staggerCooldown', 'sprinting', 'sprintCooldown',
   ].sort());
   const runningHunter = await hunter.waitFor((message) => message.roundState === 'running');
   assert.equal(runningHunter.proximity, 'SAFE');
@@ -127,26 +146,23 @@ test('real sockets enforce roles, hidden payloads, tagging, restart, and vacant-
   hunter.send({ type: 'position', x: 1, y: 1, z: 1 });
   hunter.send({
     type: 'input', roundId: runningHunter.roundId,
-    up: false, down: false, left: false, right: true,
+    ...idle, right: true,
     role: 'creature', x: 1, y: 1, z: 1, speed: 99_999,
   });
   const afterSpoof = await hunter.waitFor(() => hunter.messages.length >= spoofStart + 3, spoofStart);
   assert.deepEqual(afterSpoof.hunter, stationaryPosition);
 
-  // This test controls only the Creature using coordinates that role may receive.
+  // This test controls only the Creature using coordinates that role may receive,
+  // steering around the interior walls with the shared blockout geometry.
   const chase = (message: Message) => {
     if (message.role !== 'creature' || message.roundState !== 'running' || !message.hunter || !message.creature) return;
-    const dx = message.hunter.x - message.creature.x;
-    assert.equal(message.creature.y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
-    const dz = message.hunter.z - message.creature.z;
-    creature.send({
-      type: 'input', roundId: message.roundId,
-      up: dz < -1, down: dz > 1, left: dx < -1, right: dx > 1,
-    });
+    const own = message.creature as Position;
+    assert.equal(own.y, GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius);
+    creature.send({ type: 'input', roundId: message.roundId, ...keysToward(own, message.hunter), light: false });
   };
   creature.listeners.add(chase);
   chase(initial);
-  const caught = await creature.waitFor((message) => message.roundState === 'ended', 0, 8_000);
+  const caught = await creature.waitFor((message) => message.roundState === 'ended', 0, 20_000);
   creature.listeners.delete(chase);
   const hunterCaught = await hunter.waitFor((message) => message.roundState === 'ended');
   assert.equal(caught.result, 'caught');
@@ -204,12 +220,10 @@ test('server stops movement when input messages expire', { timeout: 10_000 }, as
   peers.push(creature);
   const initial = await hunter.waitFor((message) => message.roundState === 'running');
   const start = hunter.messages.length;
-  hunter.send({
-    type: 'input', roundId: initial.roundId,
-    up: false, down: false,
-    left: initial.hunter!.x > GAMEPLAY.arena.width / 2,
-    right: initial.hunter!.x <= GAMEPLAY.arena.width / 2,
-  });
+  // Random spawns may face a wall: move along X toward the side with more open floor.
+  const clearance = (sign: number) => wallDistance(initial.hunter!, { x: sign, y: 0, z: 0 }, Infinity);
+  const goRight = clearance(1) >= clearance(-1);
+  hunter.send({ type: 'input', roundId: initial.roundId, ...idle, left: !goRight, right: goRight });
   const expired = await hunter.waitFor(() => hunter.messages.length >= start + 20, start);
   const distance = Math.hypot(
     expired.hunter!.x - initial.hunter!.x,

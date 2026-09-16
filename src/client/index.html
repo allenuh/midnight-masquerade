@@ -3,23 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Creature Containment Crew — Prototype 1</title>
+    <title>Creature Containment Crew — Prototype 2</title>
   </head>
   <body>
     <header>
-      <span>Prototype 1 — The Chase</span>
+      <span>Prototype 2 — The Hunt</span>
       <span id="role">Role: unassigned</span>
       <span id="proximity" hidden></span>
+      <span id="creature-hp" hidden></span>
+      <span id="creature-state" hidden></span>
       <button id="restart" type="button" disabled>Restart round</button>
     </header>
     <p id="status" role="status">Connecting…</p>
     <main id="arena-container">
       <div id="arena-view">
-        <canvas id="arena" aria-label="3D chase arena. Hunter: white sphere. Creature: orange octahedron, visible only to itself."></canvas>
+        <canvas id="arena" aria-label="3D hunt arena. Hunter: white sphere with a flashlight cone. Creature: orange octahedron, visible to the Hunter only while lit or sprinting."></canvas>
         <div id="proximity-warning" data-state="SAFE" aria-hidden="true"></div>
       </div>
     </main>
-    <footer>WASD to move. First connection: Hunter. Second connection: Creature.</footer>
+    <footer>WASD to move and turn. Hunter: hold Space or the left mouse button for the flashlight. Creature: hold Space or the left mouse button to sprint. First connection: Hunter. Second connection: Creature.</footer>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

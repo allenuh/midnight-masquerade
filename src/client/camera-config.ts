@@ -7,7 +7,7 @@ export const CAMERA = {
   position: {
     x: GAMEPLAY.arena.width / 2,
     y: GAMEPLAY.arena.floorY + GAMEPLAY.arena.depth * 1.5,
-    z: GAMEPLAY.arena.depth * 1.75,
+    z: GAMEPLAY.arena.depth * 1.15,
   },
   target: {
     x: GAMEPLAY.arena.width / 2,

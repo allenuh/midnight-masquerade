@@ -99,3 +99,14 @@ canvas {
 footer {
   color: #aeb5ae;
 }
+
+/* Creature condition label: plain text, colored only when it changes what a player may do. */
+#creature-state[data-state='STAGGERED'] {
+  color: #e46448;
+}
+
+#creature-state[data-state='REVEALED'],
+#creature-state[data-state='LIT'],
+#creature-state[data-state='SPRINTING'] {
+  color: #e8d27a;
+}

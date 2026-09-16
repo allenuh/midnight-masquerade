@@ -17,7 +17,7 @@ import {
 
 type Game = ReturnType<typeof createGame>;
 type Role = 'hunter' | 'creature';
-type Keys = { up: boolean; down: boolean; left: boolean; right: boolean };
+type Keys = { up: boolean; down: boolean; left: boolean; right: boolean; light: boolean };
 
 const groundedY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
 const groundPosition = (x: number, z: number): Position => ({ x, y: groundedY, z });
@@ -27,14 +27,15 @@ function runningGame(): Game {
   joinGame(game, 'hunter');
   joinGame(game, 'creature');
   game.players.hunter = groundPosition(100, 100);
-  game.players.creature = groundPosition(500, 300);
+  // Both starts sit on open floor of the obstacle blockout (see src/shared/arena.ts).
+  game.players.creature = groundPosition(660, 300);
   return game;
 }
 
 function input(game: Game, keys: Partial<Keys> = {}) {
   return {
     type: 'input', roundId: game.roundId,
-    up: false, down: false, left: false, right: false, ...keys,
+    up: false, down: false, left: false, right: false, light: false, ...keys,
   };
 }
 
@@ -45,14 +46,25 @@ function closeTo(actual: number, expected: number) {
 function assertHunterPayload(value: unknown) {
   const payload = JSON.parse(JSON.stringify(value));
   // An allowlist checks every exposed field, including additions made later.
-  assert.deepEqual(Object.keys(payload).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'proximity',
+  // `creature` is optional: present only while the Creature is revealed.
+  const keys = Object.keys(payload).filter((key) => key !== 'creature').sort();
+  assert.deepEqual(keys, [
+    'type', 'role', 'roundId', 'roundState', 'result', 'hunter', 'facing', 'light', 'proximity', 'creatureHp',
   ].sort());
+  assert.equal(typeof payload.facing, 'number');
+  assert.equal(typeof payload.light, 'boolean');
+  assert.equal(typeof payload.creatureHp, 'number');
+  if ('creature' in payload) {
+    assert.deepEqual(Object.keys(payload.creature).sort(), ['position', 'sprinting', 'staggered']);
+    assert.deepEqual(Object.keys(payload.creature.position).sort(), ['x', 'y', 'z']);
+    assert.equal(typeof payload.creature.staggered, 'boolean');
+    assert.equal(typeof payload.creature.sprinting, 'boolean');
+  }
   assert.equal(payload.type, 'snapshot');
   assert.equal(payload.role, 'hunter');
   assert.equal(typeof payload.roundId, 'number');
   assert.ok(['waiting', 'running', 'ended'].includes(payload.roundState));
-  assert.ok(payload.result === null || payload.result === 'caught');
+  assert.ok(payload.result === null || payload.result === 'caught' || payload.result === 'defeated');
   assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(payload.proximity));
   if (payload.hunter !== null) {
     assert.deepEqual(Object.keys(payload.hunter).sort(), ['x', 'y', 'z']);
@@ -304,7 +316,8 @@ test('Hunter payload contains only permitted data in every round state', () => {
   const creaturePayload = snapshotFor(game, 'creature');
   assert.ok(creaturePayload.role === 'creature');
   assert.deepEqual(Object.keys(creaturePayload).sort(), [
-    'type', 'role', 'roundId', 'roundState', 'result', 'creature', 'hunter',
+    'type', 'role', 'roundId', 'roundState', 'result', 'creature', 'hunter', 'hunterFacing', 'hunterLight',
+    'hp', 'lit', 'revealed', 'staggered', 'staggerCooldown', 'sprinting', 'sprintCooldown',
   ].sort());
   assert.deepEqual(creaturePayload.creature, game.players.creature);
   assert.deepEqual(creaturePayload.hunter, game.players.hunter);
@@ -321,9 +334,14 @@ test('Hunter payload contains only permitted data in every round state', () => {
 test('glancing contact between tick endpoints still catches the Hunter', () => {
   const game = runningGame();
   const radius = GAMEPLAY.playerRadius * 2;
+  // One Creature step centred on the Hunter's X, passing so close that only the
+  // mid-step approach is inside the contact radius. Derived from the configured
+  // speed so retuning cannot move either endpoint into contact.
+  const halfStep = GAMEPLAY.speed.creature / GAMEPLAY.tickRate / 2;
+  const sideOffset = Math.sqrt(radius * radius - (halfStep / 2) ** 2);
   game.players.hunter = groundPosition(400, 300);
-  game.players.creature = groundPosition(396, 300 + radius - 0.1);
-  assert.ok(Math.hypot(4, radius - 0.1) > radius);
+  game.players.creature = groundPosition(400 - halfStep, 300 + sideOffset);
+  assert.ok(Math.hypot(halfStep, sideOffset) > radius);
   setInput(game, 'creature', input(game, { right: true }));
   stepGame(game);
   assert.ok(distance3D(game.players.creature!, game.players.hunter!) > radius,

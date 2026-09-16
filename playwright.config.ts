@@ -5,7 +5,7 @@ export default defineConfig({
   testMatch: '**/browser.spec.ts',
   fullyParallel: false,
   workers: 1,
-  timeout: 30_000,
+  timeout: 90_000,
   use: {
     baseURL: 'http://127.0.0.1:5173',
     channel: 'chrome',

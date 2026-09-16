@@ -55,7 +55,7 @@ if (!production) {
 }
 
 gameServer.server.listen(port, host, () => {
-  console.log(`Prototype 1 — The Chase: http://${host}:${port}`);
+  console.log(`Prototype 2 — The Hunt: http://${host}:${port}`);
   console.log('Open two browser clients. First: Hunter. Second: Creature.');
 });
 
