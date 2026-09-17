@@ -98,6 +98,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
       `[debug] room=${code} t=${(game.timeTicks * STEP_SECONDS).toFixed(1)}s hp=${state.hp.toFixed(1)}` +
       ` sprintCd=${(state.sprintCooldownTicks * STEP_SECONDS).toFixed(1)}` +
       ` staggerCd=${(state.staggerCooldownTicks * STEP_SECONDS).toFixed(1)}` +
+      ` burn=${(state.burnTicks * STEP_SECONDS).toFixed(1)}` +
       ` battery=${battery}` +
       ` active=${game.hunters.filter((hunter) => !hunter.down).length} :: ${hunters}`,
     );

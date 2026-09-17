@@ -157,10 +157,11 @@ function start(): void {
       lines.push(`creature hp ${snapshot.creatureHp.toFixed(1)}, ${snapshot.creature ? 'revealed' : 'hidden'}`);
       lines.push(`proximity ${snapshot.proximity} (own band only)`);
     } else {
-      lines.push(`creature hp ${snapshot.hp.toFixed(1)} ${snapshot.staggered ? 'STAGGERED' : ''}`);
+      lines.push(`creature hp ${snapshot.hp.toFixed(1)} ${snapshot.staggered ? 'STAGGERED' : ''} ${snapshot.burning ? 'BURNING' : ''}`);
       lines.push(
         `cooldowns sprint ${snapshot.sprintCooldown.toFixed(1)}` +
-        ` stagger ${snapshot.staggerCooldown.toFixed(1)} attack ${snapshot.attackCooldown.toFixed(1)}`,
+        ` stagger ${snapshot.staggerCooldown.toFixed(1)} attack ${snapshot.attackCooldown.toFixed(1)}` +
+        ` burn ${snapshot.burnRemaining.toFixed(1)}`,
       );
     }
     return lines.join('\n');
@@ -244,7 +245,10 @@ function start(): void {
       proximityText.textContent = `Proximity: ${snapshot.proximity}`;
       creatureHpText.textContent = `Creature HP: ${Math.ceil(snapshot.creatureHp)}`;
       const seen = snapshot.creature;
-      const state = !seen ? 'HIDDEN' : seen.staggered ? 'STAGGERED' : seen.sprinting ? 'SPRINTING' : 'REVEALED';
+      const state = !seen ? 'HIDDEN'
+        : seen.staggered ? 'STAGGERED'
+          : seen.burning ? 'BURNING'
+            : seen.sprinting ? 'SPRINTING' : 'REVEALED';
       creatureStateText.dataset.state = state;
       creatureStateText.textContent = `Creature: ${state === 'HIDDEN' ? 'hidden' : state}`;
       if (snapshot.roundState === 'running') warning.dataset.state = snapshot.proximity;
@@ -253,10 +257,12 @@ function start(): void {
       creatureHpText.textContent = `HP: ${Math.ceil(snapshot.hp)}`;
       const state = snapshot.staggered ? 'STAGGERED'
         : snapshot.lit ? 'LIT'
-          : snapshot.sprinting ? 'SPRINTING'
-            : snapshot.revealed ? 'REVEALED' : 'HIDDEN';
+          : snapshot.burning ? 'BURNING'
+            : snapshot.sprinting ? 'SPRINTING'
+              : snapshot.revealed ? 'REVEALED' : 'HIDDEN';
       creatureStateText.dataset.state = state;
       const cooldowns = [
+        snapshot.burnRemaining > 0 ? ` · burning ${snapshot.burnRemaining.toFixed(1)} s` : '',
         snapshot.staggerCooldown > 0 ? ` · stagger cooldown ${snapshot.staggerCooldown.toFixed(1)} s` : '',
         snapshot.sprintCooldown > 0 ? ` · sprint cooldown ${snapshot.sprintCooldown.toFixed(1)} s` : '',
         snapshot.attackCooldown > 0 ? ` · attack cooldown ${snapshot.attackCooldown.toFixed(1)} s` : '',
@@ -282,7 +288,7 @@ function start(): void {
             ? 'Find the Creature. Hold Space or the left mouse button for the flashlight: it drains battery, reveals and damages the Creature, and revives a downed teammate.'
             : 'Battery empty. Your flashlight does nothing until you walk over a green battery block.';
         } else {
-          statusText.textContent = 'Touch Hunters to incapacitate them; down all four to win, or outlast the timer. Hold Space or the left mouse button to sprint: faster, but visible. Being lit staggers you and drains HP.';
+          statusText.textContent = 'Touch Hunters to incapacitate them; down all four to win, or outlast the timer. Hold Space or the left mouse button to sprint: faster, but visible. Being lit staggers you, drains HP, and leaves you burning: you cannot incapacitate anyone while burning.';
         }
         break;
       case 'ended':

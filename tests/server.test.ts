@@ -34,7 +34,7 @@ type Message = {
   self?: string;
   proximity?: string;
   creatureHp?: number;
-  creature?: Position | { position: Position; staggered: boolean; sprinting: boolean };
+  creature?: Position | { position: Position; staggered: boolean; sprinting: boolean; burning: boolean };
   hp?: number;
   attackCooldown?: number;
 };

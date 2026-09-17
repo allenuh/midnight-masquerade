@@ -167,7 +167,8 @@ footer {
 }
 
 /* Creature condition label: plain text, colored only when it changes what a player may do. */
-#creature-state[data-state='STAGGERED'] {
+#creature-state[data-state='STAGGERED'],
+#creature-state[data-state='BURNING'] {
   color: #e46448;
 }
 

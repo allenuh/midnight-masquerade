@@ -51,8 +51,13 @@ export const GAMEPLAY = {
   // The stagger cooldown starts at the same moment as the stagger, so with these values the
   // Creature is frozen for 1 s and then has 5 s of light exposure that cannot stagger it again.
   // attackCooldownSeconds follows every successful tag: one Hunter can go down per cooldown.
+  // Every flashlight hit sets the burn to burnSeconds, and a burning Creature cannot tag.
+  // Light held on it keeps the timer at full, so this is how long after the beam leaves
+  // before the Creature is dangerous again. Burning has no cooldown and is independent of
+  // the stagger and the reveal.
   creature: {
     maxHp: 100, staggerSeconds: 1, staggerCooldownSeconds: 6, visibilityLingerSeconds: 0.5, attackCooldownSeconds: 1,
+    burnSeconds: 3,
   },
   // Creature sprint (the GDD's Dash): held Space / left mouse button replaces speed.creature with
   // sprint.speed and reveals the Creature. The cooldown runs after every sprint before the next.

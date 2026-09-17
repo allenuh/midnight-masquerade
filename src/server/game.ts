@@ -17,6 +17,7 @@ export type PlayerId = string;
 //   cooldown  (staggerCooldownTicks > 0) a flashlight hit damages and reveals but cannot stagger
 //   sprint cooldown (sprintCooldownTicks > 0) the held sprint button does nothing
 //   attack cooldown (attackCooldownTicks > 0) contact cannot incapacitate another Hunter
+//   burning   (burnTicks > 0)            a flashlight hit was recent: contact cannot incapacitate
 export type CreatureState = {
   hp: number;
   lit: boolean; // at least one flashlight reached the Creature during the last step
@@ -26,6 +27,7 @@ export type CreatureState = {
   staggerCooldownTicks: number;
   sprintCooldownTicks: number;
   attackCooldownTicks: number;
+  burnTicks: number;
 };
 
 // Team state is two flags per Hunter: `down` (incapacitated: no movement, turning, light,
@@ -109,13 +111,14 @@ export const activePickups = (game: Game): number[] => (game.pickup.at === null 
 export const isRevealed = (state: CreatureState): boolean => state.revealTicks > 0;
 export const isStaggered = (state: CreatureState): boolean => state.staggerTicks > 0;
 export const isOnStaggerCooldown = (state: CreatureState): boolean => state.staggerCooldownTicks > 0;
+export const isBurning = (state: CreatureState): boolean => state.burnTicks > 0;
 export const activeHunters = (game: Game): Hunter[] => game.hunters.filter((hunter) => !hunter.down);
 export const downedHunters = (game: Game): Hunter[] => game.hunters.filter((hunter) => hunter.down);
 export const allHuntersDown = (game: Game): boolean => game.hunters.length > 0 && game.hunters.every((hunter) => hunter.down);
 
 const freshCreatureState = (): CreatureState => ({
   hp: GAMEPLAY.creature.maxHp, lit: false, sprinting: false,
-  revealTicks: 0, staggerTicks: 0, staggerCooldownTicks: 0, sprintCooldownTicks: 0, attackCooldownTicks: 0,
+  revealTicks: 0, staggerTicks: 0, staggerCooldownTicks: 0, sprintCooldownTicks: 0, attackCooldownTicks: 0, burnTicks: 0,
 });
 
 // A round starts with an empty map: Hunters are on a full charge, so the first battery
@@ -323,7 +326,8 @@ function endRound(game: Game, result: RoundResult): void {
 // sprinting); one tag is resolved; batteries are collected; the flashlights and the sprint
 // reveal are applied; revival exposure accumulates; batteries drain; the round result is
 // evaluated. A tag that occurs this step therefore still downs the Hunter even when the
-// same step would have revealed the Creature, and that Hunter's beam is void from this step on.
+// same step would have revealed the Creature or set it burning, and that Hunter's beam is
+// void from this step on.
 export function stepGame(game: Game): void {
   if (game.roundState === 'reveal') {
     game.revealTicks = Math.max(0, game.revealTicks - 1);
@@ -352,6 +356,7 @@ export function stepGame(game: Game): void {
   state.staggerCooldownTicks = Math.max(0, state.staggerCooldownTicks - 1);
   state.sprintCooldownTicks = Math.max(0, state.sprintCooldownTicks - 1);
   state.attackCooldownTicks = Math.max(0, state.attackCooldownTicks - 1);
+  state.burnTicks = Math.max(0, state.burnTicks - 1);
 
   // Incapacitated Hunters neither turn nor move; their input is empty and rejected.
   const huntersBefore = game.hunters.map((hunter) => hunter.position);
@@ -372,11 +377,11 @@ export function stepGame(game: Game): void {
     ? constrainToWalls(game.world, creature.position)
     : move(game.world, creature.position, creature.input, sprinting ? GAMEPLAY.sprint.speed : GAMEPLAY.speed.creature);
 
-  // Tag: a staggered Creature cannot attack, and every tag starts the attack cooldown,
-  // so at most one Hunter goes down per cooldown. With two active Hunters in contact in
-  // the same step, the lower slot (H1 first) is the one downed. Contact with a Hunter
-  // that is already down does nothing.
-  if (!isStaggered(state) && state.attackCooldownTicks === 0) {
+  // Tag: a staggered or burning Creature cannot attack, and every tag starts the attack
+  // cooldown, so at most one Hunter goes down per cooldown. With two active Hunters in
+  // contact in the same step, the lower slot (H1 first) is the one downed. Contact with a
+  // Hunter that is already down does nothing.
+  if (!isStaggered(state) && !isBurning(state) && state.attackCooldownTicks === 0) {
     const target = game.hunters.find((hunter, index) =>
       !hunter.down && spheresTouchDuringStep(huntersBefore[index], hunter.position, creatureBefore, creature.position));
     if (target) {
@@ -431,6 +436,9 @@ export function stepGame(game: Game): void {
       state.staggerTicks = secondsToTicks(GAMEPLAY.creature.staggerSeconds);
       state.staggerCooldownTicks = secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds);
     }
+    // Every hit, in or out of the stagger cooldown, restarts the burn in full: it counts
+    // down only from the last lit step, and there is no cooldown gating it.
+    state.burnTicks = secondsToTicks(GAMEPLAY.creature.burnSeconds);
   }
   // A sprinting Creature is revealed exactly like a lit one and shares its linger, so
   // tapping the button cannot flicker it in and out of the Hunters' view. Sprinting
@@ -513,7 +521,8 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     // linger expires the key is gone, not merely flagged invisible.
     if (isRevealed(state)) {
       snapshot.creature = {
-        position: copyPosition(game.creature.position), staggered: isStaggered(state), sprinting: state.sprinting,
+        position: copyPosition(game.creature.position),
+        staggered: isStaggered(state), sprinting: state.sprinting, burning: isBurning(state),
       };
     }
     return snapshot;
@@ -530,5 +539,7 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     sprinting: state.sprinting,
     sprintCooldown: state.sprintCooldownTicks * STEP_SECONDS,
     attackCooldown: state.attackCooldownTicks * STEP_SECONDS,
+    burning: isBurning(state),
+    burnRemaining: state.burnTicks * STEP_SECONDS,
   };
 }

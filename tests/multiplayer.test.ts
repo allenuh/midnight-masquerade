@@ -426,7 +426,7 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
   const seenAt = { ...game.creature!.position };
   for (let slot = 0; slot < 4; slot++) {
     const view = hunterView(game, slot);
-    assert.deepEqual(view.creature, { position: seenAt, staggered: false, sprinting: true });
+    assert.deepEqual(view.creature, { position: seenAt, staggered: false, sprinting: true, burning: false });
     assert.equal(view.creatureHp, GAMEPLAY.creature.maxHp);
     assertHunterPayload(view);
   }
@@ -434,7 +434,7 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
   for (let tick = 1; tick < lingerTicks; tick++) {
     step(game, 1);
     for (let slot = 0; slot < 4; slot++) {
-      assert.deepEqual(hunterView(game, slot).creature, { position: seenAt, staggered: false, sprinting: false });
+      assert.deepEqual(hunterView(game, slot).creature, { position: seenAt, staggered: false, sprinting: false, burning: false });
     }
   }
   step(game, 1);

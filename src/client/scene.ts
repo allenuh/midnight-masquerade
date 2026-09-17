@@ -34,6 +34,9 @@ const TEAMMATE_COLOR = '#8fa3b8';
 const DOWN_COLOR = '#8a3a4a';
 // A downed Hunter is the same sphere squashed flat onto the floor.
 const DOWN_HEIGHT = 0.35;
+// The Creature's body, and the red it turns while burning (unable to tag).
+const CREATURE_COLOR = '#df9460';
+const CREATURE_BURNING_COLOR = '#d23a2a';
 // Battery pickup: a small upright block, deliberately unlike any player colour.
 const PICKUP_COLOR = '#6f9a52';
 const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
@@ -158,15 +161,13 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
   // The Creature mesh exists only while this client holds a Creature position:
   // always for the Creature itself, and for a Hunter only while the server
   // says the Creature is revealed. There is no hidden mesh, shadow, or reflection.
-  let creature: { group: Group; outline: Mesh; ring: Mesh } | null = null;
+  let creature: { group: Group; material: MeshLambertMaterial; outline: Mesh; ring: Mesh } | null = null;
 
-  function ensureCreature(): { group: Group; outline: Mesh; ring: Mesh } {
+  function ensureCreature(): { group: Group; material: MeshLambertMaterial; outline: Mesh; ring: Mesh } {
     if (creature) return creature;
     const group = new Group();
-    group.add(new Mesh(
-      new OctahedronGeometry(GAMEPLAY.playerRadius),
-      new MeshLambertMaterial({ color: '#df9460', flatShading: true }),
-    ));
+    const material = new MeshLambertMaterial({ color: CREATURE_COLOR, flatShading: true });
+    group.add(new Mesh(new OctahedronGeometry(GAMEPLAY.playerRadius), material));
     // Stagger feedback: a white wireframe shell around the same shape.
     const outline = new Mesh(
       new OctahedronGeometry(GAMEPLAY.playerRadius + 3),
@@ -184,7 +185,7 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     ring.visible = false;
     group.add(ring);
     scene.add(group);
-    creature = { group, outline, ring };
+    creature = { group, material, outline, ring };
     return creature;
   }
 
@@ -224,11 +225,13 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     for (const [index, mesh] of pickups.entries()) mesh.visible = snapshot?.pickups.includes(index) ?? false;
 
     const creatureView = snapshot?.role === 'creature'
-      ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting }
+      ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }
       : snapshot?.creature ?? null;
     if (creatureView) {
-      const { group, outline, ring } = ensureCreature();
+      const { group, material, outline, ring } = ensureCreature();
       group.position.set(creatureView.position.x, creatureView.position.y, creatureView.position.z);
+      // Burning feedback: the body itself turns red while the Creature cannot tag.
+      material.color.set(creatureView.burning ? CREATURE_BURNING_COLOR : CREATURE_COLOR);
       outline.visible = creatureView.staggered;
       ring.visible = creatureView.sprinting;
     } else {

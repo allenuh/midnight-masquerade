@@ -5,6 +5,8 @@ import type { Position } from '../src/shared/protocol.js';
 import { constrainToWalls, distance3D, sphereInCone } from '../src/server/spatial.js';
 import {
   flashlightReaches,
+  abandonRound,
+  isBurning,
   isOnStaggerCooldown,
   isRevealed,
   isStaggered,
@@ -17,7 +19,7 @@ import {
 } from '../src/server/game.js';
 import {
   HUNTER_PAYLOAD_KEYS, PLAYERS, closeTo, creatureId, creatureView, groundPosition, groundedY, hold, hunterId, hunterView,
-  input, ownView, positions, stageGame, step,
+  input, ownView, positions, stageGame, startedGame, step,
   TEST_WORLD,
 } from './helpers/game.js';
 
@@ -26,6 +28,7 @@ const damagePerTick = GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate;
 const staggerTicks = secondsToTicks(GAMEPLAY.creature.staggerSeconds);
 const cooldownTicks = secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds);
 const lingerTicks = secondsToTicks(GAMEPLAY.creature.visibilityLingerSeconds);
+const burnTicks = secondsToTicks(GAMEPLAY.creature.burnSeconds);
 const sprintCooldownTicks = secondsToTicks(GAMEPLAY.sprint.cooldownSeconds);
 const creatureStep = GAMEPLAY.speed.creature / GAMEPLAY.tickRate;
 const sprintStep = GAMEPLAY.sprint.speed / GAMEPLAY.tickRate;
@@ -135,7 +138,7 @@ test('the first flashlight hit staggers the Creature: it cannot move or tag unti
   closeTo(creaturePosition(game).x - frozen.x, GAMEPLAY.speed.creature / GAMEPLAY.tickRate);
 });
 
-test('contact with a staggered Creature is not a tag, but it can tag again once free', () => {
+test('contact with a staggered or burning Creature is not a tag, but it can tag again once free', () => {
   // The Creature starts a short gap in front of the Hunter, inside the beam.
   const gap = 10;
   const game = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + gap, LANE_HUNTER.z));
@@ -149,12 +152,22 @@ test('contact with a staggered Creature is not a tag, but it can tag again once 
   assert.equal(game.hunters[0].down, false);
   assert.equal(game.roundState, 'running');
   assert.equal(game.result, null);
-  // Still overlapping on the last staggered tick: no tag. The tick the stagger expires: tagged.
+  // Still overlapping on the last staggered tick: no tag. The stagger expires, but the
+  // single hit left the Creature burning for longer than that: still no tag while it
+  // burns. The tick the burn expires: tagged.
+  assert.ok(burnTicks > staggerTicks, 'the burn must outlast the stagger for this test');
   step(game, staggerTicks - walkTicks - 1);
   assert.equal(isStaggered(game.creatureState), true);
   assert.equal(game.hunters[0].down, false);
   step(game, 1);
   assert.equal(isStaggered(game.creatureState), false);
+  assert.equal(isBurning(game.creatureState), true);
+  assert.equal(game.hunters[0].down, false, 'free of the stagger but still burning');
+  step(game, burnTicks - staggerTicks - 1);
+  assert.equal(isBurning(game.creatureState), true);
+  assert.equal(game.hunters[0].down, false);
+  step(game, 1);
+  assert.equal(isBurning(game.creatureState), false);
   assert.equal(game.hunters[0].down, true);
   assert.equal(game.roundState, 'running', 'three Hunters are still active');
   assert.equal(game.result, null);
@@ -200,7 +213,7 @@ test('the Creature stays visible for the linger period, then leaves the Hunter p
   step(game, 1, { light: true });
   const revealedAt = { ...creaturePosition(game) };
   const revealed = hunterView(game);
-  assert.deepEqual(revealed.creature, { position: revealedAt, staggered: true, sprinting: false });
+  assert.deepEqual(revealed.creature, { position: revealedAt, staggered: true, sprinting: false, burning: true });
   assert.equal(creatureView(game).revealed, true);
 
   // Light off: every step of the linger still carries the position.
@@ -455,7 +468,7 @@ test('a sprinting Creature is revealed to the Hunter without any light, then lin
   assert.equal(isRevealed(game.creatureState), true);
   const seen = hunterView(game);
   assert.equal(ownView(seen).light, false);
-  assert.deepEqual(seen.creature, { position: { ...creaturePosition(game) }, staggered: false, sprinting: true });
+  assert.deepEqual(seen.creature, { position: { ...creaturePosition(game) }, staggered: false, sprinting: true, burning: false });
   assert.equal(seen.creatureHp, GAMEPLAY.creature.maxHp);
   const own = creatureView(game);
   assert.equal(own.sprinting, true);
@@ -475,7 +488,7 @@ test('a sprinting Creature is revealed to the Hunter without any light, then lin
   // Release: the same linger as after the light, then the key is gone entirely.
   for (let tick = 1; tick < lingerTicks; tick++) {
     step(game, 1);
-    assert.deepEqual(hunterView(game).creature, { position: lastSeen, staggered: false, sprinting: false }, `linger tick ${tick}`);
+    assert.deepEqual(hunterView(game).creature, { position: lastSeen, staggered: false, sprinting: false, burning: false }, `linger tick ${tick}`);
     assert.equal(creatureView(game).revealed, true);
     assert.equal(creatureView(game).sprinting, false);
   }
@@ -585,4 +598,114 @@ test('a sprinting Creature can still tag; a sprint in the tag step reveals it un
   assert.equal(creatureView(decisive).result, 'caught');
   assert.equal(isRevealed(decisive.creatureState), false);
   assert.equal('creature' in hunterView(decisive), false);
+});
+
+// Burning: a separate countdown started by every flashlight hit. It neither freezes nor
+// reveals the Creature; it only forbids incapacitating Hunters until it expires.
+test('a flashlight hit sets the Creature burning: it outlives the stagger and the linger, and expires on its own timer', () => {
+  const game = huntGame(LANE_HUNTER, LANE_CREATURE);
+  assert.ok(burnTicks > staggerTicks && burnTicks > lingerTicks, 'the burn outlasts the stagger and the linger');
+  step(game, 1, { light: true });
+  assert.equal(isBurning(game.creatureState), true);
+  assert.equal(game.creatureState.burnTicks, burnTicks);
+  assert.equal(hunterView(game).creature?.burning, true);
+  assert.equal(creatureView(game).burning, true);
+  closeTo(creatureView(game).burnRemaining, GAMEPLAY.creature.burnSeconds);
+
+  // The stagger ends while the burn runs: the Creature moves freely, still burning.
+  step(game, staggerTicks - 1);
+  step(game, 1, {}, { right: true });
+  assert.equal(isStaggered(game.creatureState), false);
+  assert.equal(isBurning(game.creatureState), true);
+  const before = creaturePosition(game).x;
+  step(game, 1, {}, { right: true });
+  closeTo(creaturePosition(game).x - before, creatureStep);
+  // The linger expired long ago: the Hunter payload carries no Creature and no burn.
+  assert.equal(isRevealed(game.creatureState), false);
+  const hidden = hunterView(game);
+  assert.equal('creature' in hidden, false);
+  assert.equal(JSON.stringify(hidden).includes('burn'), false);
+  assert.equal(creatureView(game).burning, true, 'the Creature itself still knows');
+
+  // Exactly burnTicks steps after the hit the burn is gone.
+  step(game, burnTicks - staggerTicks - 2);
+  assert.equal(isBurning(game.creatureState), true);
+  assert.equal(game.creatureState.burnTicks, 1);
+  step(game, 1);
+  assert.equal(isBurning(game.creatureState), false);
+  assert.equal(creatureView(game).burning, false);
+  assert.equal(creatureView(game).burnRemaining, 0);
+});
+
+test('a burning Creature cannot incapacitate a Hunter it touches, and can the tick the burn ends', () => {
+  const game = huntGame(LANE_HUNTER, LANE_CREATURE);
+  step(game, 1, { light: true });
+  // Free of the stagger, still burning: park H2 on the Creature for the rest of the burn.
+  step(game, staggerTicks);
+  assert.equal(isStaggered(game.creatureState), false);
+  assert.equal(isBurning(game.creatureState), true);
+  game.hunters[1].position = { ...creaturePosition(game) };
+  for (let tick = staggerTicks + 1; tick < burnTicks; tick++) {
+    step(game, 1);
+    assert.equal(isBurning(game.creatureState), true, `still burning at tick ${tick}`);
+    assert.equal(game.hunters[1].down, false, `no tag while burning at tick ${tick}`);
+    assert.equal(game.stats.incapacitations, 0);
+  }
+  step(game, 1);
+  assert.equal(isBurning(game.creatureState), false);
+  assert.equal(game.hunters[1].down, true);
+  assert.equal(game.stats.incapacitations, 1);
+  assert.equal(game.roundState, 'running');
+});
+
+test('a hit while already burning resets the burn to its full duration, independent of the stagger cooldown', () => {
+  const game = huntGame(LANE_HUNTER, LANE_CREATURE);
+  step(game, 1, { light: true });
+  step(game, burnTicks - 5);
+  assert.equal(game.creatureState.burnTicks, 5);
+  assert.equal(isStaggered(game.creatureState), false);
+  assert.equal(isOnStaggerCooldown(game.creatureState), true, 'the stagger cooldown is still running');
+  // The second hit cannot stagger (cooldown), but it restarts the burn in full.
+  step(game, 1, { light: true });
+  assert.equal(game.creatureState.lit, true);
+  assert.equal(isStaggered(game.creatureState), false);
+  assert.equal(game.creatureState.burnTicks, burnTicks);
+  closeTo(creatureView(game).burnRemaining, GAMEPLAY.creature.burnSeconds);
+  step(game, burnTicks - 1);
+  assert.equal(isBurning(game.creatureState), true);
+  step(game, 1);
+  assert.equal(isBurning(game.creatureState), false);
+});
+
+test('continuous light holds the burn at full; sprinting alone never burns', () => {
+  const game = huntGame(LANE_HUNTER, LANE_CREATURE);
+  for (let tick = 1; tick <= 40; tick++) {
+    step(game, 1, { light: true });
+    assert.equal(game.creatureState.burnTicks, burnTicks, `held at full on lit tick ${tick}`);
+  }
+  // The countdown starts from the last lit step only.
+  step(game, burnTicks - 1);
+  assert.equal(isBurning(game.creatureState), true);
+  step(game, 1);
+  assert.equal(isBurning(game.creatureState), false);
+
+  const sprint = huntGame(SPRINT_HUNTER, SPRINT_CREATURE);
+  step(sprint, 30, {}, { right: true, light: true });
+  assert.equal(sprint.creatureState.sprinting, true);
+  assert.equal(isRevealed(sprint.creatureState), true);
+  assert.equal(isBurning(sprint.creatureState), false);
+  assert.equal(hunterView(sprint).creature?.burning, false);
+  assert.equal(creatureView(sprint).burning, false);
+});
+
+test('a new round and an abandoned round both clear the burn', () => {
+  const game = huntGame(LANE_HUNTER, LANE_CREATURE);
+  step(game, 1, { light: true });
+  assert.equal(isBurning(game.creatureState), true);
+  startRound(game, PLAYERS);
+  assert.equal(game.creatureState.burnTicks, 0);
+  const again = startedGame();
+  again.creatureState.burnTicks = burnTicks;
+  abandonRound(again);
+  assert.equal(again.creatureState.burnTicks, 0);
 });

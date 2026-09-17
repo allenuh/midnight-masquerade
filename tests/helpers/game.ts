@@ -106,7 +106,7 @@ export const HUNTER_PAYLOAD_KEYS = [
 export const CREATURE_PAYLOAD_KEYS = [
   'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
   'creature', 'hp', 'lit', 'revealed', 'staggered',
-  'staggerCooldown', 'sprinting', 'sprintCooldown', 'attackCooldown',
+  'staggerCooldown', 'sprinting', 'sprintCooldown', 'attackCooldown', 'burning', 'burnRemaining',
 ].sort();
 export const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'battery', 'down', 'revive'].sort();
 
@@ -152,9 +152,10 @@ export function assertHunterPayload(value: unknown): void {
     if (!hunter.down) assert.equal(hunter.revive, 0);
   }
   if ('creature' in payload) {
-    assert.deepEqual(Object.keys(payload.creature).sort(), ['position', 'sprinting', 'staggered']);
+    assert.deepEqual(Object.keys(payload.creature).sort(), ['burning', 'position', 'sprinting', 'staggered']);
     assert.deepEqual(Object.keys(payload.creature.position).sort(), ['x', 'y', 'z']);
     assert.equal(typeof payload.creature.staggered, 'boolean');
     assert.equal(typeof payload.creature.sprinting, 'boolean');
+    assert.equal(typeof payload.creature.burning, 'boolean');
   }
 }

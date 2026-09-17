@@ -91,7 +91,7 @@ export type HunterSnapshot = RoundSnapshot & {
   creatureHp: number;
   // Present only while the Creature is revealed (lit or sprinting, or inside the visibility
   // linger). The key is absent otherwise: the Hunter never holds a hidden Creature transform.
-  creature?: { position: Position; staggered: boolean; sprinting: boolean };
+  creature?: { position: Position; staggered: boolean; sprinting: boolean; burning: boolean };
 };
 export type CreatureSnapshot = RoundSnapshot & {
   role: 'creature';
@@ -101,6 +101,7 @@ export type CreatureSnapshot = RoundSnapshot & {
   // staggered: you cannot move or tag. staggerCooldown: seconds until a hit can stagger again.
   // sprinting: you moved at sprint speed this tick. sprintCooldown: seconds until you can sprint.
   // attackCooldown: seconds until contact can incapacitate another Hunter.
+  // burning: a recent flashlight hit; contact cannot incapacitate. burnRemaining: seconds left.
   lit: boolean;
   revealed: boolean;
   staggered: boolean;
@@ -108,5 +109,7 @@ export type CreatureSnapshot = RoundSnapshot & {
   sprinting: boolean;
   sprintCooldown: number;
   attackCooldown: number;
+  burning: boolean;
+  burnRemaining: number;
 };
 export type ServerMessage = RoomMessage | MapMessage | HunterSnapshot | CreatureSnapshot | ErrorMessage;

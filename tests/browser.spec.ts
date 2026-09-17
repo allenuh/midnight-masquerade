@@ -244,7 +244,7 @@ function assertHunterWire(network: Network) {
       problems.push(`pickups ${JSON.stringify(message.pickups)}`);
     }
     if (message.creature) {
-      if (!sameKeys(message.creature, ['position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
+      if (!sameKeys(message.creature, ['burning', 'position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
       if (!sameKeys(message.creature.position, ['x', 'y', 'z']) || message.creature.position.y !== groundedY) problems.push(`creature position ${JSON.stringify(message.creature.position)}`);
     }
   }
@@ -525,8 +525,10 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     await a.page.keyboard.up('Space');
     for (const hunter of hunters) await expect.poll(() => 'creature' in hunter.network.hunter()).toBe(false);
 
-    // Once free, the Creature attacks A: A is down, the round goes on, and everyone sees it.
+    // Once free of the stagger and the burn, the Creature attacks A: A is down, the round
+    // goes on, and everyone sees it.
     await expect.poll(() => creature.network.creature().staggered, { timeout: 10_000 }).toBe(false);
+    await expect.poll(() => creature.network.creature().burning, { timeout: 10_000 }).toBe(false);
     const aId = a.network.hunter().self;
     await drive(creature.page, creaturePosition, positionOf(a), { arrive: 0, running: () => running() && !creature.network.teammate(aId).down });
     for (const player of players) await expect.poll(() => player.network.teammate(aId).down).toBe(true);
