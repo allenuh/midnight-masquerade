@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { HunterView, Position, RoomMessage, ServerMessage } from '../src/shared/protocol.js';
 import { wallDistance } from '../src/shared/raycast.js';
+import { TEST_WORLD } from './helpers/game.js';
 import { findLane, keysToward, type Keys } from './helpers/navigate.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
@@ -17,10 +18,9 @@ const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'battery', 'down'
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 const groundedY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
 const MAX_BATTERY = GAMEPLAY.battery.max;
-const PICKUP_COUNT = GAMEPLAY.batteryPickup.spawns.length;
-const pickupPoint = (index: number): Position => ({
-  x: GAMEPLAY.batteryPickup.spawns[index].x, y: groundedY, z: GAMEPLAY.batteryPickup.spawns[index].z,
-});
+// Battery points come from the loaded map's markers, in the same order the server uses.
+const PICKUP_COUNT = TEST_WORLD.batterySpawns.length;
+const pickupPoint = (index: number): Position => ({ ...TEST_WORLD.batterySpawns[index] });
 
 function observeGame(page: Page) {
   const messages: ServerMessage[] = [];
@@ -162,9 +162,9 @@ function farCorner(others: Position[]): Position {
   const inset = 60;
   const corners = [
     { x: inset, y: groundedY, z: inset },
-    { x: GAMEPLAY.arena.width - inset, y: groundedY, z: inset },
-    { x: inset, y: groundedY, z: GAMEPLAY.arena.depth - inset },
-    { x: GAMEPLAY.arena.width - inset, y: groundedY, z: GAMEPLAY.arena.depth - inset },
+    { x: TEST_WORLD.width - inset, y: groundedY, z: inset },
+    { x: inset, y: groundedY, z: TEST_WORLD.depth - inset },
+    { x: TEST_WORLD.width - inset, y: groundedY, z: TEST_WORLD.depth - inset },
   ];
   return corners.reduce((best, corner) =>
     Math.min(...others.map((other) => distance(corner, other))) > Math.min(...others.map((other) => distance(best, other))) ? corner : best);
@@ -288,6 +288,27 @@ test('five players fill a room, receive private roles, move, see only permitted 
     await expect(second.page.locator('#waiting')).toHaveText('Everyone is here. Waiting for the host to start.');
     await expect(host.page.locator('#start')).toBeEnabled();
 
+    // Map choice: the host has a picker listing the server's catalogue with the test arena
+    // selected; guests see the name. Switching (when another map exists) updates every
+    // page's label and rebuilds the scene, and the arena is what the tests then play on.
+    await expect(host.page.locator('#map')).toBeVisible();
+    await expect(host.page.locator('#map')).toHaveValue('test-arena');
+    await expect(second.page.locator('#map')).toBeHidden();
+    await expect(second.page.locator('#map-name')).toHaveText('Map: Test Arena');
+    const otherMap = host.network.room()!.maps.find((map) => map.id !== 'test-arena');
+    if (otherMap) {
+      await host.page.locator('#map').selectOption(otherMap.id);
+      for (const player of players) await expect(player.page.locator(player === host ? '#map' : '#map-name')).toHaveText(new RegExp(otherMap.name));
+      await expect.poll(() => second.network.room()?.mapId).toBe(otherMap.id);
+      await host.page.locator('#map').selectOption('test-arena');
+      for (const player of players) await expect.poll(() => player.network.room()?.mapId).toBe('test-arena');
+    }
+    for (const player of players) {
+      const maps = player.network.messages.filter((message) => message.type === 'map');
+      expect(maps.length).toBeGreaterThan(0);
+      expect((maps.at(-1) as { map: { name: string } }).map.name).toBe('Test Arena');
+    }
+
     // A sixth client is refused.
     const sixth = await browser.newPage();
     try {
@@ -370,7 +391,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     for (const [axis, negativeKey, positiveKey] of [['z', 'KeyW', 'KeyS'], ['x', 'KeyA', 'KeyD']] as const) {
       // Random spawns may be beside a wall: first move toward the side with more open floor.
       const origin = mover.network.own().position;
-      const clearance = (sign: number) => wallDistance(origin, { x: axis === 'x' ? sign : 0, y: 0, z: axis === 'z' ? sign : 0 }, Infinity);
+      const clearance = (sign: number) => wallDistance(origin, { x: axis === 'x' ? sign : 0, y: 0, z: axis === 'z' ? sign : 0 }, Infinity, TEST_WORLD.wallBoxes);
       const firstSign = clearance(1) >= clearance(-1) ? 1 : -1;
       for (const sign of [firstSign, -firstSign]) {
         const key = sign === 1 ? positiveKey : negativeKey;
@@ -384,7 +405,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     }
     expect(creature.network.teammate(moverId).facing).toBeCloseTo(mover.network.own().facing, 5);
     const creatureStart = { ...creature.network.creature().creature };
-    const creatureSign = wallDistance(creatureStart, { x: 1, y: 0, z: 0 }, Infinity) >= wallDistance(creatureStart, { x: -1, y: 0, z: 0 }, Infinity) ? 1 : -1;
+    const creatureSign = wallDistance(creatureStart, { x: 1, y: 0, z: 0 }, Infinity, TEST_WORLD.wallBoxes) >= wallDistance(creatureStart, { x: -1, y: 0, z: 0 }, Infinity, TEST_WORLD.wallBoxes) ? 1 : -1;
     await creature.page.keyboard.down(creatureSign === 1 ? 'KeyD' : 'KeyA');
     await expect.poll(() => (creature.network.creature().creature.x - creatureStart.x) * creatureSign).toBeGreaterThan(12);
     await creature.page.keyboard.up(creatureSign === 1 ? 'KeyD' : 'KeyA');
@@ -546,7 +567,7 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     for (const player of players) await expect(player.page.locator('#team')).toContainText(`${aId}${player === a ? '*' : ''} ACTIVE`);
     // Revived: A can move again (toward whichever side has more open floor).
     const revivedAt = { ...positionOf(a) };
-    const zClearance = (sign: number) => wallDistance(revivedAt, { x: 0, y: 0, z: sign }, Infinity);
+    const zClearance = (sign: number) => wallDistance(revivedAt, { x: 0, y: 0, z: sign }, Infinity, TEST_WORLD.wallBoxes);
     const zSign = zClearance(1) >= zClearance(-1) ? 1 : -1;
     await a.page.keyboard.down(zSign === 1 ? 'KeyS' : 'KeyW');
     await expect.poll(() => (positionOf(a).z - revivedAt.z) * zSign).toBeGreaterThan(12);

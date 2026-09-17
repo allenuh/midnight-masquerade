@@ -1,4 +1,4 @@
-import { ARENA_OBSTACLES, ARENA_WALLS, type WallBox } from '../shared/arena.js';
+import type { WallBox, World } from '../shared/map/world.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { Position } from '../shared/protocol.js';
 
@@ -6,16 +6,19 @@ export function distance3D(a: Position, b: Position): number {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
-export function constrainToArena(position: Position): Position {
+// Every query here takes the room's World: there is no process-wide arena, because
+// each room may be on a different map.
+export function constrainToArena(world: World, position: Position): Position {
   const radius = GAMEPLAY.playerRadius;
   // Grounded spheres against the inward faces of four axis-aligned 3D boxes.
   // For the rectangular boundary, clamping is the exact solution: it also
   // prevents crossing a thin wall in one step. No general physics engine
   // is needed. Y remains grounded; the prototype has no jump or gravity mechanic.
+  const walls = world.walls;
   return {
-    x: Math.max(ARENA_WALLS.west.max.x + radius, Math.min(ARENA_WALLS.east.min.x - radius, position.x)),
+    x: Math.max(walls.west.max.x + radius, Math.min(walls.east.min.x - radius, position.x)),
     y: GAMEPLAY.arena.floorY + radius,
-    z: Math.max(ARENA_WALLS.north.max.z + radius, Math.min(ARENA_WALLS.south.min.z - radius, position.z)),
+    z: Math.max(walls.north.max.z + radius, Math.min(walls.south.min.z - radius, position.z)),
   };
 }
 
@@ -49,16 +52,16 @@ function pushSphereOutOfBox(position: Position, box: WallBox, radius: number): P
   return { ...position, [exit.axis]: exit.value };
 }
 
-export function constrainToWalls(position: Position): Position {
-  let constrained = constrainToArena(position);
+export function constrainToWalls(world: World, position: Position): Position {
+  let constrained = constrainToArena(world, position);
   // Two passes settle a sphere touching two obstacles at once (an inside corner).
   // Per-tick steps are shorter than every wall thickness, so nothing tunnels.
   for (let pass = 0; pass < 2; pass++) {
-    for (const box of ARENA_OBSTACLES) {
+    for (const box of world.obstacles) {
       constrained = pushSphereOutOfBox(constrained, box, GAMEPLAY.playerRadius);
     }
   }
-  return constrainToArena(constrained);
+  return constrainToArena(world, constrained);
 }
 
 // True when a sphere overlaps the flashlight cone: it starts within range and

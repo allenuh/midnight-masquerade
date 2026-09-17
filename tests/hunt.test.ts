@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ARENA_OBSTACLES } from '../src/shared/arena.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { Position } from '../src/shared/protocol.js';
 import { constrainToWalls, distance3D, sphereInCone } from '../src/server/spatial.js';
@@ -19,6 +18,7 @@ import {
 import {
   HUNTER_PAYLOAD_KEYS, PLAYERS, closeTo, creatureId, creatureView, groundPosition, groundedY, hold, hunterId, hunterView,
   input, ownView, positions, stageGame, step,
+  TEST_WORLD,
 } from './helpers/game.js';
 
 const radius = GAMEPLAY.playerRadius;
@@ -54,13 +54,13 @@ const hunterFacing = (game: Game) => game.hunters[0].facing;
 
 test('a Creature inside the flashlight cone and range is detected', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
-  assert.equal(flashlightReaches(hunterPosition(game), hunterFacing(game), creaturePosition(game)), true);
+  assert.equal(flashlightReaches(TEST_WORLD, hunterPosition(game), hunterFacing(game), creaturePosition(game)), true);
   // The cone edge counts when any part of the sphere overlaps it.
   const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
   const onEdge = groundPosition(LANE_HUNTER.x + 100 * Math.cos(halfAngle), LANE_HUNTER.z + 100 * Math.sin(halfAngle));
-  assert.equal(flashlightReaches(LANE_HUNTER, EAST, onEdge), true);
+  assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, onEdge), true);
   const justInsideRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + radius - 1, LANE_HUNTER.z);
-  assert.equal(flashlightReaches(LANE_HUNTER, EAST, justInsideRange), true);
+  assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, justInsideRange), true);
   step(game, 1, { light: true });
   assert.equal(game.creatureState.lit, true);
   assert.equal(isRevealed(game.creatureState), true);
@@ -70,13 +70,13 @@ test('a Creature outside the cone angle, beyond range, or behind the Hunter is n
   const wide = 45 * (Math.PI / 180);
   const outsideAngle = groundPosition(LANE_HUNTER.x + 100 * Math.cos(wide), LANE_HUNTER.z + 100 * Math.sin(wide));
   assert.equal(sphereInCone(LANE_HUNTER, EAST, outsideAngle, radius), false);
-  assert.equal(flashlightReaches(LANE_HUNTER, EAST, outsideAngle), false);
+  assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, outsideAngle), false);
   const beyondRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + radius + 1, LANE_HUNTER.z);
-  assert.equal(flashlightReaches(LANE_HUNTER, EAST, beyondRange), false);
+  assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, beyondRange), false);
   const behind = groundPosition(LANE_HUNTER.x - 60, LANE_HUNTER.z);
-  assert.equal(flashlightReaches(LANE_HUNTER, EAST, behind), false);
+  assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, behind), false);
   // Facing north instead: the same east-side Creature is now outside the cone.
-  assert.equal(flashlightReaches(LANE_HUNTER, -Math.PI / 2, LANE_CREATURE), false);
+  assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, -Math.PI / 2, LANE_CREATURE), false);
 
   const game = huntGame(LANE_HUNTER, beyondRange);
   step(game, 30, { light: true });
@@ -88,9 +88,9 @@ test('a Creature outside the cone angle, beyond range, or behind the Hunter is n
 
 test('a wall blocks the flashlight even when the Creature is inside the cone geometry', () => {
   assert.equal(sphereInCone(WALL_HUNTER, EAST, WALL_CREATURE, radius), true, 'cone geometry alone would hit');
-  assert.equal(flashlightReaches(WALL_HUNTER, EAST, WALL_CREATURE), false, 'the slab blocks line of sight');
+  assert.equal(flashlightReaches(TEST_WORLD, WALL_HUNTER, EAST, WALL_CREATURE), false, 'the slab blocks line of sight');
   // Through the opening beside the slab the identical offset is lit.
-  assert.equal(flashlightReaches(groundPosition(280, 180), EAST, groundPosition(380, 180)), true);
+  assert.equal(flashlightReaches(TEST_WORLD, groundPosition(280, 180), EAST, groundPosition(380, 180)), true);
 
   const game = huntGame(WALL_HUNTER, WALL_CREATURE);
   step(game, 30, { light: true });
@@ -284,7 +284,7 @@ test('the Creature tagging the Hunter still downs it, even in the same step the 
   // Same geometry with the light held: the Creature is in the cone, yet the tag
   // resolves first and the downed Hunter's flashlight is never applied.
   const raced = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + 5, LANE_HUNTER.z));
-  assert.equal(flashlightReaches(hunterPosition(raced), hunterFacing(raced), creaturePosition(raced)), true);
+  assert.equal(flashlightReaches(TEST_WORLD, hunterPosition(raced), hunterFacing(raced), creaturePosition(raced)), true);
   step(raced, 1, { light: true }, { left: true });
   assert.equal(raced.hunters[0].down, true);
   assert.equal(raced.roundState, 'running');
@@ -296,7 +296,16 @@ test('the Creature tagging the Hunter still downs it, even in the same step the 
 });
 
 test('players collide with interior walls, slide along them, and are never placed inside one', () => {
-  const [northSlab, , , westSlab] = ARENA_OBSTACLES;
+  // The interior walls come from the map, so find the two this test drives into by the
+  // point they contain rather than by their position in the list.
+  const slabContaining = (x: number, z: number) => {
+    const box = TEST_WORLD.obstacles.find((candidate) =>
+      x >= candidate.min.x && x <= candidate.max.x && z >= candidate.min.z && z <= candidate.max.z);
+    assert.ok(box, `the map has an interior wall at (${x}, ${z})`);
+    return box;
+  };
+  const westSlab = slabContaining(330, 300);
+  const northSlab = slabContaining(540, 150);
   for (const role of ['hunter', 'creature'] as const) {
     const positionOf = (game: Game) => (role === 'hunter' ? hunterPosition(game) : creaturePosition(game));
     // Straight into the west face of the west slab: stops with the sphere touching it.
@@ -325,16 +334,16 @@ test('players collide with interior walls, slide along them, and are never place
   assert.equal(hunterPosition(cornered).x, 540);
 
   // A position overlapping a slab is pushed out to a non-overlapping one.
-  const inside = constrainToWalls(groundPosition(328, 300));
+  const inside = constrainToWalls(TEST_WORLD, groundPosition(328, 300));
   assert.ok(inside.x <= westSlab.min.x - radius || inside.x >= westSlab.max.x + radius);
   assert.equal(inside.y, groundedY);
   // Clear positions are returned unchanged, so idle steps never drift.
-  assert.deepEqual(constrainToWalls(groundPosition(300, 300)), groundPosition(300, 300));
+  assert.deepEqual(constrainToWalls(TEST_WORLD, groundPosition(300, 300)), groundPosition(300, 300));
 
   for (let round = 0; round < 200; round++) {
     startRound(cornered, PLAYERS);
     for (const spawn of [creaturePosition(cornered), ...cornered.hunters.map((hunter) => hunter.position)]) {
-      assert.deepEqual(constrainToWalls(spawn), spawn, `spawn overlaps a wall: ${JSON.stringify(spawn)}`);
+      assert.deepEqual(constrainToWalls(TEST_WORLD, spawn), spawn, `spawn overlaps a wall: ${JSON.stringify(spawn)}`);
       assert.equal(spawn.y, groundedY);
     }
   }
@@ -369,9 +378,9 @@ test('the Hunter turns gradually toward the held direction at the configured spe
 
   // In the simulation the body moves immediately while the light lags behind; a
   // wall may stop the body without stopping the turn.
-  const game = huntGame(groundPosition(GAMEPLAY.arena.width - radius, 300), groundPosition(100, 60), -Math.PI / 2);
+  const game = huntGame(groundPosition(TEST_WORLD.width - radius, 300), groundPosition(100, 60), -Math.PI / 2);
   step(game, 3, { right: true });
-  assert.equal(hunterPosition(game).x, GAMEPLAY.arena.width - radius);
+  assert.equal(hunterPosition(game).x, TEST_WORLD.width - radius);
   closeTo(hunterFacing(game), Math.min(-Math.PI / 2 + 3 * turnStep, EAST));
   closeTo(ownView(hunterView(game)).facing, hunterFacing(game));
   closeTo(creatureView(game).hunters[0].facing, hunterFacing(game));

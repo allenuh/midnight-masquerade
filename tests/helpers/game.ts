@@ -2,11 +2,21 @@
 // with H1 and the Creature at chosen positions, and role-specific snapshot readers.
 // Nothing here is used by the game itself.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { GAMEPLAY } from '../../src/shared/gameplay-config.js';
+import { parseMap } from '../../src/shared/map/validate.js';
+import { buildWorld } from '../../src/shared/map/world.js';
 import type { HunterSnapshot, HunterView, Position } from '../../src/shared/protocol.js';
 import {
   createGame, setInput, snapshotFor, startRound, stepGame, type Game, type PlayerId,
 } from '../../src/server/game.js';
+
+// Every rule test runs on the pinwheel test arena, whatever map the developer happens to
+// be playing: the staged coordinates below and in the test files assume its layout.
+export const TEST_MAP_PATH = fileURLToPath(new URL('../../maps/test-arena.json', import.meta.url));
+export const TEST_MAP = parseMap(readFileSync(TEST_MAP_PATH, 'utf8'), TEST_MAP_PATH);
+export const TEST_WORLD = buildWorld(TEST_MAP);
 
 export type Keys = { up: boolean; down: boolean; left: boolean; right: boolean; light: boolean };
 
@@ -20,7 +30,7 @@ export const PARKED: readonly Position[] = [groundPosition(700, 560), groundPosi
 
 // A round for the five test players, stepped through the role reveal so it is running.
 export function startedGame(): Game {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   startRound(game, PLAYERS);
   while (game.roundState === 'reveal') stepGame(game);
   assert.equal(game.roundState, 'running');
@@ -121,7 +131,7 @@ export function assertHunterPayload(value: unknown): void {
   // The map holds at most one battery, so this is either empty or a single valid point.
   assert.ok(payload.pickups.length <= 1, 'at most one battery is ever on the map');
   for (const index of payload.pickups) {
-    assert.ok(Number.isInteger(index) && index >= 0 && index < GAMEPLAY.batteryPickup.spawns.length);
+    assert.ok(Number.isInteger(index) && index >= 0 && index < TEST_WORLD.batterySpawns.length);
   }
   assert.equal(payload.hunters.length, GAMEPLAY.players.hunters);
   assert.deepEqual(payload.hunters.map((hunter: { id: string }) => hunter.id), ['H1', 'H2', 'H3', 'H4']);

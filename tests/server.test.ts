@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
+import { loadMapCatalog, type MapCatalog } from '../src/server/maps.js';
 import { ROOM_CODE_PATTERN, createGameServer } from '../src/server/server.js';
+import { MARKER, createEmptyMap } from '../src/shared/map/schema.js';
+import { buildWorld } from '../src/shared/map/world.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { HunterView, Position } from '../src/shared/protocol.js';
 import { wallDistance } from '../src/shared/raycast.js';
-import { HUNTER_PAYLOAD_KEYS, HUNTER_VIEW_KEYS } from './helpers/game.js';
+import { HUNTER_PAYLOAD_KEYS, HUNTER_VIEW_KEYS, TEST_MAP, TEST_MAP_PATH, TEST_WORLD } from './helpers/game.js';
 import { keysToward } from './helpers/navigate.js';
 
 type Message = {
@@ -17,6 +23,9 @@ type Message = {
   players?: number;
   host?: boolean;
   notice?: string | null;
+  maps?: { id: string; name: string }[];
+  mapId?: string;
+  map?: unknown;
   role?: 'hunter' | 'creature';
   roundId?: number;
   roundState?: string;
@@ -114,8 +123,8 @@ function assertHunterMessage(message: Message) {
 
 const own = (message: Message): HunterView => message.hunters!.find((hunter) => hunter.id === message.self)!;
 
-async function startServer(t: test.TestContext) {
-  const { server, close } = createGameServer();
+async function startServer(t: test.TestContext, catalog?: MapCatalog) {
+  const { server, close } = createGameServer(catalog);
   const peers: Peer[] = [];
   t.after(async () => {
     await Promise.all(peers.map((peer) => peer.close()));
@@ -156,7 +165,18 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   host.send({ type: 'create' });
   const created = await host.waitFor((message) => message.type === 'room');
   assert.match(created.code!, ROOM_CODE_PATTERN);
-  assert.deepEqual(created, { type: 'room', code: created.code, players: 1, host: true, notice: null });
+  // The room message also carries the map catalogue and the room's choice. The catalogue
+  // lists whatever the developer has in maps/, so only the test arena's presence is fixed.
+  const roomOf = (message: Message) => {
+    assert.ok(Array.isArray(message.maps) && message.maps.some((map) => map.id === 'test-arena' && map.name === 'Test Arena'));
+    const { maps: _maps, ...rest } = message;
+    return rest;
+  };
+  assert.deepEqual(roomOf(created), { type: 'room', code: created.code, players: 1, host: true, notice: null, mapId: 'test-arena' });
+  // The full map arrived before the room message: the client builds its scene from it.
+  const mapMessage = host.messages.find((message) => message.type === 'map');
+  assert.ok(mapMessage && typeof mapMessage.map === 'object', 'the room map is sent on create');
+  assert.ok(host.messages.indexOf(mapMessage) < host.messages.indexOf(created));
   const code = created.code!;
 
   // A code that cannot exist is rejected without side effects; the real code joins even
@@ -165,8 +185,8 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   second.send({ type: 'join', code: '0000' });
   assert.deepEqual(await second.waitFor((message) => message.type === 'error'), { type: 'error', reason: 'not-found' });
   second.send({ type: 'join', code: code.toLowerCase() });
-  assert.deepEqual(await second.waitFor((message) => message.type === 'room'), { type: 'room', code, players: 2, host: false, notice: null });
-  assert.deepEqual(await host.waitFor((message) => message.type === 'room' && message.players === 2), { type: 'room', code, players: 2, host: true, notice: null });
+  assert.deepEqual(roomOf(await second.waitFor((message) => message.type === 'room')), { type: 'room', code, players: 2, host: false, notice: null, mapId: 'test-arena' });
+  assert.deepEqual(roomOf(await host.waitFor((message) => message.type === 'room' && message.players === 2)), { type: 'room', code, players: 2, host: true, notice: null, mapId: 'test-arena' });
 
   // Starting needs a full room: nothing happens with two players.
   const earlyStart = host.messages.length;
@@ -278,7 +298,7 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   await Promise.all(remaining.map((peer, index) => peer.waitFor((message) => message.type === 'room', leaveStart[index])));
   for (const peer of remaining) {
     const notice = peer.latest()!;
-    assert.deepEqual(notice, { type: 'room', code, players: PLAYER_COUNT - 1, host: peer === host, notice: 'disconnected' });
+    assert.deepEqual(roomOf(notice), { type: 'room', code, players: PLAYER_COUNT - 1, host: peer === host, notice: 'disconnected', mapId: 'test-arena' });
   }
   await sleep(200);
   for (const peer of remaining) assert.equal(peer.latest()!.type, 'room', 'no snapshots without a round');
@@ -329,7 +349,7 @@ test('server stops movement when input messages expire', { timeout: 20_000 }, as
   const start = hunter.messages.length;
   // Random spawns may face a wall: move along X toward the side with more open floor.
   const origin = own(initial).position;
-  const clearance = (sign: number) => wallDistance(origin, { x: sign, y: 0, z: 0 }, Infinity);
+  const clearance = (sign: number) => wallDistance(origin, { x: sign, y: 0, z: 0 }, Infinity, TEST_WORLD.wallBoxes);
   const goRight = clearance(1) >= clearance(-1);
   hunter.send({ type: 'input', roundId: initial.roundId, ...idle, left: !goRight, right: goRight });
   const expired = await hunter.waitFor(() => hunter.messages.length >= start + 20, start);
@@ -345,5 +365,91 @@ test('server stops movement when input messages expire', { timeout: 20_000 }, as
   for (const peer of players) {
     if (peer === hunter) continue;
     assert.deepEqual(peer.latest()!.hunters!.find((view) => view.id === initial.self)!.position, moved);
+  }
+});
+
+test('the host picks the room map between rounds, and every client is sent the map it will play', { timeout: 30_000 }, async (t) => {
+  // A private catalogue with two playable maps, so the test does not depend on what the
+  // developer keeps in maps/. `spare` is a tiny all-Open map with its own spawn markers.
+  const spare = createEmptyMap('Spare', 8, 6);
+  spare.markers = [
+    { type: MARKER.creatureSpawn, x: 7, y: 5 },
+    { type: MARKER.hunterSpawn, x: 0, y: 0 }, { type: MARKER.hunterSpawn, x: 2, y: 0 },
+    { type: MARKER.hunterSpawn, x: 0, y: 2 }, { type: MARKER.hunterSpawn, x: 2, y: 2 },
+  ];
+  const directory = mkdtempSync(join(tmpdir(), 'ccc-select-'));
+  writeFileSync(join(directory, 'test-arena.json'), readFileSync(TEST_MAP_PATH));
+  writeFileSync(join(directory, 'spare.json'), JSON.stringify(spare));
+  const { connect } = await startServer(t, loadMapCatalog(directory, 'test-arena'));
+  const { host, players, code } = await fillRoom(connect);
+  const guest = players.find((peer) => peer !== host)!;
+
+  // Everyone was sent the default map on join, before the room message.
+  for (const peer of players) {
+    const mapMessage = peer.messages.find((message) => message.type === 'map');
+    assert.ok(mapMessage, 'the map arrives on join');
+    assert.equal((mapMessage.map as { name: string }).name, 'Test Arena');
+    assert.equal(peer.latest()!.mapId, 'test-arena');
+    assert.deepEqual(peer.latest()!.maps, [{ id: 'spare', name: 'Spare' }, { id: 'test-arena', name: 'Test Arena' }]);
+  }
+
+  // A guest cannot choose; an unknown id is ignored; the host can. Every peer has seen
+  // the full room first, so the counts below are stable.
+  await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT)));
+  const before = players.map((peer) => peer.messages.length);
+  guest.send({ type: 'selectMap', id: 'spare' });
+  host.send({ type: 'selectMap', id: 'missing' });
+  await sleep(300);
+  players.forEach((peer, index) => assert.equal(peer.messages.length, before[index], 'nothing was sent'));
+
+  host.send({ type: 'selectMap', id: 'spare' });
+  for (const peer of players) {
+    const switched = await peer.waitFor((message) => message.type === 'room' && message.mapId === 'spare');
+    assert.equal(switched.players, PLAYER_COUNT);
+    const mapMessage = peer.messages.slice(before[players.indexOf(peer)]).find((message) => message.type === 'map');
+    assert.ok(mapMessage && (mapMessage.map as { name: string }).name === 'Spare', 'the new map is sent to everyone');
+  }
+
+  // The round then plays on the chosen map: spawns come from its markers, and the arena
+  // is its size, so every position sits inside the 8 x 6 tile floor.
+  host.send({ type: 'start' });
+  const reveals = await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'snapshot')));
+  const spareWorld = buildWorld(spare);
+  const creature = reveals.find((message) => message.role === 'creature')!;
+  assert.ok(spareWorld.creatureSpawns.some((spawn) => spawn.x === (creature.creature as Position).x && spawn.z === (creature.creature as Position).z));
+  for (const view of creature.hunters!) {
+    assert.ok(spareWorld.hunterSpawns.some((spawn) => spawn.x === view.position.x && spawn.z === view.position.z), `${view.id} on a Spare marker`);
+    assert.ok(view.position.x < spareWorld.width && view.position.z < spareWorld.depth);
+  }
+  const roundId = creature.roundId!;
+
+  // Mid-round the choice is refused, so a round is never cut short by a map change.
+  const during = host.messages.length;
+  host.send({ type: 'selectMap', id: 'test-arena' });
+  await sleep(300);
+  assert.ok(!host.messages.slice(during).some((message) => message.type === 'room' || message.type === 'map'));
+  assert.equal(host.latest()!.type, 'snapshot');
+
+  // Between rounds the host may switch back. A guest leaving abandons the round (the
+  // quickest way to a lobby here; the result screen takes the same branch), then the
+  // room switches, a replacement joins and is sent the arena, and the next start is a
+  // new round id with spawns from the arena's markers.
+  await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'running')));
+  await guest.close();
+  await host.waitFor((message) => message.type === 'room' && message.notice === 'disconnected');
+  host.send({ type: 'selectMap', id: 'test-arena' });
+  await host.waitFor((message) => message.type === 'room' && message.mapId === 'test-arena');
+  const replacement = await connect();
+  replacement.send({ type: 'join', code });
+  const joined = await replacement.waitFor((message) => message.type === 'room');
+  assert.equal(joined.mapId, 'test-arena');
+  assert.equal((replacement.messages.find((message) => message.type === 'map')!.map as { name: string }).name, 'Test Arena');
+  await host.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT);
+  host.send({ type: 'start' });
+  const next = await host.waitFor((message) => message.type === 'snapshot' && message.roundId !== roundId);
+  assert.equal(next.roundId, roundId + 1);
+  const arena = buildWorld(TEST_MAP);
+  for (const view of next.hunters!) {
+    assert.ok(arena.hunterSpawns.some((spawn) => spawn.x === view.position.x && spawn.z === view.position.z), `${view.id} back on the arena`);
   }
 });

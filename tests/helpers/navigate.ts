@@ -2,16 +2,17 @@
 // WASD keys using a coarse grid search over the shared wall boxes. Straight-line
 // chasing gets stuck on the interior blockout, so both the socket and browser
 // tests drive the players with this. Nothing here is used by the game itself.
-import { WALL_BOXES } from '../../src/shared/arena.js';
 import { GAMEPLAY } from '../../src/shared/gameplay-config.js';
 import type { Position } from '../../src/shared/protocol.js';
+import { TEST_WORLD } from './game.js';
 
 export type Keys = { up: boolean; down: boolean; left: boolean; right: boolean };
 type Options = { avoid?: Position[]; arrive?: number };
 
 const CELL = 20;
-const COLUMNS = Math.ceil(GAMEPLAY.arena.width / CELL);
-const ROWS = Math.ceil(GAMEPLAY.arena.depth / CELL);
+const WORLD = TEST_WORLD;
+const COLUMNS = Math.ceil(WORLD.width / CELL);
+const ROWS = Math.ceil(WORLD.depth / CELL);
 const CLEARANCE = GAMEPLAY.playerRadius + 4;
 const AVOID_RADIUS = 60;
 const groundY = GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius;
@@ -21,7 +22,7 @@ const cellCenter = (column: number, row: number): Position => ({
 });
 
 function clearOfWalls(point: Position): boolean {
-  return WALL_BOXES.every((box) => {
+  return WORLD.wallBoxes.every((box) => {
     const nearestX = Math.max(box.min.x, Math.min(box.max.x, point.x));
     const nearestZ = Math.max(box.min.z, Math.min(box.max.z, point.z));
     return Math.hypot(point.x - nearestX, point.z - nearestZ) >= CLEARANCE;

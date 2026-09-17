@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import { flashlightRange } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
+import type { World } from '../shared/map/world.js';
 import { segmentBlocked } from '../shared/raycast.js';
 import { constrainToWalls, distance3D, sphereInCone, spheresTouchDuringStep } from './spatial.js';
 import type {
@@ -56,6 +57,8 @@ export type RoundStats = {
 };
 
 export type Game = {
+  // The map this room plays on: walls, spawn markers, battery points. Shared, read-only.
+  world: World;
   hunters: Hunter[]; // empty in the lobby; H1..H4 in join order during a round
   creature: Creature | null;
   creatureState: CreatureState;
@@ -93,10 +96,10 @@ export const PICKUP_FIRST_SPAWN_TICKS = secondsToTicks(GAMEPLAY.batteryPickup.fi
 export const PICKUP_RESPAWN_TICKS = secondsToTicks(GAMEPLAY.batteryPickup.respawnSeconds);
 // Center-to-center distance at which an active Hunter picks a battery up.
 export const PICKUP_REACH = GAMEPLAY.playerRadius + GAMEPLAY.batteryPickup.radius;
-// World positions of the public pickup points, grounded like every other sphere.
-export const PICKUP_POSITIONS: readonly Position[] = GAMEPLAY.batteryPickup.spawns.map(({ x, z }) => ({
-  x, y: GAMEPLAY.arena.floorY + GAMEPLAY.playerRadius, z,
-}));
+// Where a battery is allowed to appear: the room's map's Battery Spawn markers, in file
+// order, which is what the pickup index on the wire refers to. The map only declares the
+// eligible points; the spawn delay, the random choice, and collection stay in stepGame.
+export const pickupPositions = (game: Game): readonly Position[] => game.world.batterySpawns;
 
 export const emptyInput = (): InputState => ({ up: false, down: false, left: false, right: false, light: false });
 // A Hunter's beam exists only while it is active, holding the button, and has battery left.
@@ -126,8 +129,9 @@ const freshStats = (): RoundStats => ({
   lightTicks: { H1: 0, H2: 0, H3: 0, H4: 0 },
 });
 
-export function createGame(): Game {
+export function createGame(world: World): Game {
   return {
+    world,
     hunters: [],
     creature: null,
     creatureState: freshCreatureState(),
@@ -141,42 +145,27 @@ export function createGame(): Game {
   };
 }
 
-function randomPosition(): Position {
-  const { arena, playerRadius } = GAMEPLAY;
-  let candidate: Position;
-  let attempts = 0;
-  do {
-    candidate = {
-      x: randomInt(playerRadius, arena.width - playerRadius + 1),
-      y: arena.floorY + playerRadius,
-      z: randomInt(playerRadius, arena.depth - playerRadius + 1),
-    };
-    attempts += 1;
-    // Reject spawns overlapping an obstacle; constraining a clear spawn changes nothing.
-  } while (distance3D(candidate, constrainToWalls(candidate)) > 0 && attempts < 100);
-  return constrainToWalls(candidate);
-}
-
-// Private independent randomness: Hunter coordinates / public round IDs do not determine
-// the Creature's spawn. The Creature is placed first so every Hunter can be kept outside
-// its UNEASY radius; Hunters are also kept from overlapping each other. No battery is on
-// the map at round start, so there is nothing to keep a spawn clear of.
-function spawnPositions(): { creature: Position; hunters: Position[] } {
-  const creature = randomPosition();
-  const hunters: Position[] = [];
-  for (let slot = 0; slot < GAMEPLAY.players.hunters; slot++) {
-    let candidate: Position;
-    let attempts = 0;
-    do {
-      candidate = randomPosition();
-      attempts += 1;
-    } while (attempts < 100 && (
-      distance3D(candidate, creature) <= GAMEPLAY.proximity.uneasy ||
-      hunters.some((other) => distance3D(candidate, other) < 4 * GAMEPLAY.playerRadius)
-    ));
-    hunters.push(candidate);
+// Where players start comes from the map's spawn markers, chosen here with private server
+// randomness so neither Hunter coordinates nor public round ids determine the Creature's
+// start. Pure over its inputs so it can be tested against any world. The Creature takes
+// one Creature Spawn at random; each Hunter takes a distinct Hunter Spawn from a shuffled
+// copy, so a round with fewer Hunters than markers simply leaves the rest empty, and one
+// with more Hunters than markers fails outright rather than stacking two on one tile.
+export function chooseSpawns(
+  creatureSpawns: readonly Position[], hunterSpawns: readonly Position[], hunterCount: number,
+): { creature: Position; hunters: Position[] } {
+  if (creatureSpawns.length === 0) throw new Error('Map has no Creature Spawn marker to start the Creature on');
+  if (hunterCount > hunterSpawns.length) {
+    throw new Error(`Map has ${hunterSpawns.length} Hunter Spawn marker(s) but the round needs ${hunterCount}`);
   }
-  return { creature, hunters };
+  const creature = { ...creatureSpawns[randomInt(creatureSpawns.length)] };
+  // Fisher-Yates over a copy; the first hunterCount entries are the assignment.
+  const shuffled = hunterSpawns.map((spawn) => ({ ...spawn }));
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    const swap = randomInt(index + 1);
+    [shuffled[index], shuffled[swap]] = [shuffled[swap], shuffled[index]];
+  }
+  return { creature, hunters: shuffled.slice(0, hunterCount) };
 }
 
 export function roleOf(game: Game, player: PlayerId): 'creature' | HunterId | null {
@@ -192,7 +181,8 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
     throw new Error(`A round needs exactly ${PLAYER_COUNT} distinct players`);
   }
   const creatureIndex = randomInt(PLAYER_COUNT);
-  const spawns = spawnPositions();
+  // Rolled fresh on every start, including restarts: no player keeps a spawn between rounds.
+  const spawns = chooseSpawns(game.world.creatureSpawns, game.world.hunterSpawns, players.length - 1);
   game.creature = { player: players[creatureIndex], position: spawns.creature, input: emptyInput() };
   game.hunters = players
     .filter((_, index) => index !== creatureIndex)
@@ -268,13 +258,13 @@ export function setInput(game: Game, player: PlayerId, raw: unknown): boolean {
   return true;
 }
 
-function move(position: Position, input: InputState, speed: number): Position {
+function move(world: World, position: Position, input: InputState, speed: number): Position {
   const dx = Number(input.right) - Number(input.left);
   const dz = Number(input.down) - Number(input.up);
   const length = Math.hypot(dx, dz);
-  if (length === 0) return constrainToWalls(position);
+  if (length === 0) return constrainToWalls(world, position);
   const step = speed * STEP_SECONDS;
-  return constrainToWalls({ x: position.x + dx / length * step, y: position.y, z: position.z + dz / length * step });
+  return constrainToWalls(world, { x: position.x + dx / length * step, y: position.y, z: position.z + dz / length * step });
 }
 
 // Wrap to [-PI, PI).
@@ -317,9 +307,9 @@ export function hunterProximity(game: Game, hunter: Hunter): ProximityState {
 // wall box. The same test decides Creature hits and revival exposure. `range` is the
 // battery stage's reach; it defaults to the full-battery range.
 export function flashlightReaches(
-  hunter: Position, facing: number, target: Position, range: number = GAMEPLAY.flashlight.range,
+  world: World, hunter: Position, facing: number, target: Position, range: number = GAMEPLAY.flashlight.range,
 ): boolean {
-  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius, range) && !segmentBlocked(hunter, target);
+  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius, range) && !segmentBlocked(hunter, target, world.wallBoxes);
 }
 
 function endRound(game: Game, result: RoundResult): void {
@@ -354,7 +344,7 @@ export function stepGame(game: Game): void {
   // allowed: the same point can come up twice in a row.
   if (game.pickup.at === null) {
     game.pickup.spawnTicks = Math.max(0, game.pickup.spawnTicks - 1);
-    if (game.pickup.spawnTicks === 0) game.pickup.at = randomInt(PICKUP_POSITIONS.length);
+    if (game.pickup.spawnTicks === 0) game.pickup.at = randomInt(pickupPositions(game).length);
   }
 
   state.revealTicks = Math.max(0, state.revealTicks - 1);
@@ -368,7 +358,7 @@ export function stepGame(game: Game): void {
   for (const hunter of game.hunters) {
     if (hunter.down) continue;
     hunter.facing = turnToward(hunter.facing, hunter.input);
-    hunter.position = move(hunter.position, hunter.input, GAMEPLAY.speed.hunter);
+    hunter.position = move(game.world, hunter.position, hunter.input, GAMEPLAY.speed.hunter);
   }
 
   // The sprint is re-evaluated every step from the held button: it cannot run while
@@ -379,8 +369,8 @@ export function stepGame(game: Game): void {
   state.sprinting = sprinting;
   const creatureBefore = creature.position;
   creature.position = isStaggered(state)
-    ? constrainToWalls(creature.position)
-    : move(creature.position, creature.input, sprinting ? GAMEPLAY.sprint.speed : GAMEPLAY.speed.creature);
+    ? constrainToWalls(game.world, creature.position)
+    : move(game.world, creature.position, creature.input, sprinting ? GAMEPLAY.sprint.speed : GAMEPLAY.speed.creature);
 
   // Tag: a staggered Creature cannot attack, and every tag starts the attack cooldown,
   // so at most one Hunter goes down per cooldown. With two active Hunters in contact in
@@ -409,7 +399,7 @@ export function stepGame(game: Game): void {
   // respawn countdown, so a battery spawning on the step a Hunter is already standing
   // there is simply collected that same step.
   if (game.pickup.at !== null) {
-    const point = PICKUP_POSITIONS[game.pickup.at];
+    const point = pickupPositions(game)[game.pickup.at];
     const collector = game.hunters.find((hunter) =>
       !hunter.down && distance3D(hunter.position, point) <= PICKUP_REACH);
     if (collector) {
@@ -430,7 +420,7 @@ export function stepGame(game: Game): void {
   // the linger, and the stagger are evaluated once per step regardless of how many
   // beams overlap, so extra Hunters neither multiply damage nor bypass the cooldown.
   state.lit = beams.some(({ hunter, range }) =>
-    flashlightReaches(hunter.position, hunter.facing, creature.position, range));
+    flashlightReaches(game.world, hunter.position, hunter.facing, creature.position, range));
   if (state.lit) {
     state.hp = Math.max(0, state.hp - GAMEPLAY.flashlight.damagePerSecond * STEP_SECONDS);
     // Every lit step refreshes the linger. Only a hit outside the cooldown staggers,
@@ -452,7 +442,7 @@ export function stepGame(game: Game): void {
   for (const downed of game.hunters) {
     if (!downed.down) continue;
     const reaching = beams.filter(({ hunter, range }) =>
-      flashlightReaches(hunter.position, hunter.facing, downed.position, range)).length;
+      flashlightReaches(game.world, hunter.position, hunter.facing, downed.position, range)).length;
     if (reaching === 0) continue;
     downed.reviveTicks += reaching;
     if (downed.reviveTicks >= REVIVE_TICKS) {

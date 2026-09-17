@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ARENA_WALLS } from '../src/shared/arena.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import { constrainToArena, distance3D, spheresTouchDuringStep } from '../src/server/spatial.js';
 import {
@@ -16,6 +15,7 @@ import {
 import {
   CREATURE_PAYLOAD_KEYS, PLAYERS, assertHunterPayload, closeTo, creatureId, creatureView, groundPosition, groundedY,
   hunterId, hunterView, input, ownView, positions, stageGame, type Keys,
+  TEST_WORLD,
 } from './helpers/game.js';
 
 type Role = 'hunter' | 'creature';
@@ -110,7 +110,7 @@ test('opposing keys cancel and WASD moves along X/Z while staying grounded on Y'
 });
 
 test('the entire player shape stays within all four arena boundaries', () => {
-  const { width, depth } = GAMEPLAY.arena;
+  const { width, depth } = TEST_WORLD;
   const radius = GAMEPLAY.playerRadius;
   for (const role of ['hunter', 'creature'] as const) {
     const other = role === 'hunter' ? 'creature' : 'hunter';
@@ -133,16 +133,16 @@ test('the entire player shape stays within all four arena boundaries', () => {
 });
 
 test('sphere collision matches the four shared wall boxes even across a large step', () => {
-  const { width, depth } = GAMEPLAY.arena;
+  const { width, depth, walls } = TEST_WORLD;
   const radius = GAMEPLAY.playerRadius;
   const cases = [
-    { position: groundPosition(-10_000, depth / 2), axis: 'x', sign: -1, face: ARENA_WALLS.west.max.x },
-    { position: groundPosition(width + 10_000, depth / 2), axis: 'x', sign: 1, face: ARENA_WALLS.east.min.x },
-    { position: groundPosition(width / 2, -10_000), axis: 'z', sign: -1, face: ARENA_WALLS.north.max.z },
-    { position: groundPosition(width / 2, depth + 10_000), axis: 'z', sign: 1, face: ARENA_WALLS.south.min.z },
+    { position: groundPosition(-10_000, depth / 2), axis: 'x', sign: -1, face: walls.west.max.x },
+    { position: groundPosition(width + 10_000, depth / 2), axis: 'x', sign: 1, face: walls.east.min.x },
+    { position: groundPosition(width / 2, -10_000), axis: 'z', sign: -1, face: walls.north.max.z },
+    { position: groundPosition(width / 2, depth + 10_000), axis: 'z', sign: 1, face: walls.south.min.z },
   ] as const;
   for (const { position, axis, sign, face } of cases) {
-    const corrected = constrainToArena(position);
+    const corrected = constrainToArena(TEST_WORLD, position);
     closeTo(corrected[axis] + sign * radius, face);
     assert.equal(corrected.y, groundedY);
     assert.ok(corrected.x >= radius && corrected.x <= width - radius);
@@ -249,7 +249,7 @@ test('input flooding does not advance simulation or increase one tick of movemen
 });
 
 test('starting, abandoning, and restarting rounds preserve the primitive round rules', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   assert.equal(game.roundState, 'lobby');
   assert.equal(game.hunters.length, 0);
   assert.ok(game.creature === null);
@@ -304,7 +304,7 @@ test('starting, abandoning, and restarting rounds preserve the primitive round r
 });
 
 test('Hunter payload contains only permitted data in every round state', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   assert.throws(() => snapshotFor(game, PLAYERS[0]), /without a role/);
   startRound(game, PLAYERS);
   for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
@@ -367,7 +367,7 @@ test('swept sphere contact considers vertical separation and vertical crossings'
 
 test('different hidden positions in the same proximity band produce identical Hunter messages', () => {
   const game = runningGame();
-  game.hunters[0].position = groundPosition(GAMEPLAY.arena.width / 2, GAMEPLAY.arena.depth / 2);
+  game.hunters[0].position = groundPosition(TEST_WORLD.width / 2, TEST_WORLD.depth / 2);
   for (const distance of [40, 150, 280, 400]) {
     game.creature!.position = groundPosition(game.hunters[0].position.x + distance, game.hunters[0].position.z);
     const first = JSON.stringify(hunterView(game));

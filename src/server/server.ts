@@ -9,17 +9,19 @@ import {
   MATCH_SECONDS, PLAYER_COUNT, REVIVE_TICKS, STEP_SECONDS, abandonRound, createGame, expireInput,
   hunterProximity, setInput, snapshotFor, startRound, stepGame, type Game,
 } from './game.js';
+import { loadMapCatalog, type MapCatalog, type MapEntry } from './maps.js';
 
 type Client = { id: string; socket: WebSocket; lastInput: number; alive: boolean; room: Room | null };
-// The host's only authority is starting rounds; the simulation never consults it.
-type Room = { code: string; host: Client; players: Client[]; game: Game; lastStart: number };
+// The host's only authority is starting rounds and choosing the map between them; the
+// simulation never consults it. `map` is the catalogue entry the room's game plays on.
+type Room = { code: string; host: Client; players: Client[]; game: Game; map: MapEntry; lastStart: number };
 
 // Room codes avoid characters that are easily confused when read aloud or typed.
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 4;
 export const ROOM_CODE_PATTERN = new RegExp(`^[${CODE_ALPHABET}]{${CODE_LENGTH}}$`);
 
-export function createGameServer() {
+export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
   const server = createServer();
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
   server.on('upgrade', (request, socket, head) => {
@@ -42,8 +44,17 @@ export function createGameServer() {
 
   function broadcastRoom(room: Room, notice: RoomMessage['notice'] = null): void {
     for (const player of room.players) {
-      send(player, { type: 'room', code: room.code, players: room.players.length, host: room.host === player, notice });
+      send(player, {
+        type: 'room', code: room.code, players: room.players.length, host: room.host === player, notice,
+        maps: catalog.summaries, mapId: room.map.id,
+      });
     }
+  }
+
+  // The full map, from which a client builds its scene. Sent to one client on join and to
+  // everyone when the host switches; the client bundles no map of its own.
+  function sendMap(client: Client, room: Room): void {
+    send(client, { type: 'map', map: room.map.map });
   }
 
   function broadcastSnapshots(room: Room): void {
@@ -102,9 +113,27 @@ export function createGameServer() {
   }
 
   function createRoom(client: Client): void {
-    const room: Room = { code: newCode(), host: client, players: [client], game: createGame(), lastStart: -Infinity };
+    const map = catalog.default;
+    const room: Room = {
+      code: newCode(), host: client, players: [client], game: createGame(map.world), map, lastStart: -Infinity,
+    };
     rooms.set(room.code, room);
     client.room = room;
+    sendMap(client, room);
+    broadcastRoom(room);
+  }
+
+  // Host only, and only between rounds: a finished round is dropped (roles forgotten, ids
+  // kept) and the room's game is rebuilt on the new map. During the reveal or a running
+  // round the request is ignored, so a mis-click never cuts a round short.
+  function selectMap(room: Room, id: string): void {
+    const entry = catalog.entries.find((candidate) => candidate.id === id);
+    if (!entry || entry === room.map) return;
+    if (room.game.roundState === 'reveal' || room.game.roundState === 'running') return;
+    if (room.game.roundState === 'ended') abandonRound(room.game);
+    room.map = entry;
+    room.game.world = entry.world;
+    for (const player of room.players) sendMap(player, room);
     broadcastRoom(room);
   }
 
@@ -121,6 +150,7 @@ export function createGameServer() {
     }
     room.players.push(client);
     client.room = room;
+    sendMap(client, room);
     broadcastRoom(room);
   }
 
@@ -166,6 +196,8 @@ export function createGameServer() {
       const code = fields.code.trim().toUpperCase();
       if (ROOM_CODE_PATTERN.test(code)) joinRoom(client, code);
       else send(client, { type: 'error', reason: 'not-found' });
+    } else if (fields.type === 'selectMap' && keys.length === 2 && typeof fields.id === 'string' && room && room.host === client) {
+      selectMap(room, fields.id);
     } else if (
       fields.type === 'start' && keys.length === 1 && room && room.host === client &&
       room.players.length === PLAYER_COUNT && now - room.lastStart >= 500

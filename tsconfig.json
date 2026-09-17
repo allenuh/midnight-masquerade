@@ -11,5 +11,5 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tools/**/*.ts", "vite.config.ts", "playwright.config.ts"]
 }

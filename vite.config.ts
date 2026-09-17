@@ -8,7 +8,9 @@ export default defineConfig({
   server: {
     fs: {
       strict: true,
-      // Server code and private spawn generation are outside the served roots.
+      // Server code, private spawn generation and the map files are outside the served
+      // roots: the client bundles no map and receives the room's map from the server. The
+      // map editor is NOT here, and is not reachable from this root at all.
       allow: [fromRoot('./src/client'), fromRoot('./src/shared')],
     },
   },

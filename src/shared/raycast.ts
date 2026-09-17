@@ -1,9 +1,10 @@
-import { WALL_BOXES, type WallBox } from './arena.js';
+import type { WallBox } from './map/world.js';
 import type { Position } from './protocol.js';
 
 // Straight-line queries against axis-aligned wall boxes. Shared so the server's
 // flashlight line of sight and the client's drawn light cone use identical geometry.
-// Nothing here knows about players or hidden state.
+// Callers pass the boxes of the world they are in: there is no process-wide arena,
+// because each room may be on a different map. Nothing here knows about players.
 
 const AXES = ['x', 'y', 'z'] as const;
 
@@ -28,14 +29,14 @@ export function rayBoxDistance(origin: Position, direction: Position, box: WallB
 
 // Distance the ray can travel before hitting a box, capped at maxDistance.
 export function wallDistance(
-  origin: Position, direction: Position, maxDistance: number, boxes: readonly WallBox[] = WALL_BOXES,
+  origin: Position, direction: Position, maxDistance: number, boxes: readonly WallBox[],
 ): number {
   let nearest = maxDistance;
   for (const box of boxes) nearest = Math.min(nearest, rayBoxDistance(origin, direction, box));
   return nearest;
 }
 
-export function segmentBlocked(from: Position, to: Position, boxes: readonly WallBox[] = WALL_BOXES): boolean {
+export function segmentBlocked(from: Position, to: Position, boxes: readonly WallBox[]): boolean {
   const length = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
   if (length === 0) return false;
   const direction = { x: (to.x - from.x) / length, y: (to.y - from.y) / length, z: (to.z - from.z) / length };

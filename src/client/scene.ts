@@ -18,12 +18,12 @@ import {
   SphereGeometry,
   WebGLRenderer,
 } from 'three';
-import { WALL_BOXES } from '../shared/arena.js';
 import { flashlightRange } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
+import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
-import { CAMERA } from './camera-config.js';
+import { cameraFor } from './camera-config.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 // Rays across the cone for the drawn flashlight fan. Purely visual resolution.
@@ -38,27 +38,32 @@ const DOWN_HEIGHT = 0.35;
 const PICKUP_COLOR = '#6f9a52';
 const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
 
-export function createScene(canvas: HTMLCanvasElement) {
-  const renderer = new WebGLRenderer({ canvas, antialias: true });
+// One scene per map: the world the room plays on is fixed for the scene's lifetime, and a
+// map change disposes it and builds another (see main.ts). `renderer` may be handed over
+// from the previous scene so a map switch never creates a second WebGL context.
+export function createScene(canvas: HTMLCanvasElement, world: World, existingRenderer?: WebGLRenderer) {
+  const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const scene = new Scene();
   scene.background = new Color('#161918');
 
+  const CAMERA = cameraFor(world);
   const camera = new PerspectiveCamera(CAMERA.fieldOfView, CAMERA.aspect, CAMERA.near, CAMERA.far);
   camera.position.set(CAMERA.position.x, CAMERA.position.y, CAMERA.position.z);
   // Target determines the fixed rotation; no client movement or input controls this camera.
   camera.lookAt(CAMERA.target.x, CAMERA.target.y, CAMERA.target.z);
 
+  // Floor and walls come from the room's map: the same boxes the authoritative collision
+  // and line-of-sight rules use, so what is drawn is exactly what the server simulates.
   const floor = new Mesh(
-    new PlaneGeometry(GAMEPLAY.arena.width, GAMEPLAY.arena.depth),
+    new PlaneGeometry(world.width, world.depth),
     new MeshLambertMaterial({ color: '#303a33' }),
   );
   floor.rotation.x = -Math.PI / 2;
-  floor.position.set(GAMEPLAY.arena.width / 2, GAMEPLAY.arena.floorY, GAMEPLAY.arena.depth / 2);
+  floor.position.set(world.width / 2, world.floorY, world.depth / 2);
   scene.add(floor);
 
-  // Render the same 3D boxes used by the authoritative collision and line-of-sight rules.
-  for (const { min, max } of WALL_BOXES) {
+  for (const { min, max } of world.wallBoxes) {
     const wall = new Mesh(
       new BoxGeometry(max.x - min.x, max.y - min.y, max.z - min.z),
       new MeshLambertMaterial({ color: '#7c857d' }),
@@ -72,14 +77,15 @@ export function createScene(canvas: HTMLCanvasElement) {
   light.position.set(-300, 900, 500);
   scene.add(light);
 
-  // Battery pickups: one block per public spawn point, shown while the server lists that
-  // point as active. Both roles see the same set; nothing here is hidden information.
-  const pickups = GAMEPLAY.batteryPickup.spawns.map(({ x, z }) => {
+  // Battery pickups: one block per Battery Spawn marker the map declares, shown while the
+  // server lists that point as active. Both roles see the same set, in the same order the
+  // server uses, so a pickup index means the same thing on every client.
+  const pickups = world.batterySpawns.map(({ x, z }) => {
     const mesh = new Mesh(
       new BoxGeometry(PICKUP_SIZE.x, PICKUP_SIZE.y, PICKUP_SIZE.z),
       new MeshLambertMaterial({ color: PICKUP_COLOR }),
     );
-    mesh.position.set(x, GAMEPLAY.arena.floorY + PICKUP_SIZE.y / 2, z);
+    mesh.position.set(x, world.floorY + PICKUP_SIZE.y / 2, z);
     mesh.visible = false;
     scene.add(mesh);
     return mesh;
@@ -139,7 +145,7 @@ export function createScene(canvas: HTMLCanvasElement) {
     for (let ray = 0; ray <= FAN_RAYS; ray++) {
       const angle = facing - halfAngle + (2 * halfAngle * ray) / FAN_RAYS;
       const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
-      const reach = wallDistance(origin, direction, range);
+      const reach = wallDistance(origin, direction, range, world.wallBoxes);
       const offset = (ray + 1) * 3;
       fanPositions[offset] = origin.x + direction.x * reach;
       fanPositions[offset + 1] = floorHeight;
@@ -235,15 +241,17 @@ export function createScene(canvas: HTMLCanvasElement) {
     renderer.setSize(width, height, false);
   }
 
-  function dispose(): void {
+  // Frees this scene's geometry; the renderer is kept when the caller will reuse it for
+  // the next map and disposed only when the page goes away.
+  function dispose(keepRenderer = false): void {
     scene.traverse((object) => {
       if (object instanceof Mesh) {
         object.geometry.dispose();
         object.material.dispose();
       }
     });
-    renderer.dispose();
+    if (!keepRenderer) renderer.dispose();
   }
 
-  return { render, resize, dispose };
+  return { render, resize, dispose, renderer, aspect: CAMERA.aspect };
 }

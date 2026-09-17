@@ -26,6 +26,7 @@ import {
 import {
   CREATURE_PAYLOAD_KEYS, HUNTER_VIEW_KEYS, PLAYERS, assertHunterPayload, closeTo, creatureId, creatureView, groundPosition,
   hold, hunterId, hunterView, input, ownView, positions, stageGame, startedGame, step,
+  TEST_WORLD,
 } from './helpers/game.js';
 
 const radius = GAMEPLAY.playerRadius;
@@ -74,7 +75,7 @@ function knockDown(game: Game, slot: number, retreat: Position): void {
 }
 
 test('a started round has exactly one Creature and four Hunters, each privately told its own role', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   startRound(game, PLAYERS);
   assert.equal(PLAYER_COUNT, 5);
   assert.equal(game.hunters.length, GAMEPLAY.players.hunters);
@@ -104,7 +105,7 @@ test('a started round has exactly one Creature and four Hunters, each privately 
 });
 
 test('the Creature is chosen randomly on the server: every player is picked across repeated starts', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   const chosen = new Set<string>();
   for (let round = 0; round < 200; round++) {
     startRound(game, PLAYERS);
@@ -117,7 +118,7 @@ test('the Creature is chosen randomly on the server: every player is picked acro
 });
 
 test('the role reveal counts down in simulation time, then the round runs', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   startRound(game, PLAYERS);
   assert.equal(game.revealTicks, revealTicks);
   for (let tick = 1; tick < revealTicks; tick++) {
@@ -268,7 +269,7 @@ test('an incapacitated Hunter cannot move, turn, shine, or revive, and its store
   step(game, 30);
   assert.deepEqual(downed.position, before.position);
   assert.equal(downed.facing, before.facing);
-  assert.equal(flashlightReaches(downed.position, downed.facing, game.creature!.position), true, 'the Creature sits in the dead beam');
+  assert.equal(flashlightReaches(TEST_WORLD, downed.position, downed.facing, game.creature!.position), true, 'the Creature sits in the dead beam');
   assert.equal(game.creatureState.lit, false);
   assert.equal(game.creatureState.hp, GAMEPLAY.creature.maxHp);
   assert.equal(isRevealed(game.creatureState), false);
@@ -287,7 +288,7 @@ test('flashlight exposure adds revival progress, keeps it while the light is awa
   game.hunters[1].facing = EAST;
   knockDown(game, 0, FAR_CORNER);
   const downed = game.hunters[0];
-  assert.equal(flashlightReaches(game.hunters[1].position, game.hunters[1].facing, downed.position), true);
+  assert.equal(flashlightReaches(TEST_WORLD, game.hunters[1].position, game.hunters[1].facing, downed.position), true);
 
   shine(game, [1], 30);
   assert.equal(downed.reviveTicks, 30);
@@ -348,7 +349,7 @@ test('revival does not work through walls', () => {
   game.hunters[1].facing = EAST;
   knockDown(game, 0, FAR_CORNER);
   const downed = game.hunters[0];
-  assert.equal(flashlightReaches(game.hunters[1].position, game.hunters[1].facing, downed.position), false, 'the slab blocks the beam');
+  assert.equal(flashlightReaches(TEST_WORLD, game.hunters[1].position, game.hunters[1].facing, downed.position), false, 'the slab blocks the beam');
   shine(game, [1], 60);
   assert.equal(downed.reviveTicks, 0);
   assert.equal(downed.down, true);
@@ -383,7 +384,7 @@ test('multiple beams damage once per step, keep the reveal fresh, and never bypa
   game.hunters[1].position = { ...LANE_EAST };
   game.hunters[1].facing = WEST;
   const state = game.creatureState;
-  assert.equal(flashlightReaches(game.hunters[1].position, game.hunters[1].facing, game.creature!.position), true);
+  assert.equal(flashlightReaches(TEST_WORLD, game.hunters[1].position, game.hunters[1].facing, game.creature!.position), true);
 
   shine(game, [0, 1], 1);
   assert.equal(state.lit, true);
@@ -407,7 +408,7 @@ test('multiple beams damage once per step, keep the reveal fresh, and never bypa
   // A third beam joining in the last cooldown step changes nothing either.
   game.hunters[2].position = groundPosition(200, 130);
   game.hunters[2].facing = -Math.PI / 2;
-  assert.equal(flashlightReaches(game.hunters[2].position, game.hunters[2].facing, game.creature!.position), true);
+  assert.equal(flashlightReaches(TEST_WORLD, game.hunters[2].position, game.hunters[2].facing, game.creature!.position), true);
   assert.equal(isStaggered(state), false);
   // The cooldown expires on this step, so the next lit step staggers again: once.
   shine(game, [0, 1, 2], 1);

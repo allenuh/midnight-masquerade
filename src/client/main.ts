@@ -1,7 +1,8 @@
 import { flashlightStage } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
+import { validateMap } from '../shared/map/validate.js';
+import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
-import { CAMERA } from './camera-config.js';
 import { createScene } from './scene.js';
 import './style.css';
 
@@ -32,6 +33,8 @@ const overlay = element('#overlay');
 const overlayTitle = element('#overlay-title');
 const overlayDetail = element('#overlay-detail');
 const debugPanel = element('#debug');
+const mapSelect = element<HTMLSelectElement>('#map');
+const mapText = element('#map-name');
 
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 // Playtest overlay, off unless the page is opened with ?debug=1. It shows only what this
@@ -39,12 +42,26 @@ const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
 function start(): void {
-  let scene: ReturnType<typeof createScene>;
-  try {
-    scene = createScene(canvas);
-  } catch {
-    statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
-    return;
+  // The client bundles no map. The scene exists only once the server has sent the room's
+  // map, and is rebuilt (reusing the WebGL renderer) whenever the host switches map.
+  let scene: ReturnType<typeof createScene> | null = null;
+
+  function loadMap(value: unknown): void {
+    const result = validateMap(value);
+    if (!result.ok) {
+      statusText.textContent = `The server sent an invalid map: ${result.errors.join(' | ')}`;
+      return;
+    }
+    const renderer = scene?.renderer;
+    scene?.dispose(true);
+    try {
+      scene = createScene(canvas, buildWorld(result.map), renderer);
+    } catch {
+      scene = null;
+      statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
+      return;
+    }
+    resizeArena();
   }
 
   type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
@@ -170,6 +187,20 @@ function start(): void {
     startButton.disabled = !connected || !room || room.players < PLAYER_COUNT;
     startButton.textContent = snapshot && snapshot.roundState !== 'ended' ? 'Restart match' : 'Start match';
 
+    // Map choice: a picker for the host between rounds, a label for everyone else. The
+    // list and the current choice come from the room message; the map itself arrives
+    // separately and is what the scene is built from.
+    const betweenRounds = !snapshot || snapshot.roundState === 'ended';
+    mapSelect.hidden = !room?.host || !betweenRounds;
+    mapText.hidden = room === null || (room.host && betweenRounds);
+    if (room) {
+      if (mapSelect.options.length !== room.maps.length || [...mapSelect.options].some((option, index) => option.value !== room!.maps[index].id)) {
+        mapSelect.replaceChildren(...room.maps.map((map) => new Option(map.name, map.id)));
+      }
+      mapSelect.value = room.mapId;
+      mapText.textContent = `Map: ${room.maps.find((map) => map.id === room!.mapId)?.name ?? room.mapId}`;
+    }
+
     roleText.hidden = creatureHpText.hidden = creatureStateText.hidden = teamText.hidden = !inRound;
     timerText.hidden = !inRound;
     proximityText.hidden = batteryText.hidden = snapshot?.role !== 'hunter';
@@ -284,6 +315,11 @@ function start(): void {
       updateUi();
       return;
     }
+    if (message.type === 'map') {
+      loadMap(message.map);
+      updateUi();
+      return;
+    }
     if (message.type === 'room') {
       room = message;
       snapshot = null;
@@ -342,6 +378,11 @@ function start(): void {
     event.preventDefault();
     joinRoom(codeInput.value);
   });
+  mapSelect.addEventListener('change', () => {
+    mapSelect.blur();
+    send({ type: 'selectMap', id: mapSelect.value });
+  });
+
   startButton.addEventListener('click', () => {
     if (startButton.disabled) return;
     // Drop focus so a later Space press works the action button instead of this button.
@@ -354,8 +395,9 @@ function start(): void {
   const inputTimer = window.setInterval(sendInput, 100);
 
   function resizeArena(): void {
-    const width = Math.max(1, Math.min(container.clientWidth, container.clientHeight * CAMERA.aspect));
-    const height = width / CAMERA.aspect;
+    if (!scene) return;
+    const width = Math.max(1, Math.min(container.clientWidth, container.clientHeight * scene.aspect));
+    const height = width / scene.aspect;
     arenaView.style.width = `${width}px`;
     arenaView.style.height = `${height}px`;
     scene.resize(width, height);
@@ -364,7 +406,7 @@ function start(): void {
   // Render the latest authoritative state; the client does not simulate movement or hits.
   let animationFrame = 0;
   function draw(): void {
-    scene.render(snapshot);
+    scene?.render(snapshot);
     animationFrame = window.requestAnimationFrame(draw);
   }
 
@@ -379,7 +421,7 @@ function start(): void {
     window.clearInterval(inputTimer);
     window.cancelAnimationFrame(animationFrame);
     resizeObserver.disconnect();
-    scene.dispose();
+    scene?.dispose();
     socket.close();
   });
 }

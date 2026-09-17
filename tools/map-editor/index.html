@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Map Editor — Creature Containment Crew</title>
+  </head>
+  <body>
+    <header>
+      <span>Map editor (developer tool)</span>
+      <label>Name <input id="name" type="text" size="18" autocomplete="off" /></label>
+      <label>W <input id="width" type="number" min="3" max="100" step="1" /></label>
+      <label>H <input id="height" type="number" min="3" max="100" step="1" /></label>
+      <button id="resize" type="button">Resize</button>
+      <button id="new" type="button">New map</button>
+      <button id="load" type="button">Load…</button>
+      <button id="export" type="button">Export</button>
+      <input id="file" type="file" accept="application/json,.json" hidden />
+    </header>
+    <nav id="tools" aria-label="Paint tool"></nav>
+    <main><canvas id="grid"></canvas></main>
+    <p id="status" role="status"></p>
+    <footer>Left click or drag paints. Right click erases: the marker first, then back to Open.</footer>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

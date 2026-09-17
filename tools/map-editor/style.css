@@ -1,0 +1,91 @@
+/* Developer utility styling: a toolbar, a grid, a status line. Flat colours, thin
+   borders, no decoration — this is a tool, not a product page. */
+:root {
+  color-scheme: dark;
+  font-family: monospace;
+  font-size: 13px;
+  color: #e6e7e4;
+  background: #161918;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+header,
+nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #aeb5ae;
+}
+
+button,
+input {
+  padding: 4px 8px;
+  border: 1px solid #858a85;
+  border-radius: 0;
+  background: #282c2a;
+  color: #e6e7e4;
+  font: inherit;
+}
+
+input[type='number'] {
+  width: 6ch;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3b413d;
+}
+
+button.selected {
+  background: #55605a;
+  border-color: #e6e7e4;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #e6e7e4;
+  outline-offset: 2px;
+}
+
+main {
+  overflow: auto;
+  border: 1px solid #474d47;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+canvas {
+  display: block;
+  cursor: crosshair;
+}
+
+#status {
+  margin: 0;
+  min-height: 1.2em;
+  color: #e8d27a;
+}
+
+footer {
+  color: #aeb5ae;
+}

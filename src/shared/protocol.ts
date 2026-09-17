@@ -1,3 +1,5 @@
+import type { GameMap } from './map/schema.js';
+
 export type Role = 'hunter' | 'creature';
 // Hunter slot labels, assigned in room join order when a round starts.
 export type HunterId = 'H1' | 'H2' | 'H3' | 'H4';
@@ -20,6 +22,8 @@ export type ClientMessage =
   | { type: 'join'; code: string }
   // Host only: starts a round (or restarts the current one) once the room is full.
   | { type: 'start' }
+  // Host only, and only between rounds: switch the room to another catalogued map.
+  | { type: 'selectMap'; id: string }
   | ({ type: 'input'; roundId: number } & InputState);
 
 // What every player in a round learns about each Hunter: public position and facing,
@@ -40,15 +44,25 @@ export type HunterView = {
   revive: number;
 };
 
-// Room membership, sent whenever it changes and whenever a round is abandoned.
-// `host` is per recipient. `notice` explains why a round was cut short.
+// One entry of the server's map catalogue: enough for a picker, not the map itself.
+export type MapSummary = { id: string; name: string };
+
+// Room membership, sent whenever it changes, whenever a round is abandoned, and whenever
+// the host switches map. `host` is per recipient. `notice` explains why a round was cut
+// short. `maps` lists every playable map on the server and `mapId` is the room's choice.
 export type RoomMessage = {
   type: 'room';
   code: string;
   players: number;
   host: boolean;
   notice: 'disconnected' | null;
+  maps: MapSummary[];
+  mapId: string;
 };
+
+// The room's full map, sent on join and whenever the host switches. The client builds
+// its scene from this and nothing else: it bundles no map of its own.
+export type MapMessage = { type: 'map'; map: GameMap };
 
 export type ErrorMessage = { type: 'error'; reason: 'not-found' | 'full' | 'host-left' };
 
@@ -62,7 +76,7 @@ type RoundSnapshot = {
   // down only while running, and holds its final value once the round ends. Clients display
   // it; they never decide expiration.
   timeRemaining: number;
-  // Indices into GAMEPLAY.batteryPickup.spawns that currently hold a pickup. The points
+  // Indices into the map's Battery Spawn markers (file order) that currently hold a pickup. The points
   // themselves are public map data both roles already have, so no coordinates are sent.
   pickups: number[];
 };
@@ -95,4 +109,4 @@ export type CreatureSnapshot = RoundSnapshot & {
   sprintCooldown: number;
   attackCooldown: number;
 };
-export type ServerMessage = RoomMessage | HunterSnapshot | CreatureSnapshot | ErrorMessage;
+export type ServerMessage = RoomMessage | MapMessage | HunterSnapshot | CreatureSnapshot | ErrorMessage;

@@ -7,7 +7,6 @@ import {
   MATCH_SECONDS,
   MATCH_TICKS,
   PICKUP_FIRST_SPAWN_TICKS,
-  PICKUP_POSITIONS,
   PICKUP_REACH,
   PICKUP_RESPAWN_TICKS,
   REVIVE_TICKS,
@@ -26,6 +25,7 @@ import {
 import {
   PLAYERS, assertHunterPayload, closeTo, creatureView, groundPosition, hold, hunterId, hunterView, ownView, positions,
   stageGame, startedGame, step,
+  TEST_WORLD,
 } from './helpers/game.js';
 
 const { max: maxBattery, drainPerSecond } = GAMEPLAY.battery;
@@ -34,7 +34,7 @@ const damagePerTick = GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate;
 const fullRange = GAMEPLAY.flashlight.range;
 const EAST = 0;
 
-// The north corridor lane (see src/shared/arena.ts): open for the whole arena width.
+// The north corridor lane (see maps/test-arena.json): open for the whole arena width.
 const LANE_HUNTER = groundPosition(100, 60);
 // 130 units ahead: inside the FULL cone (130 - radius <= 140) but outside the HALF one
 // (130 - radius > 98), so the same geometry reads differently per battery stage.
@@ -44,7 +44,7 @@ const LANE_CREATURE = groundPosition(200, 60);
 const FAR_CORNER = groundPosition(900, 500);
 
 const batteryOf = (game: Game, slot = 0): number => game.hunters[slot].battery;
-const pickupAt = (index: number): Position => PICKUP_POSITIONS[index];
+const pickupAt = (index: number): Position => TEST_WORLD.batterySpawns[index];
 
 // A running round with the battery forced onto the given point, H1 standing on it, and
 // the Creature parked far away. Forcing `at` skips the spawn delay and the randomness.
@@ -76,7 +76,7 @@ test('the flashlight stages follow the configured battery thresholds, and an emp
 test('the flashlight reaches exactly as far as the current battery stage allows', () => {
   // The same Creature, the same facing: only the battery changes.
   const reaches = (battery: number, target: Position) =>
-    flashlightReaches(LANE_HUNTER, EAST, target, flashlightRange(battery));
+    flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, target, flashlightRange(battery));
   assert.equal(reaches(maxBattery, STAGE_CREATURE), true, 'FULL reaches 130 units');
   assert.equal(reaches(0.6 * maxBattery - 0.01, STAGE_CREATURE), false, 'HALF does not');
   assert.equal(reaches(0.6 * maxBattery - 0.01, LANE_CREATURE), true, 'HALF still reaches 100 units');
@@ -143,7 +143,7 @@ test('an empty battery produces no gameplay effect: no reveal, no damage, no rev
   game.hunters[1].position = groundPosition(160, 60);
   game.hunters[1].down = true;
   game.hunters[0].battery = 0;
-  assert.equal(flashlightReaches(game.hunters[0].position, game.hunters[0].facing, game.creature!.position), true,
+  assert.equal(flashlightReaches(TEST_WORLD, game.hunters[0].position, game.hunters[0].facing, game.creature!.position), true,
     'the Creature sits inside the full-battery cone');
 
   step(game, 60, { light: true });
@@ -171,7 +171,7 @@ test('an empty battery produces no gameplay effect: no reveal, no damage, no rev
 });
 
 test('no battery exists until the first-spawn delay has run, and then exactly one appears', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   startRound(game, PLAYERS);
   assert.equal(game.pickup.at, null, 'a round starts with an empty map');
   assert.equal(game.pickup.spawnTicks, PICKUP_FIRST_SPAWN_TICKS);
@@ -190,7 +190,7 @@ test('no battery exists until the first-spawn delay has run, and then exactly on
 
   step(game, 1);
   assert.notEqual(game.pickup.at, null, 'the first battery arrives after exactly the configured delay');
-  assert.ok(game.pickup.at! >= 0 && game.pickup.at! < PICKUP_POSITIONS.length);
+  assert.ok(game.pickup.at! >= 0 && game.pickup.at! < TEST_WORLD.batterySpawns.length);
   assert.deepEqual(activePickups(game), [game.pickup.at]);
   for (const view of [hunterView(game), hunterView(game, 1), creatureView(game)]) {
     assert.deepEqual(view.pickups, [game.pickup.at], 'both roles see the same one battery');
@@ -222,7 +222,7 @@ test('an active Hunter collects the battery: it fills, leaves every payload, and
   assert.equal(game.pickup.spawnTicks, 1);
   step(game, 1);
   assert.notEqual(game.pickup.at, null, 'back after exactly the configured delay');
-  assert.ok(game.pickup.at! >= 0 && game.pickup.at! < PICKUP_POSITIONS.length);
+  assert.ok(game.pickup.at! >= 0 && game.pickup.at! < TEST_WORLD.batterySpawns.length);
   assert.deepEqual(hunterView(game).pickups, activePickups(game));
 
   // Collecting at full battery still consumes it, and the clamp keeps the maximum.
@@ -293,7 +293,7 @@ test('the map never holds more than one battery, and every point is used across 
 });
 
 test('the match clock starts when the round starts running, not during the role reveal', () => {
-  const game = createGame();
+  const game = createGame(TEST_WORLD);
   startRound(game, PLAYERS);
   assert.equal(game.timeTicks, MATCH_TICKS);
   while (game.roundState === 'reveal') {
@@ -434,7 +434,7 @@ test('the battery, clock, and pickup fields carry no hidden Creature information
     assert.equal(wire.includes(String(creature.x)), false);
     assert.equal(wire.includes(String(creature.z)), false);
     // The pickup list is indices into the public spawn table: no coordinates at all.
-    for (const point of PICKUP_POSITIONS) {
+    for (const point of TEST_WORLD.batterySpawns) {
       assert.equal(wire.includes(`"x":${point.x}`), false, 'no pickup position is serialized');
     }
     assert.deepEqual(snapshot.pickups, [4]);
