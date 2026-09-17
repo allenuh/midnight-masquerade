@@ -37,6 +37,7 @@ type Message = {
   creature?: Position | { position: Position; staggered: boolean; sprinting: boolean; burning: boolean };
   hp?: number;
   attackCooldown?: number;
+  timeRemaining?: number;
 };
 
 const idle = { up: false, down: false, left: false, right: false, light: false };
@@ -124,7 +125,7 @@ function assertHunterMessage(message: Message) {
 const own = (message: Message): HunterView => message.hunters!.find((hunter) => hunter.id === message.self)!;
 
 async function startServer(t: test.TestContext, catalog?: MapCatalog) {
-  const { server, close } = createGameServer(catalog);
+  const { server, close } = createGameServer(catalog, { log: false });
   const peers: Peer[] = [];
   t.after(async () => {
     await Promise.all(peers.map((peer) => peer.close()));
@@ -452,4 +453,26 @@ test('the host picks the room map between rounds, and every client is sent the m
   for (const view of next.hunters!) {
     assert.ok(arena.hunterSpawns.some((spawn) => spawn.x === view.position.x && spawn.z === view.position.z), `${view.id} back on the arena`);
   }
+});
+
+test('the simulation advances at the configured tick rate in wall-clock time, whatever the timer granularity', { timeout: 30_000 }, async (t) => {
+  // A timer set to one step per firing is not one step per step on every platform (a
+  // 34 ms interval fires every ~47 ms on Windows). The clock the players see must
+  // still lose one second per second, and each step must be its own snapshot.
+  const { connect } = await startServer(t);
+  const { host, players } = await fillRoom(connect);
+  host.send({ type: 'start' });
+  const running = await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'running', 0, 10_000)));
+  const hunter = players[running.findIndex((message) => message.role === 'hunter')];
+  await sleep(200);
+  const from = hunter.latest()!;
+  const fromCount = hunter.messages.length;
+  const startedAt = performance.now();
+  await sleep(2_000);
+  const to = hunter.latest()!;
+  const elapsed = (performance.now() - startedAt) / 1000;
+  const simulated = from.timeRemaining! - to.timeRemaining!;
+  assert.ok(Math.abs(simulated - elapsed) < 0.15 * elapsed, `simulated ${simulated.toFixed(2)}s over ${elapsed.toFixed(2)}s of real time`);
+  const snapshots = hunter.messages.length - fromCount;
+  assert.ok(Math.abs(snapshots - elapsed * GAMEPLAY.tickRate) < 0.15 * elapsed * GAMEPLAY.tickRate, `${snapshots} snapshots in ${elapsed.toFixed(2)}s`);
 });

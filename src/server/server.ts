@@ -21,17 +21,34 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 4;
 export const ROOM_CODE_PATTERN = new RegExp(`^[${CODE_ALPHABET}]{${CODE_LENGTH}}$`);
 
-export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
+// `log` is the console line per connection and room event; tests turn it off.
+export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log = true } = {}) {
   const server = createServer();
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
+  // The game socket lives at /ws, relative to whatever origin served the page. Any other
+  // upgrade is refused and closed, unless another listener shares this server (Vite's
+  // HMR socket in development), in which case it is that listener's to answer.
   server.on('upgrade', (request, socket, head) => {
-    if (request.url?.split('?')[0] !== '/ws') return;
+    if (request.url?.split('?')[0] !== '/ws') {
+      if (server.listenerCount('upgrade') === 1) socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      return;
+    }
     sockets.handleUpgrade(request, socket, head, (client) => sockets.emit('connection', client, request));
   });
   const rooms = new Map<string, Room>();
   const clients = new Set<Client>();
   let nextClientId = 1;
   let closing = false;
+
+  // Connection and room events on the server console, so a remote session can be
+  // followed from the host machine: connection ids and room codes only, nothing that
+  // identifies a person, and nothing stored.
+  function logRoom(room: Room, event: string): void {
+    if (log) console.log(`[room] ${room.code} ${event} (${room.players.length}/${PLAYER_COUNT})`);
+  }
+  function logConnection(client: Client, event: string): void {
+    if (log) console.log(`[conn] ${client.id} ${event}, ${clients.size} connected`);
+  }
 
   function send(client: Client, message: ServerMessage): void {
     if (client.socket.readyState !== WebSocket.OPEN) return;
@@ -120,6 +137,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
     };
     rooms.set(room.code, room);
     client.room = room;
+    logRoom(room, `created by ${client.id} on ${map.id}`);
     sendMap(client, room);
     broadcastRoom(room);
   }
@@ -151,6 +169,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
     }
     room.players.push(client);
     client.room = room;
+    logRoom(room, `${client.id} joined`);
     sendMap(client, room);
     broadcastRoom(room);
   }
@@ -166,10 +185,12 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
     room.players = room.players.filter((player) => player !== client);
     if (room.players.length === 0) {
       rooms.delete(room.code);
+      logRoom(room, `${client.id} left; room closed`);
       return;
     }
     if (room.host === client) {
       rooms.delete(room.code);
+      logRoom(room, `host ${client.id} left; room closed`);
       for (const player of room.players) {
         player.room = null;
         send(player, { type: 'error', reason: 'host-left' });
@@ -179,6 +200,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
     }
     const inProgress = room.game.roundState === 'reveal' || room.game.roundState === 'running';
     if (room.game.roundState !== 'lobby') abandonRound(room.game);
+    logRoom(room, `${client.id} left${inProgress ? '; round abandoned' : ''}`);
     broadcastRoom(room, inProgress ? 'disconnected' : null);
   }
 
@@ -214,6 +236,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
     socket.on('error', () => socket.terminate());
     const client: Client = { id: `p${nextClientId++}`, socket, lastInput: performance.now(), alive: true, room: null };
     clients.add(client);
+    logConnection(client, 'connected');
 
     socket.on('pong', () => { client.alive = true; });
     socket.on('message', (data, isBinary) => {
@@ -230,6 +253,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
     socket.on('close', () => {
       clients.delete(client);
       if (closing) return;
+      logConnection(client, 'disconnected');
       leaveRoom(client);
     });
   });
@@ -237,8 +261,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
   // Input volume cannot advance simulation time. A stalled loop slows the game
   // instead of applying a large catch-up step or accepting a client's delta time.
   let debugTicks = 0;
-  const tick = setInterval(() => {
-    const now = performance.now();
+  function stepRooms(now: number): void {
     debugTicks += 1;
     for (const room of rooms.values()) {
       if (room.game.roundState === 'lobby') continue;
@@ -251,7 +274,24 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog()) {
       if (wasRunning && room.game.roundState === 'ended') logRoundStats(room);
       if (debugServer && room.game.roundState === 'running' && debugTicks % GAMEPLAY.tickRate === 0) logDebugState(room);
     }
-  }, Math.ceil(1000 / GAMEPLAY.tickRate));
+  }
+
+  // Fixed steps, paced by the clock rather than by the timer's own cadence: a timer
+  // asked for 34 ms fires every ~47 ms on Windows (15.6 ms granularity), which would run
+  // every room at 70 % speed. The timer fires at half a step and each firing takes the
+  // steps real time owes, at most MAX_CATCH_UP_STEPS, so a genuine stall still slows the
+  // game instead of replaying a burst; the time beyond the cap is dropped, not owed.
+  const STEP_MS = 1000 / GAMEPLAY.tickRate;
+  const MAX_CATCH_UP_STEPS = 3;
+  let nextStepAt = performance.now();
+  const tick = setInterval(() => {
+    const now = performance.now();
+    for (let steps = 0; nextStepAt <= now && steps < MAX_CATCH_UP_STEPS; steps++) {
+      nextStepAt += STEP_MS;
+      stepRooms(now);
+    }
+    if (nextStepAt < now) nextStepAt = now;
+  }, Math.ceil(STEP_MS / 2));
 
   const heartbeat = setInterval(() => {
     for (const client of clients) {

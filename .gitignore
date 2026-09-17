@@ -1,9 +1,5 @@
-DOCUMENTATION.md
-GDD.md
-CLAUDE.md
-AGENTS.md
-
 node_modules/
 dist/
 test-results/
 playwright-report/
+.env

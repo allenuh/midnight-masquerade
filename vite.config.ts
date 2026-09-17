@@ -14,5 +14,7 @@ export default defineConfig({
       allow: [fromRoot('./src/client'), fromRoot('./src/shared')],
     },
   },
+  // Relative asset URLs: the built page works from any origin or path prefix a proxy puts it under.
+  base: './',
   build: { outDir: fromRoot('./dist/client'), emptyOutDir: true },
 });
