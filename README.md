@@ -122,6 +122,13 @@ browser and see the same page you see locally. Nothing else is needed from them.
   seconds, then the round runs.
 - After a result the host presses **Start match** again for a rematch with fresh roles;
   nobody needs a new link or a new room.
+- **Balance changes between matches, without restarting anything:** in the lobby and on
+  the result screen the host can open **Tuning** and edit any gameplay value (speeds,
+  Creature HP, flashlight damage/range/cone, battery capacity, drain, spawn delays,
+  stagger, burn, revive, proximity radii, match length). Everyone sees the values;
+  changed rows are marked `*` with their default; **Reset to defaults** puts them back.
+  Changes apply to the next match and the server console records them on each
+  `[round]` line as `tuning=[…]`, so you know what each match was played on.
 
 Controls and rules are in the page footer and in
 [DOCUMENTATION.md](DOCUMENTATION.md#five-client-playtest-procedure).

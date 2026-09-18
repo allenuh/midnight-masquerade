@@ -1,4 +1,5 @@
 import type { GameMap } from './map/schema.js';
+import type { Tuning } from './tuning.js';
 
 export type Role = 'hunter' | 'creature';
 // Hunter slot labels, assigned in room join order when a round starts.
@@ -24,6 +25,9 @@ export type ClientMessage =
   | { type: 'start' }
   // Host only, and only between rounds: switch the room to another catalogued map.
   | { type: 'selectMap'; id: string }
+  // Host only, and only between rounds: replace the room's gameplay tuning (every value,
+  // validated and bounded on the server; see src/shared/tuning.ts).
+  | { type: 'tune'; tuning: Tuning }
   | ({ type: 'input'; roundId: number } & InputState);
 
 // What every player in a round learns about each Hunter: public position and facing,
@@ -58,6 +62,9 @@ export type RoomMessage = {
   notice: 'disconnected' | null;
   maps: MapSummary[];
   mapId: string;
+  // The room's gameplay values, the same for everyone in it: the defaults unless the host
+  // changed them. Public room data, so every client draws cones and stages to match.
+  tuning: Tuning;
 };
 
 // The room's full map, sent on join and whenever the host switches. The client builds

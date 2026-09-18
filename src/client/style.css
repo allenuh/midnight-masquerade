@@ -99,6 +99,55 @@ input {
   gap: 6px;
 }
 
+/* Between-round tuning: a plain table of the room's gameplay values. The host gets
+   number inputs, everyone else the same numbers as text. Changed rows are marked. */
+#tuning summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+#tuning-summary {
+  color: #a5a9a6;
+}
+
+#tuning-note {
+  margin: 6px 0;
+  color: #a5a9a6;
+}
+
+#tuning-table {
+  border-collapse: collapse;
+}
+
+#tuning-table th {
+  padding: 8px 12px 2px 0;
+  text-align: left;
+  font-weight: normal;
+  color: #a5a9a6;
+}
+
+#tuning-table td {
+  padding: 1px 12px 1px 0;
+}
+
+#tuning-table input {
+  width: 7em;
+  padding: 2px 5px;
+}
+
+#tuning-table .default {
+  color: #a5a9a6;
+}
+
+#tuning-table tr[data-changed] td:first-child::after {
+  content: ' *';
+  color: #f2e8a8;
+}
+
+#tuning-reset {
+  margin-top: 8px;
+}
+
 #arena-container {
   flex: 1;
   min-height: 0;

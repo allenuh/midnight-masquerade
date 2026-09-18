@@ -3,6 +3,7 @@ import { GAMEPLAY } from '../shared/gameplay-config.js';
 import { validateMap } from '../shared/map/validate.js';
 import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
+import { DEFAULT_TUNING, TUNABLES, defaultTuning, type Tunable, type Tuning } from '../shared/tuning.js';
 import { createScene } from './scene.js';
 import './style.css';
 
@@ -35,6 +36,11 @@ const overlayDetail = element('#overlay-detail');
 const debugPanel = element('#debug');
 const mapSelect = element<HTMLSelectElement>('#map');
 const mapText = element('#map-name');
+const tuningPanel = element<HTMLDetailsElement>('#tuning');
+const tuningSummary = element('#tuning-summary');
+const tuningNote = element('#tuning-note');
+const tuningBody = element<HTMLTableSectionElement>('#tuning-table tbody');
+const tuningReset = element<HTMLButtonElement>('#tuning-reset');
 
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 // Playtest overlay, off unless the page is opened with ?debug=1. It shows only what this
@@ -119,6 +125,78 @@ function start(): void {
     if (normalized) send({ type: 'join', code: normalized });
   }
 
+  // The between-round tuning table, one row per tunable from the shared table: the
+  // host edits a number input, everyone else reads the same number as text. The room
+  // message is the source of truth; an edit sends the whole table and the values shown
+  // are whatever the server echoed back. Nothing here changes gameplay locally.
+  type TuningRow = { tunable: Tunable; input: HTMLInputElement; text: HTMLElement; row: HTMLTableRowElement; defaultText: HTMLElement };
+  const tuningRows: TuningRow[] = [];
+  const formatValue = (tunable: Tunable, value: number): string =>
+    tunable.step < 1 ? value.toFixed(2).replace(/\.?0+$/, '') : String(value);
+  let lastGroup = '';
+  for (const tunable of TUNABLES) {
+    if (tunable.group !== lastGroup) {
+      lastGroup = tunable.group;
+      const heading = document.createElement('tr');
+      const cell = document.createElement('th');
+      cell.colSpan = 3;
+      cell.textContent = tunable.group;
+      heading.append(cell);
+      tuningBody.append(heading);
+    }
+    const row = document.createElement('tr');
+    const label = document.createElement('td');
+    label.textContent = tunable.label;
+    const value = document.createElement('td');
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = String(tunable.min);
+    input.max = String(tunable.max);
+    input.step = String(tunable.step);
+    input.setAttribute('aria-label', tunable.label);
+    const text = document.createElement('span');
+    value.append(input, text);
+    const defaultText = document.createElement('td');
+    defaultText.className = 'default';
+    row.append(label, value, defaultText);
+    tuningBody.append(row);
+    tuningRows.push({ tunable, input, text, row, defaultText });
+  }
+
+  // The host's edit: every input clamped to its bounds, sent as one table. A typo that
+  // leaves the bounds is corrected in place rather than silently dropped by the server.
+  function sendTuning(): void {
+    const tuning = defaultTuning();
+    for (const { tunable, input } of tuningRows) {
+      const raw = input.value.trim() === '' ? NaN : Number(input.value);
+      const value = Number.isFinite(raw) ? Math.min(tunable.max, Math.max(tunable.min, raw)) : tunable.default;
+      input.value = formatValue(tunable, value);
+      tuning[tunable.key] = value;
+    }
+    send({ type: 'tune', tuning });
+  }
+
+  function renderTuning(tuning: Tuning, editable: boolean): void {
+    let changed = 0;
+    for (const { tunable, input, text, row, defaultText } of tuningRows) {
+      const value = tuning[tunable.key];
+      const isChanged = value !== tunable.default;
+      if (isChanged) changed += 1;
+      row.toggleAttribute('data-changed', isChanged);
+      input.hidden = !editable;
+      text.hidden = editable;
+      // Never overwrite the number the host is in the middle of typing.
+      if (document.activeElement !== input) input.value = formatValue(tunable, value);
+      text.textContent = formatValue(tunable, value);
+      defaultText.textContent = isChanged ? `default ${formatValue(tunable, tunable.default)}` : '';
+    }
+    tuningSummary.textContent = changed === 0 ? '(defaults)' : `(${changed} changed)`;
+    tuningNote.textContent = editable
+      ? 'Values apply to the next round. Everyone in the room sees them; the server checks and bounds every change.'
+      : 'Set by the host between rounds. Changed values are marked *.';
+    tuningReset.hidden = !editable;
+  }
+
   function showOverlay(title: string, detail = ''): void {
     overlay.hidden = false;
     overlayTitle.textContent = title;
@@ -149,7 +227,7 @@ function start(): void {
     ];
     for (const hunter of snapshot.hunters) {
       lines.push(
-        `  ${hunter.id}     battery ${hunter.battery.toFixed(1)} ${flashlightStage(hunter.battery)}` +
+        `  ${hunter.id}     battery ${hunter.battery.toFixed(1)} ${flashlightStage(hunter.battery, room?.tuning ?? DEFAULT_TUNING)}` +
         `${hunter.light ? ' LIT' : ''} ${hunter.down ? `DOWN ${Math.floor(hunter.revive * 100)}%` : 'ACTIVE'}`,
       );
     }
@@ -201,6 +279,10 @@ function start(): void {
       mapSelect.value = room.mapId;
       mapText.textContent = `Map: ${room.maps.find((map) => map.id === room!.mapId)?.name ?? room.mapId}`;
     }
+    // The tuning table follows the map picker's rule: between rounds only (the lobby and
+    // the result screen), editable by the host, readable by everyone.
+    tuningPanel.hidden = room === null || !betweenRounds;
+    if (room) renderTuning(room.tuning, room.host);
 
     roleText.hidden = creatureHpText.hidden = creatureStateText.hidden = teamText.hidden = !inRound;
     timerText.hidden = !inRound;
@@ -239,7 +321,7 @@ function start(): void {
       // `self` rather than `snapshot.self`: the snapshot is reassigned on every message,
       // so it does not stay narrowed inside a callback.
       const battery = snapshot.hunters.find((hunter) => hunter.id === self)?.battery ?? 0;
-      const stage = flashlightStage(battery);
+      const stage = flashlightStage(battery, room?.tuning ?? DEFAULT_TUNING);
       batteryText.textContent = `Battery: ${Math.ceil(battery)} ${stage}`;
       batteryText.dataset.state = stage;
       proximityText.textContent = `Proximity: ${snapshot.proximity}`;
@@ -384,6 +466,13 @@ function start(): void {
     event.preventDefault();
     joinRoom(codeInput.value);
   });
+  tuningBody.addEventListener('change', (event) => {
+    if (event.target instanceof HTMLInputElement && room?.host) sendTuning();
+  });
+  tuningReset.addEventListener('click', () => {
+    tuningReset.blur();
+    if (room?.host) send({ type: 'tune', tuning: defaultTuning() });
+  });
   mapSelect.addEventListener('change', () => {
     mapSelect.blur();
     send({ type: 'selectMap', id: mapSelect.value });
@@ -412,7 +501,7 @@ function start(): void {
   // Render the latest authoritative state; the client does not simulate movement or hits.
   let animationFrame = 0;
   function draw(): void {
-    scene?.render(snapshot);
+    scene?.render(snapshot, room?.tuning ?? DEFAULT_TUNING);
     animationFrame = window.requestAnimationFrame(draw);
   }
 

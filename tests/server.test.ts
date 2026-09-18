@@ -11,6 +11,7 @@ import { ROOM_CODE_PATTERN, createGameServer } from '../src/server/server.js';
 import { MARKER, createEmptyMap } from '../src/shared/map/schema.js';
 import { buildWorld } from '../src/shared/map/world.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
+import { defaultTuning, type Tuning } from '../src/shared/tuning.js';
 import type { HunterView, Position } from '../src/shared/protocol.js';
 import { wallDistance } from '../src/shared/raycast.js';
 import { HUNTER_PAYLOAD_KEYS, HUNTER_VIEW_KEYS, TEST_MAP, TEST_MAP_PATH, TEST_WORLD } from './helpers/game.js';
@@ -38,6 +39,7 @@ type Message = {
   hp?: number;
   attackCooldown?: number;
   timeRemaining?: number;
+  tuning?: Tuning;
 };
 
 const idle = { up: false, down: false, left: false, right: false, light: false };
@@ -170,7 +172,9 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   // lists whatever the developer has in maps/, so only the test arena's presence is fixed.
   const roomOf = (message: Message) => {
     assert.ok(Array.isArray(message.maps) && message.maps.some((map) => map.id === 'test-arena' && map.name === 'Test Arena'));
-    const { maps: _maps, ...rest } = message;
+    // A fresh room plays on the defaults; the tuning flow has its own test below.
+    assert.deepEqual(message.tuning, defaultTuning());
+    const { maps: _maps, tuning: _tuning, ...rest } = message;
     return rest;
   };
   assert.deepEqual(roomOf(created), { type: 'room', code: created.code, players: 1, host: true, notice: null, mapId: 'test-arena' });
@@ -475,4 +479,56 @@ test('the simulation advances at the configured tick rate in wall-clock time, wh
   assert.ok(Math.abs(simulated - elapsed) < 0.15 * elapsed, `simulated ${simulated.toFixed(2)}s over ${elapsed.toFixed(2)}s of real time`);
   const snapshots = hunter.messages.length - fromCount;
   assert.ok(Math.abs(snapshots - elapsed * GAMEPLAY.tickRate) < 0.15 * elapsed * GAMEPLAY.tickRate, `${snapshots} snapshots in ${elapsed.toFixed(2)}s`);
+});
+
+test('the host tunes the room between rounds: broadcast to all, refused from guests, out of bounds, and mid-round', { timeout: 30_000 }, async (t) => {
+  const { connect } = await startServer(t);
+  const { host, guests, players } = await fillRoom(connect);
+  const tuned = { ...defaultTuning(), creatureSpeed: 300, matchSeconds: 20, flashlightRange: 250 };
+
+  // A guest's tuning is ignored: no room message follows it.
+  guests[0].send({ type: 'tune', tuning: tuned });
+  await sleep(300);
+  for (const peer of players) assert.deepEqual(peer.latest()!.tuning, defaultTuning());
+
+  // An out-of-bounds value, an extra key and a missing key are each refused whole.
+  for (const bad of [
+    { ...tuned, creatureSpeed: 10_000 },
+    { ...tuned, hunterSpeed: -5 },
+    { ...tuned, matchSeconds: Number.NaN },
+    { ...tuned, extra: 1 },
+    (({ burnSeconds: _b, ...rest }) => rest)(tuned),
+    { ...tuned, creatureSpeed: '300' },
+  ]) {
+    host.send({ type: 'tune', tuning: bad });
+  }
+  await sleep(300);
+  for (const peer of players) assert.deepEqual(peer.latest()!.tuning, defaultTuning());
+
+  // The host's valid table reaches every player in a room message.
+  host.send({ type: 'tune', tuning: tuned });
+  const echoed = await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'room' && message.tuning?.creatureSpeed === 300)));
+  for (const message of echoed) assert.deepEqual(message.tuning, tuned);
+
+  // The next round plays on it: the clock starts at the tuned length.
+  host.send({ type: 'start' });
+  const running = await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'running', 0, 10_000)));
+  for (const message of running) assert.ok(Math.abs(message.timeRemaining! - 20) < 0.5, `clock ${message.timeRemaining}`);
+
+  // Mid-round the host cannot change anything: the round keeps running untouched.
+  const before = players.map((peer) => peer.messages.length);
+  host.send({ type: 'tune', tuning: { ...tuned, creatureSpeed: 50 } });
+  await sleep(300);
+  for (const [index, peer] of players.entries()) {
+    assert.ok(peer.messages.slice(before[index]).every((message) => message.type === 'snapshot' && message.roundState === 'running'),
+      'no room message and no abandoned round while running');
+  }
+
+  // Once the round is over, resetting is a tune too: everyone is back on the defaults
+  // and in the lobby, exactly as after a map switch.
+  const hunter = players[running.findIndex((message) => message.role === 'hunter')];
+  await hunter.waitFor((message) => message.roundState === 'ended', 0, 25_000);
+  host.send({ type: 'tune', tuning: defaultTuning() });
+  const reset = await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'room' && message.tuning?.creatureSpeed === GAMEPLAY.speed.creature)));
+  for (const message of reset) assert.deepEqual(message.tuning, defaultTuning());
 });

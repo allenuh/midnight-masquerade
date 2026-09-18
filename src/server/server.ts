@@ -6,10 +6,11 @@ import { flashlightStage } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { RoomMessage, ServerMessage } from '../shared/protocol.js';
 import {
-  MATCH_SECONDS, PLAYER_COUNT, REVIVE_TICKS, STEP_SECONDS, abandonRound, createGame, expireInput,
-  hunterProximity, setInput, snapshotFor, startRound, stepGame, type Game,
+  PLAYER_COUNT, STEP_SECONDS, abandonRound, createGame, expireInput,
+  hunterProximity, reviveTicks, setInput, snapshotFor, startRound, stepGame, type Game,
 } from './game.js';
 import { loadMapCatalog, type MapCatalog, type MapEntry } from './maps.js';
+import { defaultTuning, tuningDifferences, validateTuning, type Tuning } from '../shared/tuning.js';
 
 type Client = { id: string; socket: WebSocket; lastInput: number; alive: boolean; room: Room | null };
 // The host's only authority is starting rounds and choosing the map between them; the
@@ -21,10 +22,20 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 4;
 export const ROOM_CODE_PATTERN = new RegExp(`^[${CODE_ALPHABET}]{${CODE_LENGTH}}$`);
 
+// What a new room starts on: the defaults from gameplay-config.ts, with the match length
+// taken from MATCH_SECONDS when the server was started with one. A server-side knob only;
+// the host may still change it in the lobby like any other value.
+export function roomTuning(): Tuning {
+  const tuning = defaultTuning();
+  const override = Number(process.env.MATCH_SECONDS);
+  if (Number.isFinite(override) && override > 0) tuning.matchSeconds = override;
+  return tuning;
+}
+
 // `log` is the console line per connection and room event; tests turn it off.
 export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log = true } = {}) {
   const server = createServer();
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
+  const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096, perMessageDeflate: false });
   // The game socket lives at /ws, relative to whatever origin served the page. Any other
   // upgrade is refused and closed, unless another listener shares this server (Vite's
   // HMR socket in development), in which case it is that listener's to answer.
@@ -63,7 +74,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
     for (const player of room.players) {
       send(player, {
         type: 'room', code: room.code, players: room.players.length, host: room.host === player, notice,
-        maps: catalog.summaries, mapId: room.map.id,
+        maps: catalog.summaries, mapId: room.map.id, tuning: room.game.tuning,
       });
     }
   }
@@ -89,9 +100,10 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       .map(([id, ticks]) => `${id} ${(ticks * STEP_SECONDS).toFixed(1)}s`).join(' ');
     console.log(
       `[round] room=${room.code} id=${game.roundId} result=${game.result}` +
-      ` duration=${(MATCH_SECONDS - game.timeTicks * STEP_SECONDS).toFixed(1)}s` +
+      ` duration=${(game.tuning.matchSeconds - game.timeTicks * STEP_SECONDS).toFixed(1)}s` +
       ` creatureHp=${game.creatureState.hp.toFixed(1)} downs=${stats.incapacitations} revives=${stats.revives}` +
-      ` batteries=${stats.pickupsCollected} light=[${lightSeconds}]`,
+      ` batteries=${stats.pickupsCollected} light=[${lightSeconds}]` +
+      ` tuning=[${tuningDifferences(game.tuning)}]`,
     );
   }
 
@@ -109,7 +121,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       : `point ${game.pickup.at}`;
     const hunters = game.hunters.map((hunter) =>
       `${hunter.id} ${hunter.battery.toFixed(0)}/${flashlightStage(hunter.battery)}` +
-      ` ${hunter.down ? `DOWN ${Math.floor(100 * hunter.reviveTicks / REVIVE_TICKS)}%` : 'ACTIVE'}` +
+      ` ${hunter.down ? `DOWN ${Math.floor(100 * hunter.reviveTicks / reviveTicks(game.tuning))}%` : 'ACTIVE'}` +
       ` ${hunterProximity(game, hunter)}`).join(' | ');
     console.log(
       `[debug] room=${code} t=${(game.timeTicks * STEP_SECONDS).toFixed(1)}s hp=${state.hp.toFixed(1)}` +
@@ -133,7 +145,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
   function createRoom(client: Client): void {
     const map = catalog.default;
     const room: Room = {
-      code: newCode(), host: client, players: [client], game: createGame(map.world), map, lastStart: -Infinity,
+      code: newCode(), host: client, players: [client], game: createGame(map.world, roomTuning()), map, lastStart: -Infinity,
     };
     rooms.set(room.code, room);
     client.room = room;
@@ -153,6 +165,20 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
     room.map = entry;
     room.game.world = entry.world;
     for (const player of room.players) sendMap(player, room);
+    broadcastRoom(room);
+  }
+
+  // Host only, and only between rounds, with the same finished-round handling as the map
+  // picker. The whole table is replaced at once and only if every value validates, so the
+  // room never holds a half-applied or out-of-bounds tuning. It takes effect at the next
+  // start; a running or revealing round is never altered underneath the players.
+  function tuneRoom(room: Room, raw: unknown): void {
+    const tuning = validateTuning(raw);
+    if (!tuning) return;
+    if (room.game.roundState === 'reveal' || room.game.roundState === 'running') return;
+    room.game.tuning = tuning;
+    if (room.game.roundState === 'ended') abandonRound(room.game);
+    logRoom(room, `tuning ${tuningDifferences(tuning)}`);
     broadcastRoom(room);
   }
 
@@ -221,6 +247,8 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       else send(client, { type: 'error', reason: 'not-found' });
     } else if (fields.type === 'selectMap' && keys.length === 2 && typeof fields.id === 'string' && room && room.host === client) {
       selectMap(room, fields.id);
+    } else if (fields.type === 'tune' && keys.length === 2 && room && room.host === client) {
+      tuneRoom(room, fields.tuning);
     } else if (
       fields.type === 'start' && keys.length === 1 && room && room.host === client &&
       room.players.length === PLAYER_COUNT && now - room.lastStart >= 500

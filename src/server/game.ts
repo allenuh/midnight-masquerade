@@ -3,6 +3,7 @@ import { flashlightRange } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { World } from '../shared/map/world.js';
 import { segmentBlocked } from '../shared/raycast.js';
+import { DEFAULT_TUNING, defaultTuning, type Tuning } from '../shared/tuning.js';
 import { constrainToWalls, distance3D, sphereInCone, spheresTouchDuringStep } from './spatial.js';
 import type {
   CreatureSnapshot, HunterId, HunterSnapshot, HunterView, InputState, Position, ProximityState, RoundResult, RoundState,
@@ -61,6 +62,10 @@ export type RoundStats = {
 export type Game = {
   // The map this room plays on: walls, spawn markers, battery points. Shared, read-only.
   world: World;
+  // The room's gameplay values (see src/shared/tuning.ts): the defaults from
+  // gameplay-config.ts unless the host changed them between rounds. Every rule below reads
+  // from here, never from GAMEPLAY directly, except the structural constants.
+  tuning: Tuning;
   hunters: Hunter[]; // empty in the lobby; H1..H4 in join order during a round
   creature: Creature | null;
   creatureState: CreatureState;
@@ -81,22 +86,23 @@ if (HUNTER_IDS.length !== GAMEPLAY.players.hunters) throw new Error('HunterId la
 // gameplay is measured in simulation seconds rather than frames or client clocks.
 export const STEP_SECONDS = 1 / GAMEPLAY.tickRate;
 export const secondsToTicks = (seconds: number): number => Math.round(seconds * GAMEPLAY.tickRate);
-// Beam-ticks of exposure that complete a revival; each valid beam adds one per step.
-export const REVIVE_TICKS = secondsToTicks(GAMEPLAY.revive.seconds);
 // Radians on the ground plane: direction = (cos, 0, sin). -PI/2 is -Z, "up" on screen.
 export const SPAWN_FACING = -Math.PI / 2;
 
-// Match length in seconds. MATCH_SECONDS shortens or lengthens a playtest match without
-// editing the tunables; it is a server-side knob only and never reaches a client.
-export const MATCH_SECONDS = ((): number => {
-  const override = Number(process.env.MATCH_SECONDS);
-  return Number.isFinite(override) && override > 0 ? override : GAMEPLAY.round.matchSeconds;
-})();
+// Tick counts under the DEFAULT tuning, kept for tests and tooling that reason about a
+// default round. The simulation never reads them: each derives from game.tuning below.
+// Beam-ticks of exposure that complete a revival; each valid beam adds one per step.
+export const REVIVE_TICKS = secondsToTicks(DEFAULT_TUNING.reviveSeconds);
+export const MATCH_SECONDS = DEFAULT_TUNING.matchSeconds;
 export const MATCH_TICKS = secondsToTicks(MATCH_SECONDS);
 // The wait before a round's first battery, and the wait after each one is collected.
-export const PICKUP_FIRST_SPAWN_TICKS = secondsToTicks(GAMEPLAY.batteryPickup.firstSpawnSeconds);
-export const PICKUP_RESPAWN_TICKS = secondsToTicks(GAMEPLAY.batteryPickup.respawnSeconds);
-// Center-to-center distance at which an active Hunter picks a battery up.
+export const PICKUP_FIRST_SPAWN_TICKS = secondsToTicks(DEFAULT_TUNING.firstBatterySeconds);
+export const PICKUP_RESPAWN_TICKS = secondsToTicks(DEFAULT_TUNING.batteryRespawnSeconds);
+// The same counts for a given room's tuning.
+export const reviveTicks = (tuning: Tuning): number => secondsToTicks(tuning.reviveSeconds);
+export const matchTicks = (tuning: Tuning): number => secondsToTicks(tuning.matchSeconds);
+// Center-to-center distance at which an active Hunter picks a battery up. Not tunable:
+// it is the geometry of two blockout shapes touching.
 export const PICKUP_REACH = GAMEPLAY.playerRadius + GAMEPLAY.batteryPickup.radius;
 // Where a battery is allowed to appear: the room's map's Battery Spawn markers, in file
 // order, which is what the pickup index on the wire refers to. The map only declares the
@@ -116,14 +122,14 @@ export const activeHunters = (game: Game): Hunter[] => game.hunters.filter((hunt
 export const downedHunters = (game: Game): Hunter[] => game.hunters.filter((hunter) => hunter.down);
 export const allHuntersDown = (game: Game): boolean => game.hunters.length > 0 && game.hunters.every((hunter) => hunter.down);
 
-const freshCreatureState = (): CreatureState => ({
-  hp: GAMEPLAY.creature.maxHp, lit: false, sprinting: false,
+const freshCreatureState = (tuning: Tuning): CreatureState => ({
+  hp: tuning.creatureMaxHp, lit: false, sprinting: false,
   revealTicks: 0, staggerTicks: 0, staggerCooldownTicks: 0, sprintCooldownTicks: 0, attackCooldownTicks: 0, burnTicks: 0,
 });
 
 // A round starts with an empty map: Hunters are on a full charge, so the first battery
 // waits out the long delay before it appears.
-const freshPickup = (): PickupState => ({ at: null, spawnTicks: PICKUP_FIRST_SPAWN_TICKS });
+const freshPickup = (tuning: Tuning): PickupState => ({ at: null, spawnTicks: secondsToTicks(tuning.firstBatterySeconds) });
 
 const freshStats = (): RoundStats => ({
   incapacitations: 0,
@@ -132,17 +138,18 @@ const freshStats = (): RoundStats => ({
   lightTicks: { H1: 0, H2: 0, H3: 0, H4: 0 },
 });
 
-export function createGame(world: World): Game {
+export function createGame(world: World, tuning: Tuning = defaultTuning()): Game {
   return {
     world,
+    tuning,
     hunters: [],
     creature: null,
-    creatureState: freshCreatureState(),
-    pickup: freshPickup(),
+    creatureState: freshCreatureState(tuning),
+    pickup: freshPickup(tuning),
     roundId: 0,
     roundState: 'lobby',
     revealTicks: 0,
-    timeTicks: MATCH_TICKS,
+    timeTicks: matchTicks(tuning),
     result: null,
     stats: freshStats(),
   };
@@ -191,17 +198,18 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
     .filter((_, index) => index !== creatureIndex)
     .map((player, slot) => ({
       id: HUNTER_IDS[slot], player, position: spawns.hunters[slot], facing: SPAWN_FACING,
-      input: emptyInput(), battery: GAMEPLAY.battery.max, down: false, reviveTicks: 0,
+      input: emptyInput(), battery: game.tuning.batteryMax, down: false, reviveTicks: 0,
     }));
   // Every resource is rebuilt here, so nothing leaks from the previous round: HP and the
   // Creature countdowns, full batteries, an empty map with the first-battery delay reset,
-  // a full match clock, and empty statistics.
-  game.creatureState = freshCreatureState();
-  game.pickup = freshPickup();
+  // a full match clock, and empty statistics. The room's current tuning is read here and
+  // in every step, so a change the host made between rounds applies from this start.
+  game.creatureState = freshCreatureState(game.tuning);
+  game.pickup = freshPickup(game.tuning);
   game.roundId += 1;
   game.roundState = 'reveal';
   game.revealTicks = secondsToTicks(GAMEPLAY.roleRevealSeconds);
-  game.timeTicks = MATCH_TICKS;
+  game.timeTicks = matchTicks(game.tuning);
   game.result = null;
   game.stats = freshStats();
 }
@@ -211,11 +219,11 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
 export function abandonRound(game: Game): void {
   game.hunters = [];
   game.creature = null;
-  game.creatureState = freshCreatureState();
-  game.pickup = freshPickup();
+  game.creatureState = freshCreatureState(game.tuning);
+  game.pickup = freshPickup(game.tuning);
   game.roundState = 'lobby';
   game.revealTicks = 0;
-  game.timeTicks = MATCH_TICKS;
+  game.timeTicks = matchTicks(game.tuning);
   game.result = null;
   game.stats = freshStats();
 }
@@ -277,12 +285,12 @@ function wrapAngle(angle: number): number {
 
 // The facing chases the held movement direction at a fixed angular speed. It
 // turns even when a wall stops the body, and keeps its value with no input.
-export function turnToward(facing: number, input: InputState): number {
+export function turnToward(facing: number, input: InputState, turnSpeed: number = DEFAULT_TUNING.hunterTurnSpeed): number {
   const dx = Number(input.right) - Number(input.left);
   const dz = Number(input.down) - Number(input.up);
   if (dx === 0 && dz === 0) return facing;
   const desired = Math.atan2(dz, dx);
-  const maxStep = GAMEPLAY.hunterTurnSpeed * (Math.PI / 180) * STEP_SECONDS;
+  const maxStep = turnSpeed * (Math.PI / 180) * STEP_SECONDS;
   let difference = wrapAngle(desired - facing);
   // An exact reversal has no shorter side; always turn in the positive direction.
   if (difference < -Math.PI + 1e-9) difference = Math.PI;
@@ -290,10 +298,10 @@ export function turnToward(facing: number, input: InputState): number {
   return wrapAngle(facing + Math.sign(difference) * maxStep);
 }
 
-export function proximityForDistance(value: number): ProximityState {
-  if (value <= GAMEPLAY.proximity.immediate) return 'IMMEDIATE';
-  if (value <= GAMEPLAY.proximity.danger) return 'DANGER';
-  if (value <= GAMEPLAY.proximity.uneasy) return 'UNEASY';
+export function proximityForDistance(value: number, tuning: Tuning = DEFAULT_TUNING): ProximityState {
+  if (value <= tuning.proximityImmediate) return 'IMMEDIATE';
+  if (value <= tuning.proximityDanger) return 'DANGER';
+  if (value <= tuning.proximityUneasy) return 'UNEASY';
   return 'SAFE';
 }
 
@@ -301,18 +309,20 @@ export function proximityForDistance(value: number): ProximityState {
 // this module has to touch the Creature's position to ask how close a Hunter is.
 export function hunterProximity(game: Game, hunter: Hunter): ProximityState {
   if (!game.creature) return 'SAFE';
-  return proximityForDistance(distance3D(hunter.position, game.creature.position));
+  return proximityForDistance(distance3D(hunter.position, game.creature.position), game.tuning);
 }
 
 // The flashlight originates at the Hunter's center, which collision keeps out of
 // every wall. A target sphere (the Creature, or a downed teammate) is lit when it
 // overlaps the cone and the straight line from the origin to its center crosses no
 // wall box. The same test decides Creature hits and revival exposure. `range` is the
-// battery stage's reach; it defaults to the full-battery range.
+// battery stage's reach and `coneAngle` the cone's full width; both default to the
+// full-battery, default-tuning values.
 export function flashlightReaches(
-  world: World, hunter: Position, facing: number, target: Position, range: number = GAMEPLAY.flashlight.range,
+  world: World, hunter: Position, facing: number, target: Position,
+  range: number = DEFAULT_TUNING.flashlightRange, coneAngle: number = DEFAULT_TUNING.flashlightConeAngle,
 ): boolean {
-  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius, range) && !segmentBlocked(hunter, target, world.wallBoxes);
+  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius, range, coneAngle) && !segmentBlocked(hunter, target, world.wallBoxes);
 }
 
 function endRound(game: Game, result: RoundResult): void {
@@ -337,6 +347,7 @@ export function stepGame(game: Game): void {
   const creature = game.creature;
   if (game.roundState !== 'running' || !creature) return;
   const state = game.creatureState;
+  const { tuning } = game;
 
   // The match clock only runs here, so it starts when gameplay starts and stops the
   // moment a round ends: an ended round never reaches this line again.
@@ -362,20 +373,20 @@ export function stepGame(game: Game): void {
   const huntersBefore = game.hunters.map((hunter) => hunter.position);
   for (const hunter of game.hunters) {
     if (hunter.down) continue;
-    hunter.facing = turnToward(hunter.facing, hunter.input);
-    hunter.position = move(game.world, hunter.position, hunter.input, GAMEPLAY.speed.hunter);
+    hunter.facing = turnToward(hunter.facing, hunter.input, tuning.hunterTurnSpeed);
+    hunter.position = move(game.world, hunter.position, hunter.input, tuning.hunterSpeed);
   }
 
   // The sprint is re-evaluated every step from the held button: it cannot run while
   // staggered or during the cooldown that follows every sprint, and a button held
   // through that cooldown resumes sprinting on the step the cooldown expires.
   const sprinting = creature.input.light && !isStaggered(state) && state.sprintCooldownTicks === 0;
-  if (state.sprinting && !sprinting) state.sprintCooldownTicks = secondsToTicks(GAMEPLAY.sprint.cooldownSeconds);
+  if (state.sprinting && !sprinting) state.sprintCooldownTicks = secondsToTicks(tuning.sprintCooldownSeconds);
   state.sprinting = sprinting;
   const creatureBefore = creature.position;
   creature.position = isStaggered(state)
     ? constrainToWalls(game.world, creature.position)
-    : move(game.world, creature.position, creature.input, sprinting ? GAMEPLAY.sprint.speed : GAMEPLAY.speed.creature);
+    : move(game.world, creature.position, creature.input, sprinting ? tuning.sprintSpeed : tuning.creatureSpeed);
 
   // Tag: a staggered or burning Creature cannot attack, and every tag starts the attack
   // cooldown, so at most one Hunter goes down per cooldown. With two active Hunters in
@@ -388,7 +399,7 @@ export function stepGame(game: Game): void {
       target.down = true;
       target.reviveTicks = 0;
       target.input = emptyInput();
-      state.attackCooldownTicks = secondsToTicks(GAMEPLAY.creature.attackCooldownSeconds);
+      state.attackCooldownTicks = secondsToTicks(tuning.attackCooldownSeconds);
       game.stats.incapacitations += 1;
       if (allHuntersDown(game)) {
         endRound(game, 'caught');
@@ -408,8 +419,8 @@ export function stepGame(game: Game): void {
     const collector = game.hunters.find((hunter) =>
       !hunter.down && distance3D(hunter.position, point) <= PICKUP_REACH);
     if (collector) {
-      collector.battery = Math.min(GAMEPLAY.battery.max, collector.battery + GAMEPLAY.batteryPickup.restores);
-      game.pickup = { at: null, spawnTicks: PICKUP_RESPAWN_TICKS };
+      collector.battery = Math.min(tuning.batteryMax, collector.battery + tuning.batteryRestores);
+      game.pickup = { at: null, spawnTicks: secondsToTicks(tuning.batteryRespawnSeconds) };
       game.stats.pickupsCollected += 1;
     }
   }
@@ -419,41 +430,41 @@ export function stepGame(game: Game): void {
   // share this list, so an empty flashlight does neither.
   const beams = game.hunters
     .filter(hasBeam)
-    .map((hunter) => ({ hunter, range: flashlightRange(hunter.battery) }));
+    .map((hunter) => ({ hunter, range: flashlightRange(hunter.battery, tuning) }));
 
   // Flashlights: the Creature is lit when any active Hunter's beam reaches it. Damage,
   // the linger, and the stagger are evaluated once per step regardless of how many
   // beams overlap, so extra Hunters neither multiply damage nor bypass the cooldown.
   state.lit = beams.some(({ hunter, range }) =>
-    flashlightReaches(game.world, hunter.position, hunter.facing, creature.position, range));
+    flashlightReaches(game.world, hunter.position, hunter.facing, creature.position, range, tuning.flashlightConeAngle));
   if (state.lit) {
-    state.hp = Math.max(0, state.hp - GAMEPLAY.flashlight.damagePerSecond * STEP_SECONDS);
+    state.hp = Math.max(0, state.hp - tuning.flashlightDamagePerSecond * STEP_SECONDS);
     // Every lit step refreshes the linger. Only a hit outside the cooldown staggers,
     // and that hit also starts the cooldown, so continuous light never re-staggers
     // until the cooldown has fully expired.
-    state.revealTicks = secondsToTicks(GAMEPLAY.creature.visibilityLingerSeconds);
+    state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
     if (!isOnStaggerCooldown(state)) {
-      state.staggerTicks = secondsToTicks(GAMEPLAY.creature.staggerSeconds);
-      state.staggerCooldownTicks = secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds);
+      state.staggerTicks = secondsToTicks(tuning.staggerSeconds);
+      state.staggerCooldownTicks = secondsToTicks(tuning.staggerCooldownSeconds);
     }
     // Every hit, in or out of the stagger cooldown, restarts the burn in full: it counts
     // down only from the last lit step, and there is no cooldown gating it.
-    state.burnTicks = secondsToTicks(GAMEPLAY.creature.burnSeconds);
+    state.burnTicks = secondsToTicks(tuning.burnSeconds);
   }
   // A sprinting Creature is revealed exactly like a lit one and shares its linger, so
   // tapping the button cannot flicker it in and out of the Hunters' view. Sprinting
   // itself never damages or staggers.
-  if (state.sprinting) state.revealTicks = secondsToTicks(GAMEPLAY.creature.visibilityLingerSeconds);
+  if (state.sprinting) state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
 
   // Revival: every active teammate whose beam reaches a downed Hunter adds one tick of
   // work per step (beams stack). Progress is kept while no beam reaches the Hunter.
   for (const downed of game.hunters) {
     if (!downed.down) continue;
     const reaching = beams.filter(({ hunter, range }) =>
-      flashlightReaches(game.world, hunter.position, hunter.facing, downed.position, range)).length;
+      flashlightReaches(game.world, hunter.position, hunter.facing, downed.position, range, tuning.flashlightConeAngle)).length;
     if (reaching === 0) continue;
     downed.reviveTicks += reaching;
-    if (downed.reviveTicks >= REVIVE_TICKS) {
+    if (downed.reviveTicks >= reviveTicks(tuning)) {
       downed.down = false;
       downed.reviveTicks = 0;
       game.stats.revives += 1;
@@ -463,7 +474,7 @@ export function stepGame(game: Game): void {
   // Drain, in simulation time, after the effects: a Hunter gets the reveal, damage, or
   // revival work the battery it just spent paid for. Nothing recharges it.
   for (const { hunter } of beams) {
-    hunter.battery = Math.max(0, hunter.battery - GAMEPLAY.battery.drainPerSecond * STEP_SECONDS);
+    hunter.battery = Math.max(0, hunter.battery - tuning.batteryDrainPerSecond * STEP_SECONDS);
     game.stats.lightTicks[hunter.id] += 1;
   }
 
@@ -490,7 +501,7 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     light: hasBeam(hunter),
     battery: hunter.battery,
     down: hunter.down,
-    revive: hunter.down ? hunter.reviveTicks / REVIVE_TICKS : 0,
+    revive: hunter.down ? hunter.reviveTicks / reviveTicks(game.tuning) : 0,
   }));
   const round = {
     type: 'snapshot' as const,

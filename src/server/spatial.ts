@@ -67,16 +67,18 @@ export function constrainToWalls(world: World, position: Position): Position {
 // True when a sphere overlaps the flashlight cone: it starts within range and
 // its angular extent reaches inside the cone's half angle. Walls are checked
 // separately with a line-of-sight segment to the sphere center. `range` defaults to
-// the full-battery reach; the battery stages pass a shorter one.
+// the full-battery reach and `coneAngle` (full width, degrees) to the tunable default;
+// the game passes its room's values.
 export function sphereInCone(
-  origin: Position, facing: number, center: Position, radius: number, range: number = GAMEPLAY.flashlight.range,
+  origin: Position, facing: number, center: Position, radius: number,
+  range: number = GAMEPLAY.flashlight.range, coneAngle: number = GAMEPLAY.flashlight.coneAngle,
 ): boolean {
   const distance = distance3D(origin, center);
   if (distance - radius > range) return false;
   if (distance <= radius) return true;
   const cosine = ((center.x - origin.x) * Math.cos(facing) + (center.z - origin.z) * Math.sin(facing)) / distance;
   const angle = Math.acos(Math.max(-1, Math.min(1, cosine)));
-  const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
+  const halfAngle = (coneAngle / 2) * (Math.PI / 180);
   return angle <= halfAngle + Math.asin(radius / distance);
 }
 

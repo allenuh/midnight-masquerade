@@ -19,6 +19,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { flashlightRange } from '../shared/flashlight.js';
+import type { Tuning } from '../shared/tuning.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
@@ -138,8 +139,8 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
 
   // `range` is the battery stage's reach, so the drawn fan shortens exactly when the
   // authoritative cone does: that shortening is the stage feedback.
-  function updateFan(mesh: HunterMesh, origin: Position, facing: number, range: number): void {
-    const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
+  function updateFan(mesh: HunterMesh, origin: Position, facing: number, range: number, coneAngle: number): void {
+    const halfAngle = (coneAngle / 2) * (Math.PI / 180);
     const floorHeight = GAMEPLAY.arena.floorY + 1;
     const { fanPositions, fanGeometry } = mesh;
     fanPositions[0] = origin.x;
@@ -201,7 +202,8 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     creature = null;
   }
 
-  function render(snapshot: Snapshot | null): void {
+  // `tuning` is the room's: the fan's length and width follow the values the server plays by.
+  function render(snapshot: Snapshot | null, tuning: Tuning): void {
     for (const mesh of hunters.values()) {
       mesh.group.visible = false;
       mesh.fan.visible = false;
@@ -220,7 +222,7 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
       mesh.nose.visible = !view.down;
       // `light` is already false on an empty battery, so a depleted flashlight draws nothing.
       mesh.fan.visible = view.light;
-      if (view.light) updateFan(mesh, view.position, view.facing, flashlightRange(view.battery));
+      if (view.light) updateFan(mesh, view.position, view.facing, flashlightRange(view.battery, tuning), tuning.flashlightConeAngle);
     }
     for (const [index, mesh] of pickups.entries()) mesh.visible = snapshot?.pickups.includes(index) ?? false;
 
