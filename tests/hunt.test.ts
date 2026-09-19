@@ -39,7 +39,7 @@ const EAST = 0;
 // (100, 60) facing east has an unobstructed lane longer than the flashlight range.
 // The lane Creature sits slightly off-axis so its coordinates differ from the Hunter's.
 const LANE_HUNTER = groundPosition(100, 60);
-const LANE_CREATURE = groundPosition(200, 75);
+const LANE_CREATURE = groundPosition(169, 71);
 // The west slab (X 320..336, Z 220..460) separates these two; the opening north of
 // it (Z 156..220) lets the same east-facing light through at Z = 180.
 const WALL_HUNTER = groundPosition(280, 300);
@@ -287,7 +287,7 @@ test('Creature HP reaching zero ends the round with a Hunter victory and freezes
 
 test('the Creature tagging the Hunter still downs it, even in the same step the light would reveal it', () => {
   // Plain tag with the light off.
-  const plain = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + 5, LANE_HUNTER.z));
+  const plain = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + creatureStep - 1, LANE_HUNTER.z));
   step(plain, 1, {}, { left: true });
   assert.equal(plain.hunters[0].down, true);
   assert.equal(ownView(hunterView(plain)).down, true);
@@ -296,7 +296,7 @@ test('the Creature tagging the Hunter still downs it, even in the same step the 
 
   // Same geometry with the light held: the Creature is in the cone, yet the tag
   // resolves first and the downed Hunter's flashlight is never applied.
-  const raced = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + 5, LANE_HUNTER.z));
+  const raced = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + creatureStep - 1, LANE_HUNTER.z));
   assert.equal(flashlightReaches(TEST_WORLD, hunterPosition(raced), hunterFacing(raced), creaturePosition(raced)), true);
   step(raced, 1, { light: true }, { left: true });
   assert.equal(raced.hunters[0].down, true);

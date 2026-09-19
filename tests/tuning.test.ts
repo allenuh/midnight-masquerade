@@ -176,9 +176,9 @@ test('flashlight range, cone, and stages follow the tuning on the server and in 
   step(inReach, 1, { light: true });
   assert.equal(inReach.creatureState.lit, true);
 
-  // Cone: a Creature 100 units ahead and 60 to the side is ~31 deg off axis: outside a
-  // 20 deg cone, inside a 90 deg one.
-  const aside = groundPosition(200, 120);
+  // Cone: a Creature 70 units ahead and 40 to the side is ~30 deg off axis: outside a
+  // 20 deg cone, inside a 90 deg one, and within the default range either way.
+  const aside = groundPosition(170, 100);
   const narrow = stagedOn(tuned({ flashlightConeAngle: 20 }), groundPosition(100, 60), aside);
   step(narrow, 1, { light: true });
   assert.equal(narrow.creatureState.lit, false);

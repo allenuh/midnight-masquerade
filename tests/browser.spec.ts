@@ -502,12 +502,12 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
 
     // Stage the encounter with each role's own legitimate information plus the shared
     // blockout: Hunter A walks to an open lane and turns east; the Creature, which sees
-    // every Hunter and its facing, parks 100 units in front of A.
+    // every Hunter and its facing, parks 60 units in front of A: inside the 90-unit beam.
     const [a, b] = hunters;
     const lane = findLane(300, othersFor(a));
     expect(await drive(a.page, () => positionOf(a), lane.start, { avoid: othersFor(a), arrive: 10, running })).toBe(true);
     await face(a, 'east');
-    const front = { ...positionOf(a), x: positionOf(a).x + 100 };
+    const front = { ...positionOf(a), x: positionOf(a).x + 60 };
     expect(await drive(creature.page, creaturePosition, front, { avoid: othersFor(creature), arrive: 10, running })).toBe(true);
     for (const hunter of hunters) expect('creature' in hunter.network.hunter()).toBe(false);
 
@@ -554,8 +554,8 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     const rescuer = standing()[0];
     expect(rescuer, 'at least one teammate is still up to revive A').toBeDefined();
     // Approach from the west unless the body lies against the west wall.
-    const fromWest = fell.x - 90 >= 60;
-    const approach = { ...fell, x: fromWest ? fell.x - 90 : fell.x + 90 };
+    const fromWest = fell.x - 60 >= 60;
+    const approach = { ...fell, x: fromWest ? fell.x - 60 : fell.x + 60 };
     expect(await drive(rescuer.page, () => positionOf(rescuer), approach, { avoid: othersFor(rescuer), arrive: 10, running })).toBe(true);
     await face(rescuer, fromWest ? 'east' : 'west');
     await rescuer.page.keyboard.down('Space');
@@ -604,7 +604,7 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     const killLane = findLane(200, othersFor(killer));
     expect(await drive(killer.page, () => positionOf(killer), killLane.start, { avoid: othersFor(killer), arrive: 10, running })).toBe(true);
     await face(killer, 'east');
-    const frontOfKiller = { ...positionOf(killer), x: positionOf(killer).x + 55 };
+    const frontOfKiller = { ...positionOf(killer), x: positionOf(killer).x + 45 };
     expect(await drive(creature.page, creaturePosition, frontOfKiller, { avoid: othersFor(creature), arrive: 6, running })).toBe(true);
     await killer.page.keyboard.down('Space');
     await expect.poll(() => killer.network.hunter().creature?.staggered).toBe(true);

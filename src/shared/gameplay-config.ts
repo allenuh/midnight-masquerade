@@ -9,19 +9,19 @@ export const GAMEPLAY = {
   roleRevealSeconds: 3,
   // The match clock starts when the reveal ends. Reaching zero is a Creature victory;
   // finalWarningSeconds is only the point where the clients emphasise the countdown.
-  round: { matchSeconds: 180, finalWarningSeconds: 30 },
+  round: { matchSeconds: 240, finalWarningSeconds: 30 },
   // The floor plane and the boundary wall the map's grid is enclosed by. Arena width and
   // depth are not here: they are map.width/height x TILE_SIZE, read from the room's World.
   arena: { floorY: 0, wallThickness: 26, wallHeight: 28 },
   // Shared collision radius for both roles. A tag is sphere contact: distance <= 2 * playerRadius.
   playerRadius: 14,
-  speed: { hunter: 110, creature: 150 },
+  speed: { hunter: 100, creature: 120 },
   // Degrees per second. The flashlight follows this facing; movement itself is not delayed.
-  hunterTurnSpeed: 720,
+  hunterTurnSpeed: 360,
   // coneAngle is the full cone width in degrees. Range is measured from the Hunter's center
   // and is the FULL-battery reach; the stages below scale it. damagePerSecond applies once
   // per step while any beam reaches the Creature; beams do not stack.
-  flashlight: { range: 140, coneAngle: 60, damagePerSecond: 6 },
+  flashlight: { range: 90, coneAngle: 45, damagePerSecond: 9 },
   // Finite flashlight energy. The battery drains only while the button is held, in
   // simulation seconds, and never regenerates: battery pickups are the only refill.
   // Stages are read in order; the first one whose fraction of `max` the battery still
@@ -29,7 +29,7 @@ export const GAMEPLAY = {
   // Only rangeMultiplier changes, so the cone angle reads the same at every stage.
   battery: {
     max: 100,
-    drainPerSecond: 5,
+    drainPerSecond: 7,
     stages: [
       { name: 'FULL', minFraction: 0.6, rangeMultiplier: 1 },
       { name: 'HALF', minFraction: 0.2, rangeMultiplier: 0.7 },
@@ -44,8 +44,8 @@ export const GAMEPLAY = {
   // and lives in the map; when and which one appears is gameplay and lives here.
   batteryPickup: {
     restores: 100,
-    firstSpawnSeconds: 45,
-    respawnSeconds: 20,
+    firstSpawnSeconds: 15,
+    respawnSeconds: 17,
     radius: 10,
   },
   // The stagger cooldown starts at the same moment as the stagger, so with these values the
@@ -62,11 +62,11 @@ export const GAMEPLAY = {
   // Creature sprint (the GDD's Dash): held Space / left mouse button replaces speed.creature with
   // sprint.speed and reveals the Creature. The cooldown runs after every sprint before the next.
   // Keep speed / tickRate below arena.wallThickness so one step can never cross a wall.
-  sprint: { speed: 240, cooldownSeconds: 0.2 },
+  sprint: { speed: 180, cooldownSeconds: 0.2 },
   // Total beam-seconds of teammate flashlight exposure that revives a downed Hunter. Beams
   // stack (two beams revive in half the time) and progress is kept when the light leaves.
-  revive: { seconds: 10 },
-  proximity: { uneasy: 360, danger: 220, immediate: 90 },
+  revive: { seconds: 6 },
+  proximity: { uneasy: 250, danger: 180, immediate: 90 },
   tickRate: 30,
   inputTimeoutMs: 300,
 } as const;

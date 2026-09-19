@@ -41,9 +41,12 @@ const WEST = Math.PI;
 
 // Open floor used by the encounters below (see the blockout in src/shared/arena.ts):
 // the north corridor lane, both sides of the west slab, and a far corner for bystanders.
+// The lane points are 60 apart: inside the FULL and HALF flashlight reach (90 and 63 from
+// the Hunter's center, less the target radius), so a beam held through a whole stagger
+// cooldown still reaches once its battery has dropped to HALF.
 const LANE_WEST = groundPosition(100, 60);
-const LANE_MIDDLE = groundPosition(200, 60);
-const LANE_EAST = groundPosition(300, 60);
+const LANE_MIDDLE = groundPosition(160, 60);
+const LANE_EAST = groundPosition(220, 60);
 const FAR_CORNER = groundPosition(900, 500);
 const WALL_WEST = groundPosition(280, 300);
 const WALL_EAST = groundPosition(380, 300);
@@ -137,7 +140,7 @@ test('each Hunter receives only its own proximity band, computed from its own di
   game.creature!.position = groundPosition(480, 300);
   game.hunters[0].position = groundPosition(530, 300); // 50: IMMEDIATE
   game.hunters[1].position = groundPosition(586, 406); // 150: DANGER
-  game.hunters[2].position = groundPosition(180, 300); // 300: UNEASY
+  game.hunters[2].position = groundPosition(260, 300); // 220: UNEASY
   game.hunters[3].position = groundPosition(880, 300); // 400: SAFE
   const expected = ['IMMEDIATE', 'DANGER', 'UNEASY', 'SAFE'] as const;
   for (let slot = 0; slot < 4; slot++) {
@@ -157,7 +160,8 @@ test('each Hunter receives only its own proximity band, computed from its own di
 
 test('no Hunter payload contains the hidden Creature transform, while every Hunter sees all four Hunters', () => {
   const game = startedGame();
-  const creature = groundPosition(777, 333);
+  // Digits that no public value can contain: a battery of 98.8333 would carry "333".
+  const creature = groundPosition(777, 331);
   game.creature!.position = { ...creature };
   game.hunters[0].position = groundPosition(100, 100);
   game.hunters[1].position = groundPosition(700, 560);

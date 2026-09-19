@@ -36,11 +36,11 @@ const EAST = 0;
 
 // The north corridor lane (see maps/test-arena.json): open for the whole arena width.
 const LANE_HUNTER = groundPosition(100, 60);
-// 130 units ahead: inside the FULL cone (130 - radius <= 140) but outside the HALF one
-// (130 - radius > 98), so the same geometry reads differently per battery stage.
-const STAGE_CREATURE = groundPosition(230, 60);
-// 100 units ahead: inside FULL and HALF, outside LOW.
-const LANE_CREATURE = groundPosition(200, 60);
+// 90 units ahead: inside the FULL cone (90 - radius <= 90) but outside the HALF one
+// (90 - radius > 63), so the same geometry reads differently per battery stage.
+const STAGE_CREATURE = groundPosition(190, 60);
+// 60 units ahead: inside FULL and HALF, outside LOW (60 - radius > 31.5).
+const LANE_CREATURE = groundPosition(160, 60);
 const FAR_CORNER = groundPosition(900, 500);
 
 const batteryOf = (game: Game, slot = 0): number => game.hunters[slot].battery;
@@ -77,9 +77,9 @@ test('the flashlight reaches exactly as far as the current battery stage allows'
   // The same Creature, the same facing: only the battery changes.
   const reaches = (battery: number, target: Position) =>
     flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, target, flashlightRange(battery));
-  assert.equal(reaches(maxBattery, STAGE_CREATURE), true, 'FULL reaches 130 units');
+  assert.equal(reaches(maxBattery, STAGE_CREATURE), true, 'FULL reaches 90 units');
   assert.equal(reaches(0.6 * maxBattery - 0.01, STAGE_CREATURE), false, 'HALF does not');
-  assert.equal(reaches(0.6 * maxBattery - 0.01, LANE_CREATURE), true, 'HALF still reaches 100 units');
+  assert.equal(reaches(0.6 * maxBattery - 0.01, LANE_CREATURE), true, 'HALF still reaches 60 units');
   assert.equal(reaches(0.2 * maxBattery - 0.01, LANE_CREATURE), false, 'LOW does not');
 
   // And through the simulation: a full battery lights the Creature, a HALF one cannot.
