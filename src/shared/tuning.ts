@@ -11,7 +11,7 @@ export type TunableKey =
   | 'hunterSpeed' | 'hunterTurnSpeed'
   | 'creatureSpeed' | 'sprintSpeed' | 'sprintCooldownSeconds' | 'creatureMaxHp'
   | 'staggerSeconds' | 'staggerCooldownSeconds' | 'visibilityLingerSeconds' | 'attackCooldownSeconds' | 'burnSeconds'
-  | 'flashlightDamagePerSecond' | 'flashlightRange' | 'flashlightConeAngle'
+  | 'flashlightDamagePerSecond' | 'flashlightRange' | 'flashlightConeAngle' | 'lightEffectDelaySeconds'
   | 'batteryMax' | 'batteryDrainPerSecond' | 'batteryRestores' | 'firstBatterySeconds' | 'batteryRespawnSeconds'
   | 'fullBatteryFraction' | 'halfBatteryFraction' | 'halfRangeMultiplier' | 'lowRangeMultiplier'
   | 'reviveSeconds'
@@ -39,6 +39,7 @@ export const TUNABLES: readonly Tunable[] = [
   { key: 'flashlightDamagePerSecond', label: 'Flashlight damage (HP/s)', group: 'Flashlight', min: 0, max: 200, step: 0.5, default: flashlight.damagePerSecond },
   { key: 'flashlightRange', label: 'Flashlight range', group: 'Flashlight', min: 10, max: 800, step: 5, default: flashlight.range },
   { key: 'flashlightConeAngle', label: 'Flashlight cone (deg)', group: 'Flashlight', min: 5, max: 180, step: 5, default: flashlight.coneAngle },
+  { key: 'lightEffectDelaySeconds', label: 'Effect delay (s)', group: 'Flashlight', min: 0, max: 10, step: 0.1, default: flashlight.effectDelaySeconds },
   { key: 'batteryMax', label: 'Battery capacity', group: 'Battery', min: 1, max: 1000, step: 5, default: battery.max },
   { key: 'batteryDrainPerSecond', label: 'Battery drain (per s)', group: 'Battery', min: 0, max: 200, step: 0.5, default: battery.drainPerSecond },
   { key: 'batteryRestores', label: 'Pickup restores', group: 'Battery', min: 1, max: 1000, step: 5, default: batteryPickup.restores },

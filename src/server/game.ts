@@ -19,6 +19,8 @@ export type PlayerId = string;
 //   sprint cooldown (sprintCooldownTicks > 0) the held sprint button does nothing
 //   attack cooldown (attackCooldownTicks > 0) contact cannot incapacitate another Hunter
 //   burning   (burnTicks > 0)            a flashlight hit was recent: contact cannot incapacitate
+// litTicks is the current run of consecutive lit steps (0 while unlit): a beam has effects
+// beyond the reveal only once that run exceeds the tunable effect delay.
 export type CreatureState = {
   hp: number;
   lit: boolean; // at least one flashlight reached the Creature during the last step
@@ -29,6 +31,7 @@ export type CreatureState = {
   sprintCooldownTicks: number;
   attackCooldownTicks: number;
   burnTicks: number;
+  litTicks: number;
 };
 
 // Team state is two flags per Hunter: `down` (incapacitated: no movement, turning, light,
@@ -125,6 +128,7 @@ export const allHuntersDown = (game: Game): boolean => game.hunters.length > 0 &
 const freshCreatureState = (tuning: Tuning): CreatureState => ({
   hp: tuning.creatureMaxHp, lit: false, sprinting: false,
   revealTicks: 0, staggerTicks: 0, staggerCooldownTicks: 0, sprintCooldownTicks: 0, attackCooldownTicks: 0, burnTicks: 0,
+  litTicks: 0,
 });
 
 // A round starts with an empty map: Hunters are on a full charge, so the first battery
@@ -334,7 +338,8 @@ function endRound(game: Game, result: RoundResult): void {
 // Step order: the role reveal counts down; the match clock and every countdown expire;
 // the battery spawn countdown runs; active Hunters turn and move; the Creature moves (at sprint speed while
 // sprinting); one tag is resolved; batteries are collected; the flashlights and the sprint
-// reveal are applied; revival exposure accumulates; batteries drain; the round result is
+// reveal are applied (a beam damages, staggers and burns only once it has stayed on the
+// Creature for the effect delay); revival exposure accumulates; batteries drain; the round result is
 // evaluated. A tag that occurs this step therefore still downs the Hunter even when the
 // same step would have revealed the Creature or set it burning, and that Hunter's beam is
 // void from this step on.
@@ -437,12 +442,18 @@ export function stepGame(game: Game): void {
   // beams overlap, so extra Hunters neither multiply damage nor bypass the cooldown.
   state.lit = beams.some(({ hunter, range }) =>
     flashlightReaches(game.world, hunter.position, hunter.facing, creature.position, range, tuning.flashlightConeAngle));
+  // Exposure is the run of consecutive lit steps; one unlit step ends it. Every lit step
+  // refreshes the linger, but the beam has effects only once the run has outlasted the
+  // effect delay (a delay of 0 means the first lit step), so a Hunter must hold the light
+  // on the Creature, not merely sweep across it.
+  state.litTicks = state.lit ? state.litTicks + 1 : 0;
   if (state.lit) {
-    state.hp = Math.max(0, state.hp - tuning.flashlightDamagePerSecond * STEP_SECONDS);
-    // Every lit step refreshes the linger. Only a hit outside the cooldown staggers,
-    // and that hit also starts the cooldown, so continuous light never re-staggers
-    // until the cooldown has fully expired.
     state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
+  }
+  if (state.lit && state.litTicks > secondsToTicks(tuning.lightEffectDelaySeconds)) {
+    state.hp = Math.max(0, state.hp - tuning.flashlightDamagePerSecond * STEP_SECONDS);
+    // Only a hit outside the cooldown staggers, and that hit also starts the cooldown,
+    // so continuous light never re-staggers until the cooldown has fully expired.
     if (!isOnStaggerCooldown(state)) {
       state.staggerTicks = secondsToTicks(tuning.staggerSeconds);
       state.staggerCooldownTicks = secondsToTicks(tuning.staggerCooldownSeconds);

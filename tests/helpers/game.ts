@@ -8,6 +8,7 @@ import { GAMEPLAY } from '../../src/shared/gameplay-config.js';
 import { parseMap } from '../../src/shared/map/validate.js';
 import { buildWorld } from '../../src/shared/map/world.js';
 import type { HunterSnapshot, HunterView, Position } from '../../src/shared/protocol.js';
+import { defaultTuning, type Tuning } from '../../src/shared/tuning.js';
 import {
   createGame, setInput, snapshotFor, startRound, stepGame, type Game, type PlayerId,
 } from '../../src/server/game.js';
@@ -28,9 +29,16 @@ export const groundPosition = (x: number, z: number): Position => ({ x, y: groun
 // stage, so idle Hunters never touch, light, or block anything.
 export const PARKED: readonly Position[] = [groundPosition(700, 560), groundPosition(760, 560), groundPosition(820, 560)];
 
+// The rule tests run on the shipped defaults with one exception: no flashlight effect
+// delay. They stage single-step encounters to test the individual rules (one lit step
+// damages, staggers, burns), and the delay that gates those effects has its own tests
+// in tests/tuning.test.ts. Every other value is exactly gameplay-config.ts, so
+// expectations derived from GAMEPLAY stay valid.
+export const TEST_TUNING: Readonly<Tuning> = Object.freeze({ ...defaultTuning(), lightEffectDelaySeconds: 0 });
+
 // A round for the five test players, stepped through the role reveal so it is running.
 export function startedGame(): Game {
-  const game = createGame(TEST_WORLD);
+  const game = createGame(TEST_WORLD, { ...TEST_TUNING });
   startRound(game, PLAYERS);
   while (game.roundState === 'reveal') stepGame(game);
   assert.equal(game.roundState, 'running');

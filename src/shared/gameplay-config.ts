@@ -20,8 +20,10 @@ export const GAMEPLAY = {
   hunterTurnSpeed: 360,
   // coneAngle is the full cone width in degrees. Range is measured from the Hunter's center
   // and is the FULL-battery reach; the stages below scale it. damagePerSecond applies once
-  // per step while any beam reaches the Creature; beams do not stack.
-  flashlight: { range: 90, coneAngle: 45, damagePerSecond: 9 },
+  // per step while any beam reaches the Creature; beams do not stack. A beam reveals the
+  // Creature the step it lands, but must stay on it for effectDelaySeconds before it
+  // damages, staggers, or burns; the moment no beam reaches it that exposure resets.
+  flashlight: { range: 90, coneAngle: 45, damagePerSecond: 9, effectDelaySeconds: 0.3 },
   // Finite flashlight energy. The battery drains only while the button is held, in
   // simulation seconds, and never regenerates: battery pickups are the only refill.
   // Stages are read in order; the first one whose fraction of `max` the battery still

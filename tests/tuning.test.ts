@@ -4,16 +4,18 @@ import { flashlightRange, flashlightStage } from '../src/shared/flashlight.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import { DEFAULT_TUNING, TUNABLES, defaultTuning, tuningDifferences, validateTuning, type Tuning } from '../src/shared/tuning.js';
 import {
-  PLAYER_COUNT, createGame, hunterProximity, isBurning, isStaggered, secondsToTicks, startRound, stepGame, type Game,
+  PLAYER_COUNT, createGame, hunterProximity, isBurning, isRevealed, isStaggered, secondsToTicks, startRound, stepGame, type Game,
 } from '../src/server/game.js';
 import { distance3D } from '../src/server/spatial.js';
-import { PLAYERS, TEST_WORLD, closeTo, creatureView, groundPosition, hold, hunterView, step, PARKED, creatureId, hunterId } from './helpers/game.js';
+import { PLAYERS, TEST_TUNING, TEST_WORLD, closeTo, creatureView, groundPosition, hold, hunterView, step, PARKED, creatureId, hunterId } from './helpers/game.js';
 
 // Host-tunable gameplay values. The table is the lobby's contract: every default is the
 // number in gameplay-config.ts, the validator is the only way a tuning enters a room, and
 // a game created with a tuning plays by it in every rule that reads a tunable.
 
-const tuned = (changes: Partial<Tuning>): Tuning => ({ ...defaultTuning(), ...changes });
+// Staged from TEST_TUNING (the defaults without the effect delay; see helpers/game.ts),
+// so the single-step assertions below read the rule under test, not the delay.
+const tuned = (changes: Partial<Tuning>): Tuning => ({ ...TEST_TUNING, ...changes });
 
 // A running round on the given tuning with H1 at `hunter`, the Creature at `creature`.
 function stagedOn(tuning: Tuning, hunter = groundPosition(100, 60), creature = groundPosition(200, 75), facing = 0): Game {
@@ -44,6 +46,7 @@ test('the tunable table mirrors gameplay-config.ts and every default is inside i
   assert.equal(byKey.flashlightDamagePerSecond.default, GAMEPLAY.flashlight.damagePerSecond);
   assert.equal(byKey.flashlightRange.default, GAMEPLAY.flashlight.range);
   assert.equal(byKey.flashlightConeAngle.default, GAMEPLAY.flashlight.coneAngle);
+  assert.equal(byKey.lightEffectDelaySeconds.default, GAMEPLAY.flashlight.effectDelaySeconds);
   assert.equal(byKey.batteryMax.default, GAMEPLAY.battery.max);
   assert.equal(byKey.batteryDrainPerSecond.default, GAMEPLAY.battery.drainPerSecond);
   assert.equal(byKey.batteryRestores.default, GAMEPLAY.batteryPickup.restores);
@@ -57,7 +60,7 @@ test('the tunable table mirrors gameplay-config.ts and every default is inside i
   assert.equal(byKey.proximityUneasy.default, GAMEPLAY.proximity.uneasy);
   assert.equal(byKey.proximityDanger.default, GAMEPLAY.proximity.danger);
   assert.equal(byKey.proximityImmediate.default, GAMEPLAY.proximity.immediate);
-  assert.equal(TUNABLES.length, 28);
+  assert.equal(TUNABLES.length, 29);
   assert.equal(new Set(TUNABLES.map((tunable) => tunable.key)).size, TUNABLES.length, 'keys are unique');
   for (const tunable of TUNABLES) {
     assert.ok(tunable.min < tunable.max, tunable.key);
@@ -91,7 +94,8 @@ test('validateTuning accepts a complete in-bounds table and rejects everything e
 
 test('tuningDifferences names only the values that differ from the defaults', () => {
   assert.equal(tuningDifferences(defaultTuning()), 'defaults');
-  assert.equal(tuningDifferences(tuned({ creatureSpeed: 170, matchSeconds: 60 })), 'matchSeconds=60 creatureSpeed=170');
+  assert.equal(tuningDifferences({ ...defaultTuning(), creatureSpeed: 170, matchSeconds: 60 }), 'matchSeconds=60 creatureSpeed=170');
+  assert.equal(tuningDifferences({ ...TEST_TUNING }), 'lightEffectDelaySeconds=0', 'the rule tests differ from the defaults in that one value');
 });
 
 test('a room plays by its tuning: speeds, clock, HP, battery, burn, stagger, and proximity', () => {
@@ -216,4 +220,69 @@ test('revive length, battery restore and respawn, and the match clock follow the
   assert.equal(fresh.roundState, 'ended');
   assert.equal(fresh.result, 'expired');
   assert.equal(PLAYER_COUNT, 5);
+});
+
+test('the effect delay gates damage, stagger and burn but not the reveal, and resets when the beam leaves', () => {
+  // 1 s of continuous light before the beam does anything but reveal. The lane Creature
+  // sits inside the FULL beam; H1 holds the light, then lets go for one step, then holds again.
+  const delayTicks = secondsToTicks(1);
+  const game = stagedOn(tuned({ lightEffectDelaySeconds: 1 }));
+  const { maxHp } = GAMEPLAY.creature;
+  for (let tick = 1; tick <= delayTicks; tick++) {
+    step(game, 1, { light: true });
+    assert.equal(game.creatureState.lit, true, `lit on tick ${tick}`);
+    assert.equal(game.creatureState.litTicks, tick);
+    assert.equal(isRevealed(game.creatureState), true, `revealed on tick ${tick}`);
+    const seen = hunterView(game).creature;
+    assert.ok(seen, `the Hunter sees the Creature on tick ${tick}`);
+    assert.equal(seen.staggered, false);
+    assert.equal(seen.burning, false);
+    assert.equal(game.creatureState.hp, maxHp, `no damage on tick ${tick}`);
+    assert.equal(isStaggered(game.creatureState), false);
+    assert.equal(isBurning(game.creatureState), false);
+    assert.equal(creatureView(game).lit, true, 'the Creature itself knows it is in a beam');
+  }
+  // The step after the delay: the beam is a hit.
+  step(game, 1, { light: true });
+  assert.equal(game.creatureState.litTicks, delayTicks + 1);
+  closeTo(game.creatureState.hp, maxHp - GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate, 1e-9);
+  assert.equal(isStaggered(game.creatureState), true);
+  assert.equal(game.creatureState.staggerCooldownTicks, secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds));
+  assert.equal(isBurning(game.creatureState), true);
+  assert.deepEqual([hunterView(game).creature?.staggered, hunterView(game).creature?.burning], [true, true]);
+  const hpAfterHit = game.creatureState.hp;
+
+  // One unlit step ends the exposure. Holding the light again earns nothing for a full
+  // delay: no damage (the stagger and burn merely run down), then a hit once more.
+  step(game, 1);
+  assert.equal(game.creatureState.lit, false);
+  assert.equal(game.creatureState.litTicks, 0);
+  for (let tick = 1; tick <= delayTicks; tick++) {
+    step(game, 1, { light: true });
+    assert.equal(game.creatureState.litTicks, tick);
+    assert.equal(game.creatureState.hp, hpAfterHit, `no damage while re-exposing, tick ${tick}`);
+    assert.equal(isRevealed(game.creatureState), true);
+  }
+  const burnBefore = game.creatureState.burnTicks;
+  step(game, 1, { light: true });
+  closeTo(game.creatureState.hp, hpAfterHit - GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate, 1e-9);
+  assert.equal(game.creatureState.burnTicks, secondsToTicks(GAMEPLAY.creature.burnSeconds), 'the hit restarts the burn');
+  assert.ok(burnBefore < game.creatureState.burnTicks);
+
+  // A delay of zero is the first lit step, as every other rule test assumes.
+  const immediate = stagedOn(tuned({ lightEffectDelaySeconds: 0 }));
+  step(immediate, 1, { light: true });
+  assert.equal(immediate.creatureState.litTicks, 1);
+  assert.ok(immediate.creatureState.hp < maxHp);
+  assert.equal(isStaggered(immediate.creatureState), true);
+  assert.equal(isBurning(immediate.creatureState), true);
+
+  // The shipped default: 0.3 s, so the tenth consecutive lit step is the first hit.
+  const shipped = stagedOn(defaultTuning());
+  step(shipped, secondsToTicks(GAMEPLAY.flashlight.effectDelaySeconds), { light: true });
+  assert.equal(shipped.creatureState.hp, maxHp);
+  assert.equal(isRevealed(shipped.creatureState), true);
+  step(shipped, 1, { light: true });
+  assert.ok(shipped.creatureState.hp < maxHp);
+  assert.equal(isStaggered(shipped.creatureState), true);
 });
