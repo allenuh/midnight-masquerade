@@ -15,7 +15,7 @@ export const GAMEPLAY = {
   arena: { floorY: 0, wallThickness: 26, wallHeight: 28 },
   // Shared collision radius for both roles. A tag is sphere contact: distance <= 2 * playerRadius.
   playerRadius: 14,
-  speed: { hunter: 100, creature: 120 },
+  speed: { hunter: 60, creature: 70 },
   // Degrees per second. The flashlight follows this facing; movement itself is not delayed.
   hunterTurnSpeed: 360,
   // coneAngle is the full cone width in degrees. Range is measured from the Hunter's center

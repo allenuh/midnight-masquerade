@@ -1,4 +1,7 @@
 import {
+  AnimationClip,
+  AnimationMixer,
+  Box3,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
@@ -10,14 +13,19 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshLambertMaterial,
+  MeshStandardMaterial,
+  Object3D,
   OctahedronGeometry,
   PerspectiveCamera,
   PlaneGeometry,
   RingGeometry,
   Scene,
-  SphereGeometry,
   WebGLRenderer,
+  type AnimationAction,
 } from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { clone as cloneModel } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import hunterModelUrl from './assets/hunter.glb?url';
 import { flashlightRange } from '../shared/flashlight.js';
 import type { Tuning } from '../shared/tuning.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
@@ -33,8 +41,15 @@ const FAN_RAYS = 32;
 const SELF_COLOR = '#e6e7e4';
 const TEAMMATE_COLOR = '#8fa3b8';
 const DOWN_COLOR = '#8a3a4a';
-// A downed Hunter is the same sphere squashed flat onto the floor.
-const DOWN_HEIGHT = 0.35;
+// The Hunter model is scaled to this height: 1.5x the collision sphere's diameter, so it
+// reads clearly from the camera. Presentation only; collision still uses playerRadius.
+// Walk fades in and out over WALK_FADE_SECONDS; at zero weight the model is in its rest
+// pose, which is the idle.
+const HUNTER_HEIGHT = 1.5 * 2 * GAMEPLAY.playerRadius;
+const WALK_FADE_SECONDS = 0.15;
+// The Hunter speed (units/s) at which Walk plays at its authored rate. Playback scales with
+// the room's tuned hunterSpeed, so the default 100 plays it at 2x. Lower this for a faster walk.
+const WALK_RATE_SPEED = 50;
 // The Creature's body, and the red it turns while burning (unable to tag).
 const CREATURE_COLOR = '#df9460';
 const CREATURE_BURNING_COLOR = '#d23a2a';
@@ -42,10 +57,34 @@ const CREATURE_BURNING_COLOR = '#d23a2a';
 const PICKUP_COLOR = '#6f9a52';
 const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
 
+// The Hunter model and its Walk clip, loaded once per page and cloned for every Hunter.
+// `scale` fits it to HUNTER_HEIGHT; `backDepth` is how far its back sticks out behind the
+// feet after scaling, which is how high a downed Hunter lying on its back must be lifted.
+// `bodyMaterial` is the emissive white body ('Material' in the file), tinted per Hunter.
+export type HunterModel = {
+  scene: Object3D; walk: AnimationClip; bodyMaterial: MeshStandardMaterial; scale: number; backDepth: number;
+};
+
+export async function loadHunterModel(): Promise<HunterModel> {
+  const gltf = await new GLTFLoader().loadAsync(hunterModelUrl);
+  const walk = AnimationClip.findByName(gltf.animations, 'Walk');
+  if (!walk) throw new Error('hunter.glb has no Walk animation');
+  const materials: unknown[] = [];
+  gltf.scene.traverse((object) => {
+    if (object instanceof Mesh) materials.push(object.material);
+  });
+  const bodyMaterial = materials.find((material): material is MeshStandardMaterial =>
+    material instanceof MeshStandardMaterial && material.name === 'Material');
+  if (!bodyMaterial) throw new Error('hunter.glb has no body material');
+  const bounds = new Box3().setFromObject(gltf.scene);
+  const scale = HUNTER_HEIGHT / (bounds.max.y - bounds.min.y);
+  return { scene: gltf.scene, walk, bodyMaterial, scale, backDepth: -bounds.min.z * scale };
+}
+
 // One scene per map: the world the room plays on is fixed for the scene's lifetime, and a
 // map change disposes it and builds another (see main.ts). `renderer` may be handed over
 // from the previous scene so a map switch never creates a second WebGL context.
-export function createScene(canvas: HTMLCanvasElement, world: World, existingRenderer?: WebGLRenderer) {
+export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, existingRenderer?: WebGLRenderer) {
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const scene = new Scene();
@@ -95,11 +134,13 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     return mesh;
   });
 
-  // Hunter: sphere plus a small dark nose so the facing reads even with the light off,
-  // and a flashlight fan of its own. The nose points along local +X; the group is
-  // rotated to the server's facing angle. One set per Hunter slot, created on demand.
+  // Hunter: the hunter.glb model plus a flashlight fan of its own. The group sits at the
+  // server's position (the collision sphere's center) and is rotated to its facing, which
+  // points along local +X. Inside it, `pose` is at the feet: it tips over when the Hunter
+  // is down. One set per Hunter slot, created on demand.
   type HunterMesh = {
-    group: Group; body: Mesh; material: MeshLambertMaterial; nose: Mesh;
+    group: Group; pose: Group; material: MeshStandardMaterial;
+    mixer: AnimationMixer; walk: AnimationAction; walkWeight: number; moving: boolean; lastPosition: Position | null;
     fan: Mesh; fanPositions: Float32Array; fanGeometry: BufferGeometry;
   };
   const hunters = new Map<HunterId, HunterMesh>();
@@ -108,12 +149,23 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     const existing = hunters.get(id);
     if (existing) return existing;
     const group = new Group();
-    const material = new MeshLambertMaterial({ color: SELF_COLOR });
-    const body = new Mesh(new SphereGeometry(GAMEPLAY.playerRadius, 16, 12), material);
-    group.add(body);
-    const nose = new Mesh(new BoxGeometry(10, 6, 6), new MeshLambertMaterial({ color: '#2b2f2c' }));
-    nose.position.set(GAMEPLAY.playerRadius, 0, 0);
-    group.add(nose);
+    const pose = new Group();
+    pose.position.y = -GAMEPLAY.playerRadius;
+    group.add(pose);
+    const model = cloneModel(hunterModel.scene);
+    // The model faces +Z; a quarter turn about Y points it along the group's +X facing.
+    model.rotation.y = Math.PI / 2;
+    model.scale.setScalar(hunterModel.scale);
+    pose.add(model);
+    // Each Hunter gets its own copy of the body material so its emissive colour can show
+    // self, teammate, or down. Eyes and flashlight keep the shared originals.
+    const material = hunterModel.bodyMaterial.clone();
+    model.traverse((object) => {
+      if (object instanceof Mesh && object.material === hunterModel.bodyMaterial) object.material = material;
+    });
+    const mixer = new AnimationMixer(model);
+    const walk = mixer.clipAction(hunterModel.walk);
+    walk.setEffectiveWeight(0).play();
     group.visible = false;
     scene.add(group);
 
@@ -132,7 +184,10 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     fan.visible = false;
     scene.add(fan);
 
-    const mesh = { group, body, material, nose, fan, fanPositions, fanGeometry };
+    const mesh = {
+      group, pose, material, mixer, walk, walkWeight: 0, moving: false, lastPosition: null,
+      fan, fanPositions, fanGeometry,
+    };
     hunters.set(id, mesh);
     return mesh;
   }
@@ -202,8 +257,19 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
     creature = null;
   }
 
+  // Snapshots arrive at the tick rate while frames run faster, so "moving" is decided only
+  // when a new snapshot arrives: did this Hunter's position change since the previous one.
+  let lastSnapshot: Snapshot | null = null;
+  let lastFrameTime = performance.now();
+
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
   function render(snapshot: Snapshot | null, tuning: Tuning): void {
+    const now = performance.now();
+    // Capped so a backgrounded tab does not jump the walk cycle when it returns.
+    const deltaSeconds = Math.min((now - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = now;
+    const newSnapshot = snapshot !== lastSnapshot;
+    lastSnapshot = snapshot;
     for (const mesh of hunters.values()) {
       mesh.group.visible = false;
       mesh.fan.visible = false;
@@ -215,11 +281,23 @@ export function createScene(canvas: HTMLCanvasElement, world: World, existingRen
       mesh.group.position.set(view.position.x, view.position.y, view.position.z);
       // A positive rotation about Y turns local +X toward -Z; the facing angle runs +X toward +Z.
       mesh.group.rotation.y = -view.facing;
-      mesh.material.color.set(view.down ? DOWN_COLOR : view.id === self ? SELF_COLOR : TEAMMATE_COLOR);
-      // Down: squash the sphere onto the floor and hide the nose; it cannot turn or shine.
-      mesh.body.scale.y = view.down ? DOWN_HEIGHT : 1;
-      mesh.body.position.y = view.down ? -GAMEPLAY.playerRadius * (1 - DOWN_HEIGHT) : 0;
-      mesh.nose.visible = !view.down;
+      mesh.material.emissive.set(view.down ? DOWN_COLOR : view.id === self ? SELF_COLOR : TEAMMATE_COLOR);
+      // Down: tipped onto its back (face up, head away from its facing), lifted so the back
+      // rests on the floor. It cannot move, turn, or shine.
+      mesh.pose.rotation.z = view.down ? Math.PI / 2 : 0;
+      mesh.pose.position.y = -GAMEPLAY.playerRadius + (view.down ? hunterModel.backDepth : 0);
+      // Walk plays while the Hunter moves and fades back to the rest pose when it stops.
+      if (newSnapshot) {
+        const last = mesh.lastPosition;
+        mesh.moving = last !== null && (last.x !== view.position.x || last.z !== view.position.z);
+        mesh.lastPosition = { ...view.position };
+      }
+      const targetWeight = mesh.moving && !view.down ? 1 : 0;
+      const step = deltaSeconds / WALK_FADE_SECONDS;
+      mesh.walkWeight += Math.max(-step, Math.min(step, targetWeight - mesh.walkWeight));
+      mesh.walk.setEffectiveWeight(mesh.walkWeight);
+      mesh.walk.timeScale = tuning.hunterSpeed / WALK_RATE_SPEED;
+      mesh.mixer.update(deltaSeconds);
       // `light` is already false on an empty battery, so a depleted flashlight draws nothing.
       mesh.fan.visible = view.light;
       if (view.light) updateFan(mesh, view.position, view.facing, flashlightRange(view.battery, tuning), tuning.flashlightConeAngle);

@@ -4,7 +4,7 @@ import { validateMap } from '../shared/map/validate.js';
 import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { DEFAULT_TUNING, TUNABLES, defaultTuning, type Tunable, type Tuning } from '../shared/tuning.js';
-import { createScene } from './scene.js';
+import { createScene, loadHunterModel, type HunterModel } from './scene.js';
 import './style.css';
 
 const element = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
@@ -47,7 +47,7 @@ const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 // client already received: a Hunter page has no Creature position to put in it.
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
-function start(): void {
+function start(hunterModel: HunterModel): void {
   // The client bundles no map. The scene exists only once the server has sent the room's
   // map, and is rebuilt (reusing the WebGL renderer) whenever the host switches map.
   let scene: ReturnType<typeof createScene> | null = null;
@@ -61,7 +61,7 @@ function start(): void {
     const renderer = scene?.renderer;
     scene?.dispose(true);
     try {
-      scene = createScene(canvas, buildWorld(result.map), renderer);
+      scene = createScene(canvas, buildWorld(result.map), hunterModel, renderer);
     } catch {
       scene = null;
       statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
@@ -317,7 +317,7 @@ function start(): void {
     if (DEBUG) debugPanel.textContent = debugText(snapshot);
 
     if (snapshot.role === 'hunter') {
-      roleText.textContent = `Role: Hunter ${snapshot.self} (white sphere)`;
+      roleText.textContent = `Role: Hunter ${snapshot.self} (white)`;
       // `self` rather than `snapshot.self`: the snapshot is reassigned on every message,
       // so it does not stay narrowed inside a callback.
       const battery = snapshot.hunters.find((hunter) => hunter.id === self)?.battery ?? 0;
@@ -521,4 +521,7 @@ function start(): void {
   });
 }
 
-start();
+// The Hunter model is needed by every scene, so it is loaded before anything connects.
+loadHunterModel().then(start, () => {
+  statusText.textContent = 'Could not load the Hunter model. Reload the page to try again.';
+});
