@@ -6,6 +6,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
+  ConeGeometry,
   DirectionalLight,
   DoubleSide,
   Group,
@@ -20,10 +21,14 @@ import {
   PlaneGeometry,
   RingGeometry,
   Scene,
+  type ShaderMaterial,
+  SphereGeometry,
+  Vector3,
   WebGLRenderer,
   type AnimationAction,
 } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clone as cloneModel } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import hunterModelUrl from './assets/hunter.glb?url';
 import { flashlightRange } from '../shared/flashlight.js';
@@ -33,6 +38,9 @@ import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
+import {
+  OUTLINE_MATERIAL, VFX, VFX_UNIFORMS, createBeamMaterial, createGlowMaterial, createLightPoolMaterial, ditheredBody,
+} from './vfx.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 // Rays across the cone for the drawn flashlight fan. Purely visual resolution.
@@ -41,44 +49,76 @@ const FAN_RAYS = 32;
 const SELF_COLOR = '#e6e7e4';
 const TEAMMATE_COLOR = '#8fa3b8';
 const DOWN_COLOR = '#8a3a4a';
-// The Hunter model is scaled to this height: 1.5x the collision sphere's diameter, so it
+// The Hunter model is scaled to this height: 1.8x the collision sphere's diameter, so it
 // reads clearly from the camera. Presentation only; collision still uses playerRadius.
 // Walk fades in and out over WALK_FADE_SECONDS; at zero weight the model is in its rest
 // pose, which is the idle.
-const HUNTER_HEIGHT = 1.5 * 2 * GAMEPLAY.playerRadius;
+const HUNTER_HEIGHT = 1.8 * 2 * GAMEPLAY.playerRadius;
 const WALK_FADE_SECONDS = 0.15;
 // The Hunter speed (units/s) at which Walk plays at its authored rate. Playback scales with
-// the room's tuned hunterSpeed, so the default 100 plays it at 2x. Lower this for a faster walk.
-const WALK_RATE_SPEED = 50;
+// the room's tuned hunterSpeed, so a speed of 60 plays it at about 1.56x. Lower this for a
+// faster walk.
+const WALK_RATE_SPEED = 38.5;
 // The Creature's body, and the red it turns while burning (unable to tag).
 const CREATURE_COLOR = '#df9460';
 const CREATURE_BURNING_COLOR = '#d23a2a';
 // Battery pickup: a small upright block, deliberately unlike any player colour.
 const PICKUP_COLOR = '#6f9a52';
 const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
+// Radius of the soft glow drawn at the flashlight's lens.
+const LENS_GLOW_RADIUS = 5;
 
 // The Hunter model and its Walk clip, loaded once per page and cloned for every Hunter.
 // `scale` fits it to HUNTER_HEIGHT; `backDepth` is how far its back sticks out behind the
 // feet after scaling, which is how high a downed Hunter lying on its back must be lifted.
 // `bodyMaterial` is the emissive white body ('Material' in the file), tinted per Hunter.
+// `lens` is the front of the model's flashlight in the Hunter group's space (facing +X,
+// origin at the collision sphere's centre): where the drawn beam starts.
 export type HunterModel = {
   scene: Object3D; walk: AnimationClip; bodyMaterial: MeshStandardMaterial; scale: number; backDepth: number;
+  lens: Vector3;
 };
 
 export async function loadHunterModel(): Promise<HunterModel> {
   const gltf = await new GLTFLoader().loadAsync(hunterModelUrl);
   const walk = AnimationClip.findByName(gltf.animations, 'Walk');
   if (!walk) throw new Error('hunter.glb has no Walk animation');
-  const materials: unknown[] = [];
+  const meshes: Mesh[] = [];
   gltf.scene.traverse((object) => {
-    if (object instanceof Mesh) materials.push(object.material);
+    if (object instanceof Mesh) meshes.push(object);
   });
-  const bodyMaterial = materials.find((material): material is MeshStandardMaterial =>
+  const bodyMaterial = meshes.map((mesh) => mesh.material as unknown).find((material): material is MeshStandardMaterial =>
     material instanceof MeshStandardMaterial && material.name === 'Material');
   if (!bodyMaterial) throw new Error('hunter.glb has no body material');
   const bounds = new Box3().setFromObject(gltf.scene);
   const scale = HUNTER_HEIGHT / (bounds.max.y - bounds.min.y);
-  return { scene: gltf.scene, walk, bodyMaterial, scale, backDepth: -bounds.min.z * scale };
+  // The flashlight ('Cylinder' in the file) points along the model's +Z, so its lens is the
+  // front of its bounds. The model faces +Z and the Hunter group +X, hence the axis swap.
+  const flashlight = gltf.scene.getObjectByName('Cylinder');
+  const lensBounds = new Box3().setFromObject(flashlight ?? gltf.scene);
+  const lensCenter = lensBounds.getCenter(new Vector3());
+  const lens = new Vector3(lensBounds.max.z * scale, -GAMEPLAY.playerRadius + lensCenter.y * scale, -lensCenter.x * scale);
+  for (const mesh of meshes) {
+    // Outline hull for this part, a child so it follows the Walk animation. Its vertices are
+    // welded and given smooth normals so the pushed-out hull does not split at hard edges.
+    const hull = new BufferGeometry().setAttribute('position', mesh.geometry.getAttribute('position'));
+    hull.setIndex(mesh.geometry.getIndex());
+    const outlineGeometry = mergeVertices(hull);
+    // Mirrored parts (negative scale: the feet and the flashlight) are wound the other way
+    // round. Left as is, their hull's normals point inward and its faces cull the wrong way,
+    // so the outline vanishes; reversing every triangle fixes both.
+    const index = outlineGeometry.getIndex();
+    if (index && mesh.matrixWorld.determinant() < 0) {
+      for (let corner = 0; corner < index.count; corner += 3) {
+        const second = index.getX(corner + 1);
+        index.setX(corner + 1, index.getX(corner + 2));
+        index.setX(corner + 2, second);
+      }
+    }
+    outlineGeometry.computeVertexNormals();
+    mesh.add(new Mesh(outlineGeometry, OUTLINE_MATERIAL));
+  }
+  return { scene: gltf.scene, walk, bodyMaterial, scale, backDepth: -bounds.min.z * scale, lens };
 }
 
 // One scene per map: the world the room plays on is fixed for the scene's lifetime, and a
@@ -119,6 +159,9 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
   const light = new DirectionalLight('#ffffff', 1.8);
   light.position.set(-300, 900, 500);
   scene.add(light);
+  // The Hunter's dithered shading uses this light's direction, in the fixed camera's view space.
+  camera.updateMatrixWorld();
+  VFX_UNIFORMS.vfxLightDirection.value.copy(light.position).normalize().transformDirection(camera.matrixWorldInverse);
 
   // Battery pickups: one block per Battery Spawn marker the map declares, shown while the
   // server lists that point as active. Both roles see the same set, in the same order the
@@ -134,6 +177,11 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
     return mesh;
   });
 
+  // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
+  // at the origin opening along +X, scaled each frame to the light's range and width.
+  const beamGeometry = new ConeGeometry(1, 1, 32, 1, true).translate(0, -0.5, 0).rotateZ(Math.PI / 2);
+  const glowGeometry = new SphereGeometry(LENS_GLOW_RADIUS, 16, 12);
+
   // Hunter: the hunter.glb model plus a flashlight fan of its own. The group sits at the
   // server's position (the collision sphere's center) and is rotated to its facing, which
   // points along local +X. Inside it, `pose` is at the feet: it tips over when the Hunter
@@ -142,6 +190,7 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
     group: Group; pose: Group; material: MeshStandardMaterial;
     mixer: AnimationMixer; walk: AnimationAction; walkWeight: number; moving: boolean; lastPosition: Position | null;
     fan: Mesh; fanPositions: Float32Array; fanGeometry: BufferGeometry;
+    flatFan: MeshBasicMaterial; lightPool: ShaderMaterial; beam: Mesh; beamMaterial: ShaderMaterial; glow: Mesh;
   };
   const hunters = new Map<HunterId, HunterMesh>();
 
@@ -159,7 +208,7 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
     pose.add(model);
     // Each Hunter gets its own copy of the body material so its emissive colour can show
     // self, teammate, or down. Eyes and flashlight keep the shared originals.
-    const material = hunterModel.bodyMaterial.clone();
+    const material = ditheredBody(hunterModel.bodyMaterial.clone());
     model.traverse((object) => {
       if (object instanceof Mesh && object.material === hunterModel.bodyMaterial) object.material = material;
     });
@@ -178,24 +227,40 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
     const fanIndex: number[] = [];
     for (let ray = 1; ray <= FAN_RAYS; ray++) fanIndex.push(0, ray, ray + 1);
     fanGeometry.setIndex(fanIndex);
-    const fan = new Mesh(fanGeometry, new MeshBasicMaterial({
+    // The plain fan, or the same fan drawn as a pool of light (VFX.lightPool).
+    const flatFan = new MeshBasicMaterial({
       color: '#f2e8a8', transparent: true, opacity: 0.35, side: DoubleSide, depthWrite: false,
-    }));
+    });
+    const lightPool = createLightPoolMaterial();
+    const fan = new Mesh(fanGeometry, flatFan);
     fan.visible = false;
     scene.add(fan);
 
+    // Beam and lens glow (VFX.beam), carried by the group so they turn with the Hunter.
+    const beamMaterial = createBeamMaterial(FAN_RAYS);
+    const beam = new Mesh(beamGeometry, beamMaterial);
+    beam.position.copy(hunterModel.lens);
+    beam.visible = false;
+    group.add(beam);
+    const glow = new Mesh(glowGeometry, createGlowMaterial());
+    glow.position.copy(hunterModel.lens);
+    glow.visible = false;
+    group.add(glow);
+
     const mesh = {
       group, pose, material, mixer, walk, walkWeight: 0, moving: false, lastPosition: null,
-      fan, fanPositions, fanGeometry,
+      fan, fanPositions, fanGeometry, flatFan, lightPool, beam, beamMaterial, glow,
     };
     hunters.set(id, mesh);
     return mesh;
   }
 
   // `range` is the battery stage's reach, so the drawn fan shortens exactly when the
-  // authoritative cone does: that shortening is the stage feedback.
+  // authoritative cone does: that shortening is the stage feedback. Each ray's reach is also
+  // handed to the beam, which is cut at the same walls.
   function updateFan(mesh: HunterMesh, origin: Position, facing: number, range: number, coneAngle: number): void {
     const halfAngle = (coneAngle / 2) * (Math.PI / 180);
+    const reaches = mesh.beamMaterial.uniforms.reaches.value as Float32Array;
     const floorHeight = GAMEPLAY.arena.floorY + 1;
     const { fanPositions, fanGeometry } = mesh;
     fanPositions[0] = origin.x;
@@ -205,6 +270,7 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
       const angle = facing - halfAngle + (2 * halfAngle * ray) / FAN_RAYS;
       const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
       const reach = wallDistance(origin, direction, range, world.wallBoxes);
+      reaches[ray] = reach;
       const offset = (ray + 1) * 3;
       fanPositions[offset] = origin.x + direction.x * reach;
       fanPositions[offset + 1] = floorHeight;
@@ -212,6 +278,27 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
     }
     fanGeometry.attributes.position.needsUpdate = true;
     fanGeometry.computeBoundingSphere();
+  }
+
+  // Points the beam and the light pool at this frame's light. The beam is sized to the range
+  // and cone angle; its apex is the lens in world space, from the group's position and facing.
+  function updateLight(mesh: HunterMesh, origin: Position, facing: number, range: number, coneAngle: number): void {
+    const halfAngle = (coneAngle / 2) * (Math.PI / 180);
+    const radius = range * Math.tan(halfAngle);
+    mesh.beam.scale.set(range, radius, radius);
+    const { lens } = hunterModel;
+    const cos = Math.cos(facing);
+    const sin = Math.sin(facing);
+    for (const material of [mesh.beamMaterial, mesh.lightPool]) {
+      material.uniforms.lightOrigin.value.set(origin.x, origin.y, origin.z);
+      material.uniforms.lightFacing.value = facing;
+      material.uniforms.lightRange.value = range;
+      material.uniforms.lightHalfAngle.value = halfAngle;
+    }
+    mesh.beamMaterial.uniforms.lightApex.value.set(
+      origin.x + lens.x * cos - lens.z * sin, origin.y + lens.y, origin.z + lens.x * sin + lens.z * cos,
+    );
+    mesh.beamMaterial.uniforms.floorY.value = world.floorY;
   }
 
   // The Creature mesh exists only while this client holds a Creature position:
@@ -264,6 +351,8 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
 
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
   function render(snapshot: Snapshot | null, tuning: Tuning): void {
+    OUTLINE_MATERIAL.visible = VFX.outline;
+    VFX_UNIFORMS.vfxDitherShading.value = VFX.ditherShading ? 1 : 0;
     const now = performance.now();
     // Capped so a backgrounded tab does not jump the walk cycle when it returns.
     const deltaSeconds = Math.min((now - lastFrameTime) / 1000, 0.1);
@@ -300,7 +389,13 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
       mesh.mixer.update(deltaSeconds);
       // `light` is already false on an empty battery, so a depleted flashlight draws nothing.
       mesh.fan.visible = view.light;
-      if (view.light) updateFan(mesh, view.position, view.facing, flashlightRange(view.battery, tuning), tuning.flashlightConeAngle);
+      mesh.beam.visible = mesh.glow.visible = view.light && VFX.beam;
+      mesh.fan.material = VFX.lightPool ? mesh.lightPool : mesh.flatFan;
+      if (view.light) {
+        const range = flashlightRange(view.battery, tuning);
+        updateFan(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
+        updateLight(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
+      }
     }
     for (const [index, mesh] of pickups.entries()) mesh.visible = snapshot?.pickups.includes(index) ?? false;
 
@@ -322,11 +417,18 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
 
   function resize(width: number, height: number): void {
     renderer.setSize(width, height, false);
+    // The outline is a fixed fraction of the view height; its width is corrected by this.
+    VFX_UNIFORMS.vfxAspect.value = width / height;
   }
 
   // Frees this scene's geometry; the renderer is kept when the caller will reuse it for
   // the next map and disposed only when the page goes away.
   function dispose(keepRenderer = false): void {
+    // Each fan holds two materials and only one is in the scene at a time.
+    for (const mesh of hunters.values()) {
+      mesh.flatFan.dispose();
+      mesh.lightPool.dispose();
+    }
     scene.traverse((object) => {
       if (object instanceof Mesh) {
         object.geometry.dispose();

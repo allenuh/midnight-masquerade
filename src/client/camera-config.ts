@@ -1,11 +1,12 @@
 import type { World } from '../shared/map/world.js';
 
-// Camera offset from its target, in multiples of the map depth: `height` up and `back`
-// toward +Z. `distance` scales that offset (smaller = closer). `targetShift` moves the aim
-// point toward +Z so the perspective trapezoid sits centred. `aspectStretch` widens the
-// canvas past the map's own width/depth, because the tilted floor projects shorter than it
-// is wide. With these values every map in maps/ fills about 93% of the canvas, walls included.
-const FRAMING = { height: 1.5, back: 0.65, distance: 0.71, targetShift: 0.075, aspectStretch: 1.3 };
+// `pitchDegrees` is how steeply the camera looks down (90 = straight down). `distance` is
+// how far it sits from its target, in multiples of the map depth (smaller = closer).
+// `targetShift` moves the aim point toward +Z so the perspective trapezoid sits centred.
+// `aspectStretch` widens the canvas past the map's own width/depth, because the tilted floor
+// projects shorter than it is wide. Change the pitch and these three need refitting together:
+// with these values every map in maps/ fills about 94% of the canvas, walls included.
+const FRAMING = { pitchDegrees: 81.6, distance: 1.27, targetShift: 0.025, aspectStretch: 1.05 };
 
 // World axes: X is left/right, Y is height, Z is north/south.
 // The fixed aspect ratio is letterboxed on resize, so the camera never tracks or crops the
@@ -13,12 +14,13 @@ const FRAMING = { height: 1.5, back: 0.65, distance: 0.71, targetShift: 0.075, a
 export function cameraFor(world: World) {
   const { width, depth, floorY } = world;
   const targetZ = depth / 2 + FRAMING.targetShift * depth;
+  const pitch = FRAMING.pitchDegrees * (Math.PI / 180);
   return {
     aspect: (width / depth) * FRAMING.aspectStretch,
     position: {
       x: width / 2,
-      y: floorY + FRAMING.height * FRAMING.distance * depth,
-      z: targetZ + FRAMING.back * FRAMING.distance * depth,
+      y: floorY + Math.sin(pitch) * FRAMING.distance * depth,
+      z: targetZ + Math.cos(pitch) * FRAMING.distance * depth,
     },
     target: {
       x: width / 2,

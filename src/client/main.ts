@@ -5,6 +5,7 @@ import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { DEFAULT_TUNING, TUNABLES, defaultTuning, type Tunable, type Tuning } from '../shared/tuning.js';
 import { createScene, loadHunterModel, type HunterModel } from './scene.js';
+import { VFX, type VfxKey } from './vfx.js';
 import './style.css';
 
 const element = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
@@ -35,6 +36,7 @@ const overlayTitle = element('#overlay-title');
 const overlayDetail = element('#overlay-detail');
 const debugPanel = element('#debug');
 const mapSelect = element<HTMLSelectElement>('#map');
+const vfxToggles = document.querySelectorAll<HTMLInputElement>('#vfx input');
 const mapText = element('#map-name');
 const tuningPanel = element<HTMLDetailsElement>('#tuning');
 const tuningSummary = element('#tuning-summary');
@@ -473,6 +475,29 @@ function start(hunterModel: HunterModel): void {
     tuningReset.blur();
     if (room?.host) send({ type: 'tune', tuning: defaultTuning() });
   });
+  // VFX toggles, remembered in this browser only. Each one is blurred after a click so
+  // Space goes back to working the action button.
+  try {
+    const saved = JSON.parse(localStorage.getItem('vfx') ?? '{}') as Record<string, unknown>;
+    for (const key of Object.keys(VFX) as VfxKey[]) {
+      if (typeof saved[key] === 'boolean') VFX[key] = saved[key];
+    }
+  } catch {
+    // No storage or a bad value: keep the defaults.
+  }
+  for (const toggle of vfxToggles) {
+    const key = toggle.dataset.vfx as VfxKey;
+    toggle.checked = VFX[key];
+    toggle.addEventListener('change', () => {
+      VFX[key] = toggle.checked;
+      toggle.blur();
+      try {
+        localStorage.setItem('vfx', JSON.stringify(VFX));
+      } catch {
+        // Storage unavailable: the toggle still applies for this page.
+      }
+    });
+  }
   mapSelect.addEventListener('change', () => {
     mapSelect.blur();
     send({ type: 'selectMap', id: mapSelect.value });
