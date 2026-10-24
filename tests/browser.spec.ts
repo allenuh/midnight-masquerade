@@ -66,9 +66,12 @@ type Network = ReturnType<typeof observeGame>;
 type Player = { page: Page; network: Network };
 
 // Basic lighting shades the primitives, so count colour ranges rather than exact
-// material RGB values. The floor, walls, and translucent light fan are neutrals or pale
+// material RGB values. The floor, walls, and translucent light fan are grey-greens or pale
 // yellows that match none of: the viewer's own white Hunter, the blue-grey teammates, or
-// the orange Creature. Only meaningful while no text overlay covers the arena.
+// the Creature — its charcoal robe (an exactly neutral grey; the Hunters' flashlights share
+// that grey but are only a few pixels across, so a charcoal pixel counts only inside a solid
+// 5x5 patch of it), or the ember orange-red it glows while burning. Only meaningful while no
+// text overlay covers the arena.
 async function visiblePlayerColors(page: Page) {
   const screenshot = await page.locator('#arena').screenshot();
   return page.evaluate(async (base64) => {
@@ -83,6 +86,19 @@ async function visiblePlayerColors(page: Page) {
     // Skip the outer margin: the amber proximity-warning border overlays the canvas edges.
     const margin = 24;
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const charcoal = new Uint8Array(canvas.width * canvas.height);
+    for (let index = 0; index < charcoal.length; index++) {
+      const [red, green, blue] = [pixels[index * 4], pixels[index * 4 + 1], pixels[index * 4 + 2]];
+      const max = Math.max(red, green, blue);
+      const min = Math.min(red, green, blue);
+      charcoal[index] = max - min <= 2 && min >= 16 && max <= 110 ? 1 : 0;
+    }
+    const charcoalPatch = (x: number, y: number) => {
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) if (!charcoal[(y + dy) * canvas.width + x + dx]) return false;
+      }
+      return true;
+    };
     let selfPixels = 0;
     let teammatePixels = 0;
     let creaturePixels = 0;
@@ -92,7 +108,8 @@ async function visiblePlayerColors(page: Page) {
         const [red, green, blue] = [pixels[index], pixels[index + 1], pixels[index + 2]];
         if (red > 200 && green > 200 && blue > 200 && Math.abs(red - blue) < 20) selfPixels++;
         if (blue > 140 && blue > red + 30 && green > red) teammatePixels++;
-        if (red > 100 && red > green + 25 && green > blue + 10) creaturePixels++;
+        const burning = red > 100 && red > green + 25 && green > blue + 10;
+        if (burning || charcoalPatch(x, y)) creaturePixels++;
       }
     }
     return { selfPixels, teammatePixels, creaturePixels };

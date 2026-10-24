@@ -9,8 +9,9 @@ import {
   type WebGLProgramParametersWithUniforms,
 } from 'three';
 
-// Visual experiments, client-only and individually switchable. On the Hunter: a black cartoon
-// outline, and shading from the scene's light with a dithered edge between light and shadow.
+// Visual experiments, client-only and individually switchable. On the Hunter and the Creature: a
+// black cartoon outline, and shading from the scene's light with a dithered edge between light
+// and shadow.
 // On the flashlight: a soft volumetric beam with a glow at the lens, and the floor fan drawn
 // as a pool of light. None of it changes what the light hits; the server decides that.
 export const VFX = {
@@ -22,7 +23,10 @@ export const VFX = {
 export type VfxKey = keyof typeof VFX;
 
 // Outline thickness as a fraction of the viewport height, so it reads the same at any resolution.
-const OUTLINE_WIDTH = 1 / 600;
+export const OUTLINE_WIDTH = 1 / 600;
+// The staggered Creature's outline: white and thicker, shown even with the outline toggled off.
+export const STAGGER_OUTLINE_COLOR = '#ffffff';
+export const STAGGER_OUTLINE_WIDTH = 3.5 / 600;
 // The Hunter's shadow tone as a multiple of its body colour.
 const SHADOW_STRENGTH = 0.55;
 // Where the dithered edge between light and shadow sits on N·L, and how wide it is.
@@ -45,7 +49,6 @@ const POOL_SOFT_SIDES = 0.25;
 export const VFX_UNIFORMS = {
   vfxLightDirection: { value: new Vector3(0, 1, 0) },
   vfxDitherShading: { value: 1 },
-  vfxOutlineWidth: { value: OUTLINE_WIDTH },
   vfxAspect: { value: 1 },
 };
 
@@ -55,8 +58,9 @@ float vfxBayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75
 float vfxBayer4(vec2 a) { return vfxBayer2(0.5 * a) * 0.25 + vfxBayer2(a) + 1.0 / 32.0; }
 `;
 
-// The Hunter body: emissive (unlit) in the model file. This shades it from the scene's light,
-// light or shadow per screen pixel, with the edge between them broken up by an ordered dither.
+// The Hunter and Creature bodies: emissive (unlit) in their model files. This shades them from
+// the scene's light, light or shadow per screen pixel, with the edge between them broken up by
+// an ordered dither.
 function ditheredBodyShader(shader: WebGLProgramParametersWithUniforms): void {
   shader.uniforms.vfxLightDirection = VFX_UNIFORMS.vfxLightDirection;
   shader.uniforms.vfxDitherShading = VFX_UNIFORMS.vfxDitherShading;
@@ -77,15 +81,18 @@ export function ditheredBody<T extends Material>(material: T): T {
   return material;
 }
 
-// Inverted-hull outline: the model drawn again, black, back faces only, each vertex pushed
-// out along its normal in screen space so the line has the same width everywhere on screen.
-export const OUTLINE_MATERIAL = new ShaderMaterial({
-  side: BackSide,
-  uniforms: {
-    vfxOutlineWidth: VFX_UNIFORMS.vfxOutlineWidth,
-    vfxAspect: VFX_UNIFORMS.vfxAspect,
-  },
-  vertexShader: /* glsl */ `
+// Inverted-hull outline: the model drawn again, back faces only, each vertex pushed out along
+// its normal in screen space so the line has the same width everywhere on screen. Black at
+// OUTLINE_WIDTH; each material has its own colour and width so the Creature's can change.
+export function createOutlineMaterial(): ShaderMaterial {
+  return new ShaderMaterial({
+    side: BackSide,
+    uniforms: {
+      vfxOutlineWidth: { value: OUTLINE_WIDTH },
+      vfxOutlineColor: { value: new Color('#000000') },
+      vfxAspect: VFX_UNIFORMS.vfxAspect,
+    },
+    vertexShader: /* glsl */ `
 uniform float vfxOutlineWidth;
 uniform float vfxAspect;
 void main() {
@@ -94,11 +101,16 @@ void main() {
   vec2 vfxPush = normalize(vfxNormal + vec2(1e-6)) * vec2(1.0 / vfxAspect, 1.0);
   gl_Position.xy += vfxPush * vfxOutlineWidth * 2.0 * gl_Position.w;
 }`,
-  fragmentShader: /* glsl */ `
+    fragmentShader: /* glsl */ `
+uniform vec3 vfxOutlineColor;
 void main() {
-  gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+  gl_FragColor = vec4(vfxOutlineColor, 1.0);
 }`,
-});
+  });
+}
+
+// The Hunters' outline, shared by all of them.
+export const OUTLINE_MATERIAL = createOutlineMaterial();
 
 // Shared by the flashlight shaders: wraps an angle into -pi..pi.
 const ANGLE_GLSL = /* glsl */ `

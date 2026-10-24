@@ -16,7 +16,6 @@ import {
   MeshLambertMaterial,
   MeshStandardMaterial,
   Object3D,
-  OctahedronGeometry,
   PerspectiveCamera,
   PlaneGeometry,
   RingGeometry,
@@ -30,6 +29,7 @@ import {
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clone as cloneModel } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import creatureModelUrl from './assets/creature.glb?url';
 import hunterModelUrl from './assets/hunter.glb?url';
 import { flashlightRange } from '../shared/flashlight.js';
 import type { Tuning } from '../shared/tuning.js';
@@ -39,7 +39,8 @@ import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
 import {
-  OUTLINE_MATERIAL, VFX, VFX_UNIFORMS, createBeamMaterial, createGlowMaterial, createLightPoolMaterial, ditheredBody,
+  OUTLINE_MATERIAL, OUTLINE_WIDTH, STAGGER_OUTLINE_COLOR, STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS,
+  createBeamMaterial, createGlowMaterial, createLightPoolMaterial, createOutlineMaterial, ditheredBody,
 } from './vfx.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
@@ -59,9 +60,25 @@ const WALK_FADE_SECONDS = 0.15;
 // the room's tuned hunterSpeed, so a speed of 60 plays it at about 1.56x. Lower this for a
 // faster walk.
 const WALK_RATE_SPEED = 38.5;
-// The Creature's body, and the red it turns while burning (unable to tag).
-const CREATURE_COLOR = '#df9460';
-const CREATURE_BURNING_COLOR = '#d23a2a';
+// The Creature model is scaled to this height (3x the collision sphere's diameter, towering
+// over a Hunter) and hovers with its lowest point CREATURE_HOVER above the floor.
+// Presentation only, like the Hunter's.
+const CREATURE_HEIGHT = 3 * 2 * GAMEPLAY.playerRadius;
+const CREATURE_HOVER = 3;
+// Float always plays: at its authored rate while still, faster while moving, faster still while
+// sprinting, easing between rates over FLOAT_RATE_EASE seconds.
+const FLOAT_RATE_MOVING = 1.6;
+const FLOAT_RATE_SPRINT = 2.4;
+const FLOAT_RATE_EASE = 0.25;
+// The server sends no Creature facing, so the model turns toward its direction of travel at
+// CREATURE_TURN_SPEED (radians per second), and leans CREATURE_LEAN radians into it while moving.
+const CREATURE_TURN_SPEED = 3 * Math.PI;
+const CREATURE_LEAN = 0.15;
+// The emissive multiplier on the Creature's texture: its own colours, and the ember glow it
+// takes while burning (unable to tag). Components above 1 brighten it; the charcoal robe needs
+// a strong red to glow.
+const CREATURE_TINT = new Color(1, 1, 1);
+const CREATURE_BURNING_TINT = new Color(6, 2, 0.8);
 // Battery pickup: a small upright block, deliberately unlike any player colour.
 const PICKUP_COLOR = '#6f9a52';
 const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
@@ -98,8 +115,40 @@ export async function loadHunterModel(): Promise<HunterModel> {
   const lensBounds = new Box3().setFromObject(flashlight ?? gltf.scene);
   const lensCenter = lensBounds.getCenter(new Vector3());
   const lens = new Vector3(lensBounds.max.z * scale, -GAMEPLAY.playerRadius + lensCenter.y * scale, -lensCenter.x * scale);
+  addOutlineHulls(meshes);
+  return { scene: gltf.scene, walk, bodyMaterial, scale, backDepth: -bounds.min.z * scale, lens };
+}
+
+// The Creature model and its Float clip, loaded once per page and cloned each time the Creature
+// appears. `material` is its one textured emissive material ('Creature' in the file), tinted
+// while burning. `scale` fits it to CREATURE_HEIGHT; `lift` raises it so its lowest point
+// hovers CREATURE_HOVER above the floor. Like the Hunter, it faces +Z in the file.
+export type CreatureModel = {
+  scene: Object3D; float: AnimationClip; material: MeshStandardMaterial; scale: number; lift: number;
+};
+
+export async function loadCreatureModel(): Promise<CreatureModel> {
+  const gltf = await new GLTFLoader().loadAsync(creatureModelUrl);
+  const float = AnimationClip.findByName(gltf.animations, 'Float');
+  if (!float) throw new Error('creature.glb has no Float animation');
+  const meshes: Mesh[] = [];
+  gltf.scene.traverse((object) => {
+    if (object instanceof Mesh) meshes.push(object);
+  });
+  const material = meshes.map((mesh) => mesh.material as unknown).find((candidate): candidate is MeshStandardMaterial =>
+    candidate instanceof MeshStandardMaterial && candidate.name === 'Creature');
+  if (!material) throw new Error('creature.glb has no Creature material');
+  const bounds = new Box3().setFromObject(gltf.scene);
+  const scale = CREATURE_HEIGHT / (bounds.max.y - bounds.min.y);
+  addOutlineHulls(meshes);
+  return { scene: gltf.scene, float, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
+}
+
+// Gives each model part an outline hull (vfx.ts) drawn with OUTLINE_MATERIAL. Call after the
+// model's world matrices are current (computing its bounds does that).
+function addOutlineHulls(meshes: Mesh[]): void {
   for (const mesh of meshes) {
-    // Outline hull for this part, a child so it follows the Walk animation. Its vertices are
+    // Outline hull for this part, a child so it follows the animation. Its vertices are
     // welded and given smooth normals so the pushed-out hull does not split at hard edges.
     const hull = new BufferGeometry().setAttribute('position', mesh.geometry.getAttribute('position'));
     hull.setIndex(mesh.geometry.getIndex());
@@ -118,13 +167,19 @@ export async function loadHunterModel(): Promise<HunterModel> {
     outlineGeometry.computeVertexNormals();
     mesh.add(new Mesh(outlineGeometry, OUTLINE_MATERIAL));
   }
-  return { scene: gltf.scene, walk, bodyMaterial, scale, backDepth: -bounds.min.z * scale, lens };
+}
+
+// An angle wrapped into -pi..pi.
+function wrapAngle(angle: number): number {
+  return Math.atan2(Math.sin(angle), Math.cos(angle));
 }
 
 // One scene per map: the world the room plays on is fixed for the scene's lifetime, and a
 // map change disposes it and builds another (see main.ts). `renderer` may be handed over
 // from the previous scene so a map switch never creates a second WebGL context.
-export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, existingRenderer?: WebGLRenderer) {
+export function createScene(
+  canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, creatureModel: CreatureModel, existingRenderer?: WebGLRenderer,
+) {
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const scene = new Scene();
@@ -304,20 +359,44 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
   // The Creature mesh exists only while this client holds a Creature position:
   // always for the Creature itself, and for a Hunter only while the server
   // says the Creature is revealed. There is no hidden mesh, shadow, or reflection.
-  let creature: { group: Group; material: MeshLambertMaterial; outline: Mesh; ring: Mesh } | null = null;
+  // It is the creature.glb model, cloned on each appearance with its own copy of the textured
+  // material (for the burn tint) and of the outline material (for the stagger), and its own
+  // Float mixer. Like a Hunter's, the group sits at the server's position and turns to the
+  // facing along local +X; `pose`, at the floor, carries the model and leans it into its travel.
+  type CreatureMesh = {
+    group: Group; pose: Group; material: MeshStandardMaterial; outline: ShaderMaterial; ring: Mesh;
+    mixer: AnimationMixer; float: AnimationAction;
+  };
+  let creature: CreatureMesh | null = null;
+  // Movement and facing outlive the mesh, so a Creature revealed again keeps the way it faced.
+  // It starts facing +Z, toward the camera.
+  let creatureFacing = Math.PI / 2;
+  let creatureTargetFacing = creatureFacing;
+  let creatureLastPosition: Position | null = null;
+  let creatureMoving = false;
+  let creatureLean = 0;
 
-  function ensureCreature(): { group: Group; material: MeshLambertMaterial; outline: Mesh; ring: Mesh } {
+  function ensureCreature(): CreatureMesh {
     if (creature) return creature;
     const group = new Group();
-    const material = new MeshLambertMaterial({ color: CREATURE_COLOR, flatShading: true });
-    group.add(new Mesh(new OctahedronGeometry(GAMEPLAY.playerRadius), material));
-    // Stagger feedback: a white wireframe shell around the same shape.
-    const outline = new Mesh(
-      new OctahedronGeometry(GAMEPLAY.playerRadius + 3),
-      new MeshBasicMaterial({ color: '#ffffff', wireframe: true }),
-    );
-    outline.visible = false;
-    group.add(outline);
+    const pose = new Group();
+    pose.position.y = -GAMEPLAY.playerRadius;
+    group.add(pose);
+    const model = cloneModel(creatureModel.scene);
+    // The model faces +Z; a quarter turn about Y points it along the group's +X facing.
+    model.rotation.y = Math.PI / 2;
+    model.scale.setScalar(creatureModel.scale);
+    model.position.y = creatureModel.lift;
+    pose.add(model);
+    const material = ditheredBody(creatureModel.material.clone());
+    const outline = createOutlineMaterial();
+    model.traverse((object) => {
+      if (!(object instanceof Mesh)) return;
+      if (object.material === creatureModel.material) object.material = material;
+      else if (object.material === OUTLINE_MATERIAL) object.material = outline;
+    });
+    const mixer = new AnimationMixer(model);
+    const float = mixer.clipAction(creatureModel.float).play();
     // Sprint feedback: a flat ring on the floor under the Creature.
     const ring = new Mesh(
       new RingGeometry(GAMEPLAY.playerRadius + 2, GAMEPLAY.playerRadius + 6, 24),
@@ -328,19 +407,21 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
     ring.visible = false;
     group.add(ring);
     scene.add(group);
-    creature = { group, material, outline, ring };
+    // The first snapshot after a reveal has nothing to compare with: no movement yet.
+    creatureLastPosition = null;
+    creature = { group, pose, material, outline, ring, mixer, float };
     return creature;
   }
 
+  // Frees only what this appearance made; the model's geometry and texture are shared with the
+  // next one.
   function removeCreature(): void {
     if (!creature) return;
     scene.remove(creature.group);
-    creature.group.traverse((object) => {
-      if (object instanceof Mesh) {
-        object.geometry.dispose();
-        object.material.dispose();
-      }
-    });
+    creature.material.dispose();
+    creature.outline.dispose();
+    creature.ring.geometry.dispose();
+    (creature.ring.material as MeshBasicMaterial).dispose();
     creature = null;
   }
 
@@ -403,12 +484,33 @@ export function createScene(canvas: HTMLCanvasElement, world: World, hunterModel
       ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }
       : snapshot?.creature ?? null;
     if (creatureView) {
-      const { group, material, outline, ring } = ensureCreature();
-      group.position.set(creatureView.position.x, creatureView.position.y, creatureView.position.z);
-      // Burning feedback: the body itself turns red while the Creature cannot tag.
-      material.color.set(creatureView.burning ? CREATURE_BURNING_COLOR : CREATURE_COLOR);
-      outline.visible = creatureView.staggered;
-      ring.visible = creatureView.sprinting;
+      const mesh = ensureCreature();
+      const { position } = creatureView;
+      mesh.group.position.set(position.x, position.y, position.z);
+      // Facing: toward the last movement between two snapshots, turned at a fixed rate.
+      if (newSnapshot) {
+        const last = creatureLastPosition;
+        creatureMoving = last !== null && (last.x !== position.x || last.z !== position.z);
+        if (last && creatureMoving) creatureTargetFacing = Math.atan2(position.z - last.z, position.x - last.x);
+        creatureLastPosition = { ...position };
+      }
+      const turn = wrapAngle(creatureTargetFacing - creatureFacing);
+      creatureFacing = wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CREATURE_TURN_SPEED * deltaSeconds));
+      mesh.group.rotation.y = -creatureFacing;
+      // Leaning forward is a negative turn about the pose's Z (its +X is the facing).
+      const leanStep = (CREATURE_LEAN * deltaSeconds) / FLOAT_RATE_EASE;
+      creatureLean += Math.max(-leanStep, Math.min(leanStep, (creatureMoving ? CREATURE_LEAN : 0) - creatureLean));
+      mesh.pose.rotation.z = -creatureLean;
+      const rate = creatureView.sprinting ? FLOAT_RATE_SPRINT : creatureMoving ? FLOAT_RATE_MOVING : 1;
+      mesh.float.timeScale += (rate - mesh.float.timeScale) * Math.min(1, deltaSeconds / FLOAT_RATE_EASE);
+      mesh.mixer.update(deltaSeconds);
+      // Burning feedback: the whole model glows ember red while the Creature cannot tag.
+      mesh.material.emissive.copy(creatureView.burning ? CREATURE_BURNING_TINT : CREATURE_TINT);
+      // Stagger feedback: a thick white outline, drawn even with the outline experiment off.
+      mesh.outline.visible = VFX.outline || creatureView.staggered;
+      mesh.outline.uniforms.vfxOutlineColor.value.set(creatureView.staggered ? STAGGER_OUTLINE_COLOR : '#000000');
+      mesh.outline.uniforms.vfxOutlineWidth.value = creatureView.staggered ? STAGGER_OUTLINE_WIDTH : OUTLINE_WIDTH;
+      mesh.ring.visible = creatureView.sprinting;
     } else {
       removeCreature();
     }

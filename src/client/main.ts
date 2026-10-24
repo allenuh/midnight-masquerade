@@ -4,7 +4,7 @@ import { validateMap } from '../shared/map/validate.js';
 import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { DEFAULT_TUNING, TUNABLES, defaultTuning, type Tunable, type Tuning } from '../shared/tuning.js';
-import { createScene, loadHunterModel, type HunterModel } from './scene.js';
+import { createScene, loadCreatureModel, loadHunterModel, type CreatureModel, type HunterModel } from './scene.js';
 import { VFX, type VfxKey } from './vfx.js';
 import './style.css';
 
@@ -49,7 +49,7 @@ const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 // client already received: a Hunter page has no Creature position to put in it.
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
-function start(hunterModel: HunterModel): void {
+function start(hunterModel: HunterModel, creatureModel: CreatureModel): void {
   // The client bundles no map. The scene exists only once the server has sent the room's
   // map, and is rebuilt (reusing the WebGL renderer) whenever the host switches map.
   let scene: ReturnType<typeof createScene> | null = null;
@@ -63,7 +63,7 @@ function start(hunterModel: HunterModel): void {
     const renderer = scene?.renderer;
     scene?.dispose(true);
     try {
-      scene = createScene(canvas, buildWorld(result.map), hunterModel, renderer);
+      scene = createScene(canvas, buildWorld(result.map), hunterModel, creatureModel, renderer);
     } catch {
       scene = null;
       statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
@@ -337,7 +337,7 @@ function start(hunterModel: HunterModel): void {
       creatureStateText.textContent = `Creature: ${state === 'HIDDEN' ? 'hidden' : state}`;
       if (snapshot.roundState === 'running') warning.dataset.state = snapshot.proximity;
     } else {
-      roleText.textContent = 'Role: Creature (orange octahedron)';
+      roleText.textContent = 'Role: Creature (hooded wraith)';
       creatureHpText.textContent = `HP: ${Math.ceil(snapshot.hp)}`;
       const state = snapshot.staggered ? 'STAGGERED'
         : snapshot.lit ? 'LIT'
@@ -546,7 +546,7 @@ function start(hunterModel: HunterModel): void {
   });
 }
 
-// The Hunter model is needed by every scene, so it is loaded before anything connects.
-loadHunterModel().then(start, () => {
-  statusText.textContent = 'Could not load the Hunter model. Reload the page to try again.';
+// Both models are needed by every scene, so they are loaded before anything connects.
+Promise.all([loadHunterModel(), loadCreatureModel()]).then(([hunterModel, creatureModel]) => start(hunterModel, creatureModel), () => {
+  statusText.textContent = 'Could not load the game models. Reload the page to try again.';
 });

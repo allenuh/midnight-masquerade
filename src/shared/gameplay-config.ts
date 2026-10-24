@@ -12,7 +12,7 @@ export const GAMEPLAY = {
   round: { matchSeconds: 240, finalWarningSeconds: 30 },
   // The floor plane and the boundary wall the map's grid is enclosed by. Arena width and
   // depth are not here: they are map.width/height x TILE_SIZE, read from the room's World.
-  arena: { floorY: 0, wallThickness: 26, wallHeight: 28 },
+  arena: { floorY: 0, wallThickness: 26, wallHeight: 56 },
   // Shared collision radius for both roles. A tag is sphere contact: distance <= 2 * playerRadius.
   playerRadius: 14,
   speed: { hunter: 60, creature: 70 },

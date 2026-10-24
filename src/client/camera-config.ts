@@ -1,12 +1,14 @@
 import type { World } from '../shared/map/world.js';
 
-// `pitchDegrees` is how steeply the camera looks down (90 = straight down). `distance` is
-// how far it sits from its target, in multiples of the map depth (smaller = closer).
-// `targetShift` moves the aim point toward +Z so the perspective trapezoid sits centred.
-// `aspectStretch` widens the canvas past the map's own width/depth, because the tilted floor
-// projects shorter than it is wide. Change the pitch and these three need refitting together:
+// `pitchDegrees` is how steeply the camera looks down (90 = straight down). `fieldOfView` is
+// the vertical lens angle: narrower means less perspective stretch toward the edges and less
+// outward lean on tall models, from a camera further away. `distance` is how far it sits
+// from its target, in multiples of the map depth (smaller = closer). `targetShift` moves the
+// aim point toward +Z so the perspective trapezoid sits centred. `aspectStretch` widens the
+// canvas past the map's own width/depth, because the tilted floor projects shorter than it is
+// wide. Change the pitch or the field of view and the last three need refitting together:
 // with these values every map in maps/ fills about 94% of the canvas, walls included.
-const FRAMING = { pitchDegrees: 81.6, distance: 1.27, targetShift: 0.025, aspectStretch: 1.05 };
+const FRAMING = { pitchDegrees: 71.6, fieldOfView: 30, distance: 2.15, targetShift: 0.015, aspectStretch: 1.11 };
 
 // World axes: X is left/right, Y is height, Z is north/south.
 // The fixed aspect ratio is letterboxed on resize, so the camera never tracks or crops the
@@ -27,7 +29,7 @@ export function cameraFor(world: World) {
       y: floorY,
       z: targetZ,
     },
-    fieldOfView: 50,
+    fieldOfView: FRAMING.fieldOfView,
     near: 1,
     far: 5000,
   } as const;
