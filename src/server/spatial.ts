@@ -85,7 +85,8 @@ export function sphereInCone(
 export function spheresTouchDuringStep(
   hunter: Position, nextHunter: Position, creature: Position, nextCreature: Position,
 ): boolean {
-  // Sweep the relative 3D center segment against the combined sphere radius.
+  // Sweep the relative 3D center segment against the combined radius of the Hunter's
+  // sphere and the Creature's hit sphere.
   // This catches glancing contact between snapshots as well as exact touching.
   const startX = creature.x - hunter.x;
   const startY = creature.y - hunter.y;
@@ -96,5 +97,5 @@ export function spheresTouchDuringStep(
   const lengthSquared = dx * dx + dy * dy + dz * dz;
   const projection = -(startX * dx + startY * dy + startZ * dz);
   const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, projection / lengthSquared));
-  return Math.hypot(startX + t * dx, startY + t * dy, startZ + t * dz) <= 2 * GAMEPLAY.playerRadius;
+  return Math.hypot(startX + t * dx, startY + t * dy, startZ + t * dz) <= GAMEPLAY.playerRadius + GAMEPLAY.creatureHitRadius;
 }

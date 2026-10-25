@@ -13,8 +13,12 @@ export const GAMEPLAY = {
   // The floor plane and the boundary wall the map's grid is enclosed by. Arena width and
   // depth are not here: they are map.width/height x TILE_SIZE, read from the room's World.
   arena: { floorY: 0, wallThickness: 26, wallHeight: 56 },
-  // Shared collision radius for both roles. A tag is sphere contact: distance <= 2 * playerRadius.
+  // Shared collision radius for both roles: walls, the grounded height, and a Hunter's own
+  // sphere. The Creature is hit as a larger sphere of creatureHitRadius (1.1x playerRadius):
+  // a tag is contact at distance <= playerRadius + creatureHitRadius, and a beam lights it when
+  // the cone overlaps that sphere. Walls still stop it at playerRadius.
   playerRadius: 14,
+  creatureHitRadius: 15.4,
   speed: { hunter: 60, creature: 70 },
   // Degrees per second. The flashlight follows this facing; movement itself is not delayed.
   hunterTurnSpeed: 360,

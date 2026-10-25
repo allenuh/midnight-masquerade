@@ -26,6 +26,8 @@ function runningGame(): Game {
   return stageGame(groundPosition(100, 100), groundPosition(660, 300));
 }
 
+// A tag is contact between a Hunter's sphere and the Creature's larger hit sphere.
+const contact = GAMEPLAY.playerRadius + GAMEPLAY.creatureHitRadius;
 const playerOf = (game: Game, role: Role) => (role === 'hunter' ? hunterId(game) : creatureId(game));
 const positionOf = (game: Game, role: Role) => (role === 'hunter' ? game.hunters[0].position : game.creature!.position);
 function place(game: Game, role: Role, position: { x: number; y: number; z: number }): void {
@@ -169,11 +171,11 @@ test('the server owns ground height with both held and released movement keys', 
 test('touching downs the Hunter, a small gap does not, the last Hunter down ends the round, and ended players cannot move', () => {
   const game = runningGame();
   game.hunters[0].position = groundPosition(400, 300);
-  game.creature!.position = groundPosition(400 + 2 * GAMEPLAY.playerRadius + 0.01, 300);
+  game.creature!.position = groundPosition(400 + contact + 0.01, 300);
   stepGame(game);
   assert.equal(game.hunters[0].down, false);
   assert.equal(game.roundState, 'running');
-  game.creature!.position.x = 400 + 2 * GAMEPLAY.playerRadius;
+  game.creature!.position.x = 400 + contact;
   stepGame(game);
   // Prototype 3: contact incapacitates rather than ending the round.
   assert.equal(game.hunters[0].down, true);
@@ -185,12 +187,12 @@ test('touching downs the Hunter, a small gap does not, the last Hunter down ends
   // With every other Hunter already down, the same contact rule ends the round.
   for (const hunter of game.hunters.slice(1, 3)) hunter.down = true;
   const last = game.hunters[3];
-  game.creature!.position = groundPosition(last.position.x - 2 * GAMEPLAY.playerRadius - 0.01, last.position.z);
+  game.creature!.position = groundPosition(last.position.x - contact - 0.01, last.position.z);
   stepGame(game);
   assert.equal(game.roundState, 'running');
   // The attack cooldown from the first tag must have expired; wait it out, then touch.
   while (game.creatureState.attackCooldownTicks > 0) stepGame(game);
-  game.creature!.position = groundPosition(last.position.x - 2 * GAMEPLAY.playerRadius, last.position.z);
+  game.creature!.position = groundPosition(last.position.x - contact, last.position.z);
   stepGame(game);
   assert.equal(last.down, true);
   assert.equal(game.roundState, 'ended');
@@ -278,7 +280,7 @@ test('starting, abandoning, and restarting rounds preserve the primitive round r
   assert.equal(game.roundState, 'reveal');
   assert.equal(game.result, null);
   for (const hunter of game.hunters) {
-    assert.ok(distance3D(hunter.position, game.creature!.position) > 2 * GAMEPLAY.playerRadius);
+    assert.ok(distance3D(hunter.position, game.creature!.position) > contact);
     assert.equal(hunter.position.y, groundedY);
   }
   assert.equal(game.creature!.position.y, groundedY);
@@ -332,7 +334,7 @@ test('Hunter payload contains only permitted data in every round state', () => {
 
 test('glancing contact between tick endpoints still downs the Hunter', () => {
   const game = runningGame();
-  const radius = GAMEPLAY.playerRadius * 2;
+  const radius = contact;
   // One Creature step centred on the Hunter's X, passing so close that only the
   // mid-step approach is inside the contact radius. Derived from the configured
   // speed so retuning cannot move either endpoint into contact.
@@ -351,14 +353,13 @@ test('glancing contact between tick endpoints still downs the Hunter', () => {
 
 test('swept sphere contact considers vertical separation and vertical crossings', () => {
   const hunter = groundPosition(400, 300);
-  const diameter = 2 * GAMEPLAY.playerRadius;
-  const separatedStart = { ...hunter, x: hunter.x - 80, y: hunter.y + diameter + 0.01 };
+  const separatedStart = { ...hunter, x: hunter.x - 80, y: hunter.y + contact + 0.01 };
   const separatedEnd = { ...separatedStart, x: hunter.x + 80 };
   assert.equal(spheresTouchDuringStep(hunter, hunter, separatedStart, separatedEnd), false,
     'crossing in X/Z with a vertical gap cannot tag');
   assert.equal(spheresTouchDuringStep(hunter, hunter,
-    { ...separatedStart, y: hunter.y + diameter },
-    { ...separatedEnd, y: hunter.y + diameter }), true,
+    { ...separatedStart, y: hunter.y + contact },
+    { ...separatedEnd, y: hunter.y + contact }), true,
   'vertical tangency between endpoints counts as contact');
   assert.equal(spheresTouchDuringStep(hunter, hunter,
     { ...hunter, y: hunter.y + 80 }, { ...hunter, y: hunter.y - 80 }), true,

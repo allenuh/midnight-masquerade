@@ -29,6 +29,7 @@ import {
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clone as cloneModel } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import batteryModelUrl from './assets/battery.glb?url';
 import creatureModelUrl from './assets/creature.glb?url';
 import hunterModelUrl from './assets/hunter.glb?url';
 import { flashlightRange } from '../shared/flashlight.js';
@@ -79,9 +80,14 @@ const CREATURE_LEAN = 0.15;
 // a strong red to glow.
 const CREATURE_TINT = new Color(1, 1, 1);
 const CREATURE_BURNING_TINT = new Color(6, 2, 0.8);
-// Battery pickup: a small upright block, deliberately unlike any player colour.
-const PICKUP_COLOR = '#6f9a52';
-const PICKUP_SIZE = { x: 14, y: 18, z: 14 };
+// Battery pickup: battery.glb scaled to BATTERY_HEIGHT and posed for the fixed camera. It is
+// tipped back until its face (the bolt) looks at the camera, short of square-on by
+// BATTERY_TOP_SHOW so a sliver of its cap shows, then leaned BATTERY_LEAN on screen, right
+// and left on alternate spawn points. Its lowest point rests BATTERY_HOVER above the floor.
+const BATTERY_HEIGHT = 30;
+const BATTERY_TOP_SHOW = 15 * (Math.PI / 180);
+const BATTERY_LEAN = 30 * (Math.PI / 180);
+const BATTERY_HOVER = 1;
 // Radius of the soft glow drawn at the flashlight's lens.
 const LENS_GLOW_RADIUS = 5;
 
@@ -144,6 +150,26 @@ export async function loadCreatureModel(): Promise<CreatureModel> {
   return { scene: gltf.scene, float, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
 }
 
+// The battery pickup model, loaded once per page and cloned per spawn point. Its one material
+// gets the dithered shading in place, since every battery looks the same. `scale` fits it to
+// BATTERY_HEIGHT; `center` is its middle in the file, the point it is posed around. Like the
+// players, it faces +Z in the file, cap up.
+export type BatteryModel = { scene: Object3D; scale: number; center: Vector3 };
+
+export async function loadBatteryModel(): Promise<BatteryModel> {
+  const gltf = await new GLTFLoader().loadAsync(batteryModelUrl);
+  const meshes: Mesh[] = [];
+  gltf.scene.traverse((object) => {
+    if (object instanceof Mesh) meshes.push(object);
+  });
+  const material = meshes[0]?.material;
+  if (!(material instanceof MeshStandardMaterial)) throw new Error('battery.glb has no battery mesh');
+  ditheredBody(material);
+  const bounds = new Box3().setFromObject(gltf.scene);
+  addOutlineHulls(meshes);
+  return { scene: gltf.scene, scale: BATTERY_HEIGHT / (bounds.max.y - bounds.min.y), center: bounds.getCenter(new Vector3()) };
+}
+
 // Gives each model part an outline hull (vfx.ts) drawn with OUTLINE_MATERIAL. Call after the
 // model's world matrices are current (computing its bounds does that).
 function addOutlineHulls(meshes: Mesh[]): void {
@@ -178,7 +204,8 @@ function wrapAngle(angle: number): number {
 // map change disposes it and builds another (see main.ts). `renderer` may be handed over
 // from the previous scene so a map switch never creates a second WebGL context.
 export function createScene(
-  canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, creatureModel: CreatureModel, existingRenderer?: WebGLRenderer,
+  canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, creatureModel: CreatureModel,
+  batteryModel: BatteryModel, existingRenderer?: WebGLRenderer,
 ) {
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -218,18 +245,26 @@ export function createScene(
   camera.updateMatrixWorld();
   VFX_UNIFORMS.vfxLightDirection.value.copy(light.position).normalize().transformDirection(camera.matrixWorldInverse);
 
-  // Battery pickups: one block per Battery Spawn marker the map declares, shown while the
+  // Battery pickups: one battery per Battery Spawn marker the map declares, shown while the
   // server lists that point as active. Both roles see the same set, in the same order the
   // server uses, so a pickup index means the same thing on every client.
-  const pickups = world.batterySpawns.map(({ x, z }) => {
-    const mesh = new Mesh(
-      new BoxGeometry(PICKUP_SIZE.x, PICKUP_SIZE.y, PICKUP_SIZE.z),
-      new MeshLambertMaterial({ color: PICKUP_COLOR }),
-    );
-    mesh.position.set(x, world.floorY + PICKUP_SIZE.y / 2, z);
-    mesh.visible = false;
-    scene.add(mesh);
-    return mesh;
+  const pickups = world.batterySpawns.map(({ x, z }, index) => {
+    const model = batteryModel.scene.clone();
+    model.scale.setScalar(batteryModel.scale);
+    model.position.copy(batteryModel.center).multiplyScalar(-batteryModel.scale);
+    // `pose` turns and leans the battery about its middle: turned like the camera, so its face is
+    // parallel to the screen with the cap up, then leaned about the line of sight, then the cap
+    // tipped toward the camera. Every battery leans the same on screen wherever it stands.
+    const pose = new Group().add(model);
+    pose.position.set(x, world.floorY, z);
+    pose.quaternion.copy(camera.quaternion);
+    pose.rotateZ((index % 2 === 0 ? -1 : 1) * BATTERY_LEAN);
+    pose.rotateX(BATTERY_TOP_SHOW);
+    pose.updateMatrixWorld(true);
+    pose.position.y += world.floorY + BATTERY_HOVER - new Box3().setFromObject(pose, true).min.y;
+    pose.visible = false;
+    scene.add(pose);
+    return pose;
   });
 
   // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
@@ -478,7 +513,7 @@ export function createScene(
         updateLight(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
       }
     }
-    for (const [index, mesh] of pickups.entries()) mesh.visible = snapshot?.pickups.includes(index) ?? false;
+    for (const [index, pickup] of pickups.entries()) pickup.visible = snapshot?.pickups.includes(index) ?? false;
 
     const creatureView = snapshot?.role === 'creature'
       ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }

@@ -30,6 +30,7 @@ import {
 } from './helpers/game.js';
 
 const radius = GAMEPLAY.playerRadius;
+const contact = radius + GAMEPLAY.creatureHitRadius;
 const damagePerTick = GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate;
 const staggerTicks = secondsToTicks(GAMEPLAY.creature.staggerSeconds);
 const cooldownTicks = secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds);
@@ -185,7 +186,7 @@ test('no Hunter payload contains the hidden Creature transform, while every Hunt
 });
 
 test('a valid Creature attack incapacitates an active Hunter without ending the round', () => {
-  const game = stageGame(groundPosition(400, 300), groundPosition(400 + 2 * radius, 300));
+  const game = stageGame(groundPosition(400, 300), groundPosition(400 + contact, 300));
   stepGame(game);
   assert.equal(game.hunters[0].down, true);
   assert.equal(game.hunters[0].reviveTicks, 0);
@@ -208,7 +209,7 @@ test('a valid Creature attack incapacitates an active Hunter without ending the 
 });
 
 test('the attack cooldown downs at most one Hunter per cooldown, and hitting a downed Hunter does nothing', () => {
-  const game = stageGame(groundPosition(400, 300), groundPosition(400 + 2 * radius, 300));
+  const game = stageGame(groundPosition(400, 300), groundPosition(400 + contact, 300));
   // H2 shares H1's spot: both overlap the Creature in the same step.
   game.hunters[1].position = groundPosition(400, 300);
   stepGame(game);

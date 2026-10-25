@@ -24,6 +24,9 @@ import {
 } from './helpers/game.js';
 
 const radius = GAMEPLAY.playerRadius;
+// The Creature is hit as a larger sphere: the beam's target radius and the tag distance.
+const hitRadius = GAMEPLAY.creatureHitRadius;
+const contact = radius + hitRadius;
 const damagePerTick = GAMEPLAY.flashlight.damagePerSecond / GAMEPLAY.tickRate;
 const staggerTicks = secondsToTicks(GAMEPLAY.creature.staggerSeconds);
 const cooldownTicks = secondsToTicks(GAMEPLAY.creature.staggerCooldownSeconds);
@@ -62,7 +65,7 @@ test('a Creature inside the flashlight cone and range is detected', () => {
   const halfAngle = (GAMEPLAY.flashlight.coneAngle / 2) * (Math.PI / 180);
   const onEdge = groundPosition(LANE_HUNTER.x + 100 * Math.cos(halfAngle), LANE_HUNTER.z + 100 * Math.sin(halfAngle));
   assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, onEdge), true);
-  const justInsideRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + radius - 1, LANE_HUNTER.z);
+  const justInsideRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + hitRadius - 1, LANE_HUNTER.z);
   assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, justInsideRange), true);
   step(game, 1, { light: true });
   assert.equal(game.creatureState.lit, true);
@@ -72,9 +75,9 @@ test('a Creature inside the flashlight cone and range is detected', () => {
 test('a Creature outside the cone angle, beyond range, or behind the Hunter is not detected', () => {
   const wide = 45 * (Math.PI / 180);
   const outsideAngle = groundPosition(LANE_HUNTER.x + 100 * Math.cos(wide), LANE_HUNTER.z + 100 * Math.sin(wide));
-  assert.equal(sphereInCone(LANE_HUNTER, EAST, outsideAngle, radius), false);
+  assert.equal(sphereInCone(LANE_HUNTER, EAST, outsideAngle, hitRadius), false);
   assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, outsideAngle), false);
-  const beyondRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + radius + 1, LANE_HUNTER.z);
+  const beyondRange = groundPosition(LANE_HUNTER.x + GAMEPLAY.flashlight.range + hitRadius + 1, LANE_HUNTER.z);
   assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, beyondRange), false);
   const behind = groundPosition(LANE_HUNTER.x - 60, LANE_HUNTER.z);
   assert.equal(flashlightReaches(TEST_WORLD, LANE_HUNTER, EAST, behind), false);
@@ -90,7 +93,7 @@ test('a Creature outside the cone angle, beyond range, or behind the Hunter is n
 });
 
 test('a wall blocks the flashlight even when the Creature is inside the cone geometry', () => {
-  assert.equal(sphereInCone(WALL_HUNTER, EAST, WALL_CREATURE, radius), true, 'cone geometry alone would hit');
+  assert.equal(sphereInCone(WALL_HUNTER, EAST, WALL_CREATURE, hitRadius), true, 'cone geometry alone would hit');
   assert.equal(flashlightReaches(TEST_WORLD, WALL_HUNTER, EAST, WALL_CREATURE), false, 'the slab blocks line of sight');
   // Through the opening beside the slab the identical offset is lit.
   assert.equal(flashlightReaches(TEST_WORLD, groundPosition(280, 180), EAST, groundPosition(380, 180)), true);
@@ -141,14 +144,14 @@ test('the first flashlight hit staggers the Creature: it cannot move or tag unti
 test('contact with a staggered or burning Creature is not a tag, but it can tag again once free', () => {
   // The Creature starts a short gap in front of the Hunter, inside the beam.
   const gap = 10;
-  const game = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + gap, LANE_HUNTER.z));
+  const game = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + contact + gap, LANE_HUNTER.z));
   step(game, 1, { light: true });
   assert.equal(isStaggered(game.creatureState), true);
   // Walk the Hunter straight into the frozen Creature, closing the gap and a little more.
   const walkTicks = Math.ceil((gap + 1) / (GAMEPLAY.speed.hunter / GAMEPLAY.tickRate));
   assert.ok(walkTicks + 1 < staggerTicks, 'the walk must finish inside the stagger');
   step(game, walkTicks, { right: true });
-  assert.ok(distance3D(hunterPosition(game), creaturePosition(game)) <= 2 * radius, 'spheres overlap');
+  assert.ok(distance3D(hunterPosition(game), creaturePosition(game)) <= contact, 'spheres overlap');
   assert.equal(game.hunters[0].down, false);
   assert.equal(game.roundState, 'running');
   assert.equal(game.result, null);
@@ -287,7 +290,7 @@ test('Creature HP reaching zero ends the round with a Hunter victory and freezes
 
 test('the Creature tagging the Hunter still downs it, even in the same step the light would reveal it', () => {
   // Plain tag with the light off.
-  const plain = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + creatureStep - 1, LANE_HUNTER.z));
+  const plain = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + contact + creatureStep - 1, LANE_HUNTER.z));
   step(plain, 1, {}, { left: true });
   assert.equal(plain.hunters[0].down, true);
   assert.equal(ownView(hunterView(plain)).down, true);
@@ -296,7 +299,7 @@ test('the Creature tagging the Hunter still downs it, even in the same step the 
 
   // Same geometry with the light held: the Creature is in the cone, yet the tag
   // resolves first and the downed Hunter's flashlight is never applied.
-  const raced = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + 2 * radius + creatureStep - 1, LANE_HUNTER.z));
+  const raced = huntGame(LANE_HUNTER, groundPosition(LANE_HUNTER.x + contact + creatureStep - 1, LANE_HUNTER.z));
   assert.equal(flashlightReaches(TEST_WORLD, hunterPosition(raced), hunterFacing(raced), creaturePosition(raced)), true);
   step(raced, 1, { light: true }, { left: true });
   assert.equal(raced.hunters[0].down, true);
@@ -575,7 +578,7 @@ test('a flashlight hit ends the sprint: a staggered Creature cannot sprint, and 
 test('a sprinting Creature can still tag; a sprint in the tag step reveals it unless that tag ends the round', () => {
   // A gap one walking step cannot close in a single step, but one sprint step can.
   const gap = (creatureStep + sprintStep) / 2;
-  const start = groundPosition(LANE_HUNTER.x + 2 * radius + gap, LANE_HUNTER.z);
+  const start = groundPosition(LANE_HUNTER.x + contact + gap, LANE_HUNTER.z);
   const walking = huntGame(LANE_HUNTER, start);
   step(walking, 1, {}, { left: true });
   assert.equal(walking.hunters[0].down, false);

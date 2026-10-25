@@ -361,7 +361,7 @@ test('the round-end priority is caught, then defeated, then expired', () => {
 
   // Every Hunter down is a Creature victory whatever the clock says, and it is
   // resolved before the clock is consulted at all.
-  const caught = stageGame(groundPosition(400, 300), groundPosition(400 + 2 * GAMEPLAY.playerRadius, 300));
+  const caught = stageGame(groundPosition(400, 300), groundPosition(400 + GAMEPLAY.playerRadius + GAMEPLAY.creatureHitRadius, 300));
   for (const hunter of caught.hunters.slice(1)) hunter.down = true;
   caught.timeTicks = 1;
   stepGame(caught);

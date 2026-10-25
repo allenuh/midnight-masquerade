@@ -321,12 +321,14 @@ export function hunterProximity(game: Game, hunter: Hunter): ProximityState {
 // overlaps the cone and the straight line from the origin to its center crosses no
 // wall box. The same test decides Creature hits and revival exposure. `range` is the
 // battery stage's reach and `coneAngle` the cone's full width; both default to the
-// full-battery, default-tuning values.
+// full-battery, default-tuning values. `radius` is the target sphere's: the Creature's hit
+// radius by default, playerRadius for a downed teammate.
 export function flashlightReaches(
   world: World, hunter: Position, facing: number, target: Position,
   range: number = DEFAULT_TUNING.flashlightRange, coneAngle: number = DEFAULT_TUNING.flashlightConeAngle,
+  radius: number = GAMEPLAY.creatureHitRadius,
 ): boolean {
-  return sphereInCone(hunter, facing, target, GAMEPLAY.playerRadius, range, coneAngle) && !segmentBlocked(hunter, target, world.wallBoxes);
+  return sphereInCone(hunter, facing, target, radius, range, coneAngle) && !segmentBlocked(hunter, target, world.wallBoxes);
 }
 
 function endRound(game: Game, result: RoundResult): void {
@@ -472,7 +474,8 @@ export function stepGame(game: Game): void {
   for (const downed of game.hunters) {
     if (!downed.down) continue;
     const reaching = beams.filter(({ hunter, range }) =>
-      flashlightReaches(game.world, hunter.position, hunter.facing, downed.position, range, tuning.flashlightConeAngle)).length;
+      flashlightReaches(game.world, hunter.position, hunter.facing, downed.position, range, tuning.flashlightConeAngle,
+        GAMEPLAY.playerRadius)).length;
     if (reaching === 0) continue;
     downed.reviveTicks += reaching;
     if (downed.reviveTicks >= reviveTicks(tuning)) {

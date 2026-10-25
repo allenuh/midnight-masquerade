@@ -4,7 +4,9 @@ import { validateMap } from '../shared/map/validate.js';
 import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { DEFAULT_TUNING, TUNABLES, defaultTuning, type Tunable, type Tuning } from '../shared/tuning.js';
-import { createScene, loadCreatureModel, loadHunterModel, type CreatureModel, type HunterModel } from './scene.js';
+import {
+  createScene, loadBatteryModel, loadCreatureModel, loadHunterModel, type BatteryModel, type CreatureModel, type HunterModel,
+} from './scene.js';
 import { VFX, type VfxKey } from './vfx.js';
 import './style.css';
 
@@ -49,7 +51,7 @@ const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 // client already received: a Hunter page has no Creature position to put in it.
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 
-function start(hunterModel: HunterModel, creatureModel: CreatureModel): void {
+function start(hunterModel: HunterModel, creatureModel: CreatureModel, batteryModel: BatteryModel): void {
   // The client bundles no map. The scene exists only once the server has sent the room's
   // map, and is rebuilt (reusing the WebGL renderer) whenever the host switches map.
   let scene: ReturnType<typeof createScene> | null = null;
@@ -63,7 +65,7 @@ function start(hunterModel: HunterModel, creatureModel: CreatureModel): void {
     const renderer = scene?.renderer;
     scene?.dispose(true);
     try {
-      scene = createScene(canvas, buildWorld(result.map), hunterModel, creatureModel, renderer);
+      scene = createScene(canvas, buildWorld(result.map), hunterModel, creatureModel, batteryModel, renderer);
     } catch {
       scene = null;
       statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
@@ -546,7 +548,8 @@ function start(hunterModel: HunterModel, creatureModel: CreatureModel): void {
   });
 }
 
-// Both models are needed by every scene, so they are loaded before anything connects.
-Promise.all([loadHunterModel(), loadCreatureModel()]).then(([hunterModel, creatureModel]) => start(hunterModel, creatureModel), () => {
+// Every model is needed by every scene, so they are loaded before anything connects.
+Promise.all([loadHunterModel(), loadCreatureModel(), loadBatteryModel()]).then(
+  ([hunterModel, creatureModel, batteryModel]) => start(hunterModel, creatureModel, batteryModel), () => {
   statusText.textContent = 'Could not load the game models. Reload the page to try again.';
 });
