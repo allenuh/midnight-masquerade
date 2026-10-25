@@ -98,11 +98,14 @@ export type HunterSnapshot = RoundSnapshot & {
   creatureHp: number;
   // Present only while the Creature is revealed (lit or sprinting, or inside the visibility
   // linger). The key is absent otherwise: the Hunter never holds a hidden Creature transform.
-  creature?: { position: Position; staggered: boolean; sprinting: boolean; burning: boolean };
+  // `facing` is the Creature's last held movement direction, in the same angle as a Hunter's.
+  creature?: { position: Position; facing: number; staggered: boolean; sprinting: boolean; burning: boolean };
 };
 export type CreatureSnapshot = RoundSnapshot & {
   role: 'creature';
   creature: Position;
+  // Your last held movement direction (as HunterView.facing), kept while a wall stops you.
+  facing: number;
   hp: number;
   // lit: a flashlight reached you this tick. revealed: the Hunters are receiving your position.
   // staggered: you cannot move or tag. staggerCooldown: seconds until a hit can stagger again.

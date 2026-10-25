@@ -261,7 +261,7 @@ function assertHunterWire(network: Network) {
       problems.push(`pickups ${JSON.stringify(message.pickups)}`);
     }
     if (message.creature) {
-      if (!sameKeys(message.creature, ['burning', 'position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
+      if (!sameKeys(message.creature, ['burning', 'facing', 'position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
       if (!sameKeys(message.creature.position, ['x', 'y', 'z']) || message.creature.position.y !== groundedY) problems.push(`creature position ${JSON.stringify(message.creature.position)}`);
     }
   }

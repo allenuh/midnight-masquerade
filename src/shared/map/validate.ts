@@ -1,7 +1,8 @@
 import {
-  MARKER, MARKER_LABELS, MAX_DIMENSION, MIN_CREATURE_SPAWNS, MIN_DIMENSION, MIN_HUNTER_SPAWNS,
-  SUPPORTED_MAP_VERSIONS, TERRAIN,
-  isMarkerId, isTerrainId, type GameMap, type MapMarker, type MarkerId, type TerrainId,
+  FLOOR, MAP_VERSION, MARKER, MARKER_LABELS, MAX_DIMENSION, MIN_CREATURE_SPAWNS, MIN_DIMENSION, MIN_HUNTER_SPAWNS,
+  SUPPORTED_MAP_VERSIONS, TERRAIN, WALLPAPER, filledGrid,
+  isFloorId, isMarkerId, isTerrainId, isWallpaperId,
+  type FloorId, type GameMap, type MapMarker, type MarkerId, type TerrainId, type WallpaperId,
 } from './schema.js';
 
 // Shared validation: the editor refuses to export anything this rejects, and the
@@ -15,6 +16,29 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isDimension = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= MIN_DIMENSION && value <= MAX_DIMENSION;
+
+// One per-tile layer: `height` rows of `width` known ids. Reports into `errors`; returns
+// false when the layer is not even an array of rows.
+function checkGrid(
+  errors: string[], layer: string, value: unknown, width: number, height: number, isId: (id: unknown) => boolean,
+): boolean {
+  if (!Array.isArray(value)) {
+    errors.push(`"${layer}" must be an array of rows`);
+    return false;
+  }
+  if (value.length !== height) errors.push(`"${layer}" has ${value.length} rows but "height" is ${height}`);
+  value.forEach((row, y) => {
+    if (!Array.isArray(row)) {
+      errors.push(`${layer} row ${y} must be an array`);
+      return;
+    }
+    if (row.length !== width) errors.push(`${layer} row ${y} has ${row.length} tiles but "width" is ${width}`);
+    row.forEach((tile, x) => {
+      if (!isId(tile)) errors.push(`${layer} (${x}, ${y}) has unknown id ${JSON.stringify(tile)}`);
+    });
+  });
+  return true;
+}
 
 export function validateMap(value: unknown): MapValidation {
   const errors: string[] = [];
@@ -36,23 +60,16 @@ export function validateMap(value: unknown): MapValidation {
   const width = value.width as number;
   const height = value.height as number;
 
-  if (!Array.isArray(value.terrain)) {
-    errors.push('"terrain" must be an array of rows');
-    return { ok: false, errors };
-  }
-  if (value.terrain.length !== height) {
-    errors.push(`"terrain" has ${value.terrain.length} rows but "height" is ${height}`);
-  }
-  value.terrain.forEach((row, y) => {
-    if (!Array.isArray(row)) {
-      errors.push(`terrain row ${y} must be an array`);
-      return;
+  if (!checkGrid(errors, 'terrain', value.terrain, width, height, isTerrainId)) return { ok: false, errors };
+  // Version 1 predates the finish layers; a version 2 file must carry both.
+  const finished = value.version !== 1;
+  if (finished) {
+    checkGrid(errors, 'floor', value.floor, width, height, isFloorId);
+    checkGrid(errors, 'wallpaper', value.wallpaper, width, height, isWallpaperId);
+    if (!isWallpaperId(value.boundaryWallpaper)) {
+      errors.push(`"boundaryWallpaper" has unknown id ${JSON.stringify(value.boundaryWallpaper)}`);
     }
-    if (row.length !== width) errors.push(`terrain row ${y} has ${row.length} tiles but "width" is ${width}`);
-    row.forEach((tile, x) => {
-      if (!isTerrainId(tile)) errors.push(`terrain (${x}, ${y}) has unknown id ${JSON.stringify(tile)}`);
-    });
-  });
+  }
 
   if (!Array.isArray(value.markers)) {
     errors.push('"markers" must be an array');
@@ -96,14 +113,18 @@ export function validateMap(value: unknown): MapValidation {
   }
 
   if (errors.length > 0) return { ok: false, errors };
+  // A version 1 map is upgraded, not repaired: it had no finishes, so every one is Plain.
   return {
     ok: true,
     map: {
-      version: value.version as number,
+      version: MAP_VERSION,
       name: value.name as string,
       width,
       height,
       terrain: value.terrain as TerrainId[][],
+      floor: finished ? value.floor as FloorId[][] : filledGrid<FloorId>(width, height, FLOOR.plain),
+      wallpaper: finished ? value.wallpaper as WallpaperId[][] : filledGrid<WallpaperId>(width, height, WALLPAPER.plain),
+      boundaryWallpaper: finished ? value.boundaryWallpaper as WallpaperId : WALLPAPER.plain,
       markers: value.markers as MapMarker[],
     },
   };

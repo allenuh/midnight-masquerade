@@ -17,10 +17,12 @@
       <button id="export" type="button">Export</button>
       <input id="file" type="file" accept="application/json,.json" hidden />
     </header>
+    <nav id="layers" aria-label="Layer"></nav>
     <nav id="tools" aria-label="Paint tool"></nav>
+    <label id="boundary-label" hidden>Boundary wallpaper <select id="boundary"></select></label>
     <main><canvas id="grid"></canvas></main>
     <p id="status" role="status"></p>
-    <footer>Left click or drag paints. Right click erases: the marker first, then back to Open.</footer>
+    <footer>Left click or drag paints. Right click erases: on terrain the marker first, then back to Open; on a finish layer back to Plain. Shift+click on a finish layer fills the connected area.</footer>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

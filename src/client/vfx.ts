@@ -14,11 +14,13 @@ import {
 // and shadow.
 // On the flashlight: a soft volumetric beam with a glow at the lens, and the floor fan drawn
 // as a pool of light. None of it changes what the light hits; the server decides that.
+// On the floors and walls: hard, unfiltered texels instead of smooth filtering.
 export const VFX = {
   outline: true,
   ditherShading: true,
   beam: true,
   lightPool: true,
+  pixelTextures: false,
 };
 export type VfxKey = keyof typeof VFX;
 

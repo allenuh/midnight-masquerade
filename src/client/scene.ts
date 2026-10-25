@@ -2,7 +2,6 @@ import {
   AnimationClip,
   AnimationMixer,
   Box3,
-  BoxGeometry,
   BufferAttribute,
   BufferGeometry,
   Color,
@@ -13,11 +12,9 @@ import {
   HemisphereLight,
   Mesh,
   MeshBasicMaterial,
-  MeshLambertMaterial,
   MeshStandardMaterial,
   Object3D,
   PerspectiveCamera,
-  PlaneGeometry,
   RingGeometry,
   Scene,
   type ShaderMaterial,
@@ -39,6 +36,7 @@ import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
+import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
   OUTLINE_MATERIAL, OUTLINE_WIDTH, STAGGER_OUTLINE_COLOR, STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS,
   createBeamMaterial, createGlowMaterial, createLightPoolMaterial, createOutlineMaterial, ditheredBody,
@@ -71,8 +69,9 @@ const CREATURE_HOVER = 3;
 const FLOAT_RATE_MOVING = 1.6;
 const FLOAT_RATE_SPRINT = 2.4;
 const FLOAT_RATE_EASE = 0.25;
-// The server sends no Creature facing, so the model turns toward its direction of travel at
-// CREATURE_TURN_SPEED (radians per second), and leans CREATURE_LEAN radians into it while moving.
+// The server's Creature facing jumps straight to the held direction, so the model eases round
+// to it at CREATURE_TURN_SPEED (radians per second), and leans CREATURE_LEAN radians into its
+// travel while moving.
 const CREATURE_TURN_SPEED = 3 * Math.PI;
 const CREATURE_LEAN = 0.15;
 // The emissive multiplier on the Creature's texture: its own colours, and the ember glow it
@@ -205,7 +204,7 @@ function wrapAngle(angle: number): number {
 // from the previous scene so a map switch never creates a second WebGL context.
 export function createScene(
   canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, creatureModel: CreatureModel,
-  batteryModel: BatteryModel, existingRenderer?: WebGLRenderer,
+  batteryModel: BatteryModel, surfaceTextures: SurfaceTextures, existingRenderer?: WebGLRenderer,
 ) {
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -218,24 +217,11 @@ export function createScene(
   // Target determines the fixed rotation; no client movement or input controls this camera.
   camera.lookAt(CAMERA.target.x, CAMERA.target.y, CAMERA.target.z);
 
-  // Floor and walls come from the room's map: the same boxes the authoritative collision
-  // and line-of-sight rules use, so what is drawn is exactly what the server simulates.
-  const floor = new Mesh(
-    new PlaneGeometry(world.width, world.depth),
-    new MeshLambertMaterial({ color: '#303a33' }),
-  );
-  floor.rotation.x = -Math.PI / 2;
-  floor.position.set(world.width / 2, world.floorY, world.depth / 2);
-  scene.add(floor);
-
-  for (const { min, max } of world.wallBoxes) {
-    const wall = new Mesh(
-      new BoxGeometry(max.x - min.x, max.y - min.y, max.z - min.z),
-      new MeshLambertMaterial({ color: '#7c857d' }),
-    );
-    wall.position.set((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2);
-    scene.add(wall);
-  }
+  // Floor and walls come from the room's map, tile by tile with each tile's floor and
+  // wallpaper. They cover exactly the tiles the server's collision and line-of-sight boxes
+  // are built from, so what is drawn is what the server simulates.
+  const surfaces = buildSurfaceMeshes(world, surfaceTextures);
+  scene.add(surfaces.group);
 
   scene.add(new HemisphereLight('#ffffff', '#5b665d', 1.8));
   const light = new DirectionalLight('#ffffff', 1.8);
@@ -403,10 +389,9 @@ export function createScene(
     mixer: AnimationMixer; float: AnimationAction;
   };
   let creature: CreatureMesh | null = null;
-  // Movement and facing outlive the mesh, so a Creature revealed again keeps the way it faced.
-  // It starts facing +Z, toward the camera.
+  // Movement and the eased facing outlive the mesh, so a Creature revealed again keeps the way
+  // it faced. It starts facing +Z, toward the camera, as the server spawns it.
   let creatureFacing = Math.PI / 2;
-  let creatureTargetFacing = creatureFacing;
   let creatureLastPosition: Position | null = null;
   let creatureMoving = false;
   let creatureLean = 0;
@@ -468,6 +453,7 @@ export function createScene(
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
   function render(snapshot: Snapshot | null, tuning: Tuning): void {
     OUTLINE_MATERIAL.visible = VFX.outline;
+    setPixelTextures(surfaceTextures, VFX.pixelTextures);
     VFX_UNIFORMS.vfxDitherShading.value = VFX.ditherShading ? 1 : 0;
     const now = performance.now();
     // Capped so a backgrounded tab does not jump the walk cycle when it returns.
@@ -516,20 +502,20 @@ export function createScene(
     for (const [index, pickup] of pickups.entries()) pickup.visible = snapshot?.pickups.includes(index) ?? false;
 
     const creatureView = snapshot?.role === 'creature'
-      ? { position: snapshot.creature, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }
+      ? { position: snapshot.creature, facing: snapshot.facing, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }
       : snapshot?.creature ?? null;
     if (creatureView) {
       const mesh = ensureCreature();
       const { position } = creatureView;
       mesh.group.position.set(position.x, position.y, position.z);
-      // Facing: toward the last movement between two snapshots, turned at a fixed rate.
+      // Moving: did the position change between two snapshots. The facing comes from the
+      // server, so it turns even while a wall stops the Creature, eased at a fixed rate.
       if (newSnapshot) {
         const last = creatureLastPosition;
         creatureMoving = last !== null && (last.x !== position.x || last.z !== position.z);
-        if (last && creatureMoving) creatureTargetFacing = Math.atan2(position.z - last.z, position.x - last.x);
         creatureLastPosition = { ...position };
       }
-      const turn = wrapAngle(creatureTargetFacing - creatureFacing);
+      const turn = wrapAngle(creatureView.facing - creatureFacing);
       creatureFacing = wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CREATURE_TURN_SPEED * deltaSeconds));
       mesh.group.rotation.y = -creatureFacing;
       // Leaning forward is a negative turn about the pose's Z (its +X is the facing).
@@ -561,6 +547,7 @@ export function createScene(
   // Frees this scene's geometry; the renderer is kept when the caller will reuse it for
   // the next map and disposed only when the page goes away.
   function dispose(keepRenderer = false): void {
+    surfaces.dispose();
     // Each fan holds two materials and only one is in the scene at a time.
     for (const mesh of hunters.values()) {
       mesh.flatFan.dispose();

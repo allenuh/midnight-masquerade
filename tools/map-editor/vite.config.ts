@@ -13,8 +13,9 @@ export default defineConfig({
     port: 5175,
     fs: {
       strict: true,
-      // Only the editor itself and the shared map schema/validation it reuses.
-      allow: [fileURLToPath(new URL('.', import.meta.url)), fromRepo('src/shared')],
+      // Only the editor itself, the shared map schema/validation it reuses, and the floor
+      // textures it previews tiles with.
+      allow: [fileURLToPath(new URL('.', import.meta.url)), fromRepo('src/shared'), fromRepo('src/client/assets/textures')],
     },
   },
   build: { outDir: fromRepo('dist/map-editor'), emptyOutDir: true },

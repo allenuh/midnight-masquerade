@@ -4,6 +4,7 @@ import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { Position } from '../src/shared/protocol.js';
 import { constrainToWalls, distance3D, sphereInCone } from '../src/server/spatial.js';
 import {
+  CREATURE_SPAWN_FACING,
   flashlightReaches,
   abandonRound,
   isBurning,
@@ -216,7 +217,7 @@ test('the Creature stays visible for the linger period, then leaves the Hunter p
   step(game, 1, { light: true });
   const revealedAt = { ...creaturePosition(game) };
   const revealed = hunterView(game);
-  assert.deepEqual(revealed.creature, { position: revealedAt, staggered: true, sprinting: false, burning: true });
+  assert.deepEqual(revealed.creature, { position: revealedAt, facing: CREATURE_SPAWN_FACING, staggered: true, sprinting: false, burning: true });
   assert.equal(creatureView(game).revealed, true);
 
   // Light off: every step of the linger still carries the position.
@@ -408,6 +409,23 @@ test('the Hunter turns gradually toward the held direction at the configured spe
   closeTo(hunterFacing(moving), Math.min(-Math.PI / 2 + turnStep, EAST), 1e-12);
 });
 
+test('the Creature faces the held direction, even into a wall that stops it, and keeps it when idle', () => {
+  // Run straight into the west slab, slide along it, then press into it again.
+  const game = huntGame(groundPosition(900, 60), groundPosition(300, 300));
+  assert.equal(game.creature!.facing, CREATURE_SPAWN_FACING);
+  step(game, 30, {}, { right: true });
+  assert.equal(game.creature!.facing, EAST);
+  step(game, 10, {}, { down: true });
+  assert.equal(game.creature!.facing, Math.PI / 2);
+  const pressed = { ...creaturePosition(game) };
+  step(game, 1, {}, { right: true });
+  assert.deepEqual(creaturePosition(game), pressed, 'the wall stops the body');
+  assert.equal(game.creature!.facing, EAST, 'but not the turn');
+  assert.equal(creatureView(game).facing, EAST);
+  step(game, 1);
+  assert.equal(game.creature!.facing, EAST, 'no input keeps the facing');
+});
+
 test('the action flag must be a boolean; the Creature press sprints but never lights anything', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
   for (const light of [1, 'true', null, undefined]) {
@@ -471,7 +489,7 @@ test('a sprinting Creature is revealed to the Hunter without any light, then lin
   assert.equal(isRevealed(game.creatureState), true);
   const seen = hunterView(game);
   assert.equal(ownView(seen).light, false);
-  assert.deepEqual(seen.creature, { position: { ...creaturePosition(game) }, staggered: false, sprinting: true, burning: false });
+  assert.deepEqual(seen.creature, { position: { ...creaturePosition(game) }, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: true, burning: false });
   assert.equal(seen.creatureHp, GAMEPLAY.creature.maxHp);
   const own = creatureView(game);
   assert.equal(own.sprinting, true);
@@ -491,7 +509,7 @@ test('a sprinting Creature is revealed to the Hunter without any light, then lin
   // Release: the same linger as after the light, then the key is gone entirely.
   for (let tick = 1; tick < lingerTicks; tick++) {
     step(game, 1);
-    assert.deepEqual(hunterView(game).creature, { position: lastSeen, staggered: false, sprinting: false, burning: false }, `linger tick ${tick}`);
+    assert.deepEqual(hunterView(game).creature, { position: lastSeen, facing: EAST, staggered: false, sprinting: false, burning: false }, `linger tick ${tick}`);
     assert.equal(creatureView(game).revealed, true);
     assert.equal(creatureView(game).sprinting, false);
   }

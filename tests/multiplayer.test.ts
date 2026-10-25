@@ -3,6 +3,7 @@ import test from 'node:test';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { Position } from '../src/shared/protocol.js';
 import {
+  CREATURE_SPAWN_FACING,
   HUNTER_IDS,
   PLAYER_COUNT,
   REVIVE_TICKS,
@@ -431,7 +432,7 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
   const seenAt = { ...game.creature!.position };
   for (let slot = 0; slot < 4; slot++) {
     const view = hunterView(game, slot);
-    assert.deepEqual(view.creature, { position: seenAt, staggered: false, sprinting: true, burning: false });
+    assert.deepEqual(view.creature, { position: seenAt, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: true, burning: false });
     assert.equal(view.creatureHp, GAMEPLAY.creature.maxHp);
     assertHunterPayload(view);
   }
@@ -439,7 +440,7 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
   for (let tick = 1; tick < lingerTicks; tick++) {
     step(game, 1);
     for (let slot = 0; slot < 4; slot++) {
-      assert.deepEqual(hunterView(game, slot).creature, { position: seenAt, staggered: false, sprinting: false, burning: false });
+      assert.deepEqual(hunterView(game, slot).creature, { position: seenAt, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: false, burning: false });
     }
   }
   step(game, 1);

@@ -4,8 +4,10 @@
 // teach the validator which versions it still understands.
 import { GAMEPLAY } from '../gameplay-config.js';
 
-export const MAP_VERSION = 1;
-export const SUPPORTED_MAP_VERSIONS: readonly number[] = [1];
+// Version 2 added the floor and wallpaper layers. A version 1 file still loads, with
+// every tile's floor and wallpaper Plain.
+export const MAP_VERSION = 2;
+export const SUPPORTED_MAP_VERSIONS: readonly number[] = [1, 2];
 
 // One tile is this many world units on both ground axes. The grid is the playable
 // floor: X grows with the column, Z grows with the row, and Y is height.
@@ -36,8 +38,43 @@ export const MARKER_LABELS: Record<MarkerId, string> = {
   [MARKER.hunterSpawn]: 'Hunter Spawn',
 };
 
+// Finishes are looks only: they never change collision, which `terrain` alone decides.
+// Floor is read on every tile that shows floor (today, Open tiles). Wallpaper is read on
+// Wall tiles, on every side that faces an Open tile; each tile carries its own, so the two
+// faces of a wall two tiles thick can differ. Plain is the untextured blockout colour.
+// New finishes get the next free id.
+// Two floors are special to the renderer: a Runner draws a border along its region's edge,
+// and a Doorway (the threshold rug) also frames the walls beside it with door jambs.
+export const FLOOR = {
+  plain: 0, starTile: 1, marbleDiamond: 2, terracotta: 3, redCarpet: 4, beigeCarpet: 5, runner: 6, doorway: 7, checker: 8,
+} as const;
+export type FloorId = (typeof FLOOR)[keyof typeof FLOOR];
+
+export const WALLPAPER = { plain: 0, greenDamask: 1, creamFloral: 2 } as const;
+export type WallpaperId = (typeof WALLPAPER)[keyof typeof WALLPAPER];
+
+export const FLOOR_LABELS: Record<FloorId, string> = {
+  [FLOOR.plain]: 'Plain',
+  [FLOOR.starTile]: 'Star tile',
+  [FLOOR.marbleDiamond]: 'Marble diamonds',
+  [FLOOR.terracotta]: 'Terracotta',
+  [FLOOR.redCarpet]: 'Red carpet',
+  [FLOOR.beigeCarpet]: 'Beige carpet',
+  [FLOOR.runner]: 'Green runner',
+  [FLOOR.doorway]: 'Doorway rug',
+  [FLOOR.checker]: 'Mustard check',
+};
+
+export const WALLPAPER_LABELS: Record<WallpaperId, string> = {
+  [WALLPAPER.plain]: 'Plain',
+  [WALLPAPER.greenDamask]: 'Green damask',
+  [WALLPAPER.creamFloral]: 'Cream floral',
+};
+
 export const TERRAIN_IDS: readonly TerrainId[] = Object.values(TERRAIN);
 export const MARKER_IDS: readonly MarkerId[] = Object.values(MARKER);
+export const FLOOR_IDS: readonly FloorId[] = Object.values(FLOOR);
+export const WALLPAPER_IDS: readonly WallpaperId[] = Object.values(WALLPAPER);
 
 // A playable map must be able to seat a full lobby: one Creature and every Hunter slot,
 // each on its own marker. A round may use fewer Hunter spawns than the map declares.
@@ -46,17 +83,24 @@ export const MIN_HUNTER_SPAWNS = GAMEPLAY.players.hunters;
 
 export const isTerrainId = (value: unknown): value is TerrainId => TERRAIN_IDS.includes(value as TerrainId);
 export const isMarkerId = (value: unknown): value is MarkerId => MARKER_IDS.includes(value as MarkerId);
+export const isFloorId = (value: unknown): value is FloorId => FLOOR_IDS.includes(value as FloorId);
+export const isWallpaperId = (value: unknown): value is WallpaperId => WALLPAPER_IDS.includes(value as WallpaperId);
 
 // `x` is the column (0 .. width - 1) and `y` the row (0 .. height - 1).
 export type MapMarker = { type: MarkerId; x: number; y: number };
 
-// `terrain` is `height` rows, each `width` ids long: terrain[y][x].
+// `terrain`, `floor` and `wallpaper` are each `height` rows of `width` ids: terrain[y][x].
+// Every tile has all three, whatever its terrain, so repainting terrain never loses a
+// finish. `boundaryWallpaper` covers the implicit arena boundary's inner faces.
 export type GameMap = {
   version: number;
   name: string;
   width: number;
   height: number;
   terrain: TerrainId[][];
+  floor: FloorId[][];
+  wallpaper: WallpaperId[][];
+  boundaryWallpaper: WallpaperId;
   markers: MapMarker[];
 };
 
@@ -66,10 +110,14 @@ export const tileOrigin = (grid: number): number => grid * TILE_SIZE;
 export const tileCenter = (grid: number): number => grid * TILE_SIZE + TILE_SIZE / 2;
 
 export const terrainAt = (map: GameMap, x: number, y: number): TerrainId => map.terrain[y][x];
+
+// A width x height grid holding one value everywhere.
+export const filledGrid = <T>(width: number, height: number, value: T): T[][] =>
+  Array.from({ length: height }, () => Array.from({ length: width }, () => value));
 export const countMarkers = (map: GameMap, type: MarkerId): number =>
   map.markers.filter((marker) => marker.type === type).length;
 
-// A blank map: every tile Open, no markers. The arena's boundary wall is implicit
+// A blank map: every tile Open and Plain, no markers. The arena's boundary wall is implicit
 // (the runtime builds it around the grid), so an all-Open map is already enclosed.
 export function createEmptyMap(name: string, width: number, height: number): GameMap {
   return {
@@ -77,7 +125,10 @@ export function createEmptyMap(name: string, width: number, height: number): Gam
     name,
     width,
     height,
-    terrain: Array.from({ length: height }, () => Array.from({ length: width }, (): TerrainId => TERRAIN.open)),
+    terrain: filledGrid<TerrainId>(width, height, TERRAIN.open),
+    floor: filledGrid<FloorId>(width, height, FLOOR.plain),
+    wallpaper: filledGrid<WallpaperId>(width, height, WALLPAPER.plain),
+    boundaryWallpaper: WALLPAPER.plain,
     markers: [],
   };
 }

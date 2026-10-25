@@ -8,8 +8,8 @@ import { join } from 'node:path';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import { distance3D } from '../src/server/spatial.js';
 import {
-  MAP_VERSION, MARKER, MIN_HUNTER_SPAWNS, TERRAIN, TILE_SIZE, countMarkers, createEmptyMap, tileCenter, tileOrigin,
-  type GameMap,
+  FLOOR, MAP_VERSION, MARKER, MIN_HUNTER_SPAWNS, TERRAIN, TILE_SIZE, WALLPAPER, countMarkers, createEmptyMap, filledGrid,
+  tileCenter, tileOrigin, type GameMap,
 } from '../src/shared/map/schema.js';
 import { validateMap } from '../src/shared/map/validate.js';
 import { buildWorld } from '../src/shared/map/world.js';
@@ -50,7 +50,7 @@ function errorsFor(mutate: (map: GameMap) => void): string[] {
   return result.ok ? [] : result.errors;
 }
 
-test('a valid version 1 map passes validation and keeps its terrain and markers', () => {
+test('a valid map passes validation and keeps its terrain, finishes and markers', () => {
   const result = validateMap(sampleMap());
   assert.equal(result.ok, true);
   assert.ok(result.ok);
@@ -63,13 +63,44 @@ test('a valid version 1 map passes validation and keeps its terrain and markers'
   const roundTripped = validateMap(JSON.parse(JSON.stringify(sampleMap())));
   assert.ok(roundTripped.ok);
   assert.deepEqual(roundTripped.map, sampleMap());
+  // Finishes survive the round trip too.
+  const finished = sampleMap();
+  finished.floor[0][3] = FLOOR.starTile;
+  finished.floor[3][0] = FLOOR.runner;
+  finished.floor[3][1] = FLOOR.doorway;
+  finished.floor[3][2] = FLOOR.checker;
+  finished.wallpaper[1][1] = WALLPAPER.greenDamask;
+  finished.boundaryWallpaper = WALLPAPER.creamFloral;
+  const reloaded = validateMap(JSON.parse(JSON.stringify(finished)));
+  assert.ok(reloaded.ok);
+  assert.deepEqual(reloaded.map, finished);
+});
+
+test('a version 1 map, which predates finishes, loads as version 2 with every finish Plain', () => {
+  const legacy: Record<string, unknown> = { ...sampleMap(), version: 1 };
+  delete legacy.floor;
+  delete legacy.wallpaper;
+  delete legacy.boundaryWallpaper;
+  const result = validateMap(legacy);
+  assert.ok(result.ok);
+  assert.equal(result.map.version, MAP_VERSION);
+  assert.deepEqual(result.map.floor, filledGrid(6, 5, FLOOR.plain));
+  assert.deepEqual(result.map.wallpaper, filledGrid(6, 5, WALLPAPER.plain));
+  assert.equal(result.map.boundaryWallpaper, WALLPAPER.plain);
+  assert.deepEqual(result.map.terrain, sampleMap().terrain);
 });
 
 test('validation rejects malformed maps with a readable reason and never repairs them', () => {
-  assert.match(errorsFor((map) => { (map as { version: number }).version = 2; }).join(), /unsupported map version 2/);
+  assert.match(errorsFor((map) => { (map as { version: number }).version = 3; }).join(), /unsupported map version 3/);
   assert.match(errorsFor((map) => { delete (map as Partial<GameMap>).version; }).join(), /missing "version"/);
   assert.match(errorsFor((map) => { map.terrain[0][0] = 7 as never; }).join(), /terrain \(0, 0\) has unknown id 7/);
   assert.match(errorsFor((map) => { map.markers[0].type = 9 as never; }).join(), /marker 0 has unknown type 9/);
+  // A version 2 map must carry both finish layers, grid-shaped, with known ids.
+  assert.match(errorsFor((map) => { delete (map as Partial<GameMap>).floor; }).join(), /"floor" must be an array of rows/);
+  assert.match(errorsFor((map) => { map.floor[1][2] = 42 as never; }).join(), /floor \(2, 1\) has unknown id 42/);
+  assert.match(errorsFor((map) => { map.wallpaper.pop(); }).join(), /"wallpaper" has 4 rows but "height" is 5/);
+  assert.match(errorsFor((map) => { map.wallpaper[0].push(WALLPAPER.plain); }).join(), /wallpaper row 0 has 7 tiles/);
+  assert.match(errorsFor((map) => { map.boundaryWallpaper = 8 as never; }).join(), /"boundaryWallpaper" has unknown id 8/);
   assert.match(errorsFor((map) => { map.terrain[2].pop(); }).join(), /terrain row 2 has 5 tiles but "width" is 6/);
   assert.match(errorsFor((map) => { map.terrain.pop(); }).join(), /has 4 rows but "height" is 5/);
   assert.match(errorsFor((map) => { map.markers[0].x = 6; }).join(), /marker 0 at \(6, 1\) is outside the 6 x 5 grid/);

@@ -48,7 +48,8 @@ export type Hunter = {
   reviveTicks: number;
 };
 
-export type Creature = { player: PlayerId; position: Position; input: InputState };
+// `facing` is the last held movement direction, kept while a wall stops the body.
+export type Creature = { player: PlayerId; position: Position; facing: number; input: InputState };
 
 // The single battery on the map: `at` is the spawn point holding it, or null while none
 // is out, in which case `spawnTicks` counts down to the next one.
@@ -91,6 +92,8 @@ export const STEP_SECONDS = 1 / GAMEPLAY.tickRate;
 export const secondsToTicks = (seconds: number): number => Math.round(seconds * GAMEPLAY.tickRate);
 // Radians on the ground plane: direction = (cos, 0, sin). -PI/2 is -Z, "up" on screen.
 export const SPAWN_FACING = -Math.PI / 2;
+// The Creature starts facing +Z, toward the camera.
+export const CREATURE_SPAWN_FACING = Math.PI / 2;
 
 // Tick counts under the DEFAULT tuning, kept for tests and tooling that reason about a
 // default round. The simulation never reads them: each derives from game.tuning below.
@@ -197,7 +200,7 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
   const creatureIndex = randomInt(PLAYER_COUNT);
   // Rolled fresh on every start, including restarts: no player keeps a spawn between rounds.
   const spawns = chooseSpawns(game.world.creatureSpawns, game.world.hunterSpawns, players.length - 1);
-  game.creature = { player: players[creatureIndex], position: spawns.creature, input: emptyInput() };
+  game.creature = { player: players[creatureIndex], position: spawns.creature, facing: CREATURE_SPAWN_FACING, input: emptyInput() };
   game.hunters = players
     .filter((_, index) => index !== creatureIndex)
     .map((player, slot) => ({
@@ -287,13 +290,18 @@ function wrapAngle(angle: number): number {
   return angle - 2 * Math.PI * Math.floor((angle + Math.PI) / (2 * Math.PI));
 }
 
+// The held movement direction as a facing angle, or null with no direction held.
+function heldDirection(input: InputState): number | null {
+  const dx = Number(input.right) - Number(input.left);
+  const dz = Number(input.down) - Number(input.up);
+  return dx === 0 && dz === 0 ? null : Math.atan2(dz, dx);
+}
+
 // The facing chases the held movement direction at a fixed angular speed. It
 // turns even when a wall stops the body, and keeps its value with no input.
 export function turnToward(facing: number, input: InputState, turnSpeed: number = DEFAULT_TUNING.hunterTurnSpeed): number {
-  const dx = Number(input.right) - Number(input.left);
-  const dz = Number(input.down) - Number(input.up);
-  if (dx === 0 && dz === 0) return facing;
-  const desired = Math.atan2(dz, dx);
+  const desired = heldDirection(input);
+  if (desired === null) return facing;
   const maxStep = turnSpeed * (Math.PI / 180) * STEP_SECONDS;
   let difference = wrapAngle(desired - facing);
   // An exact reversal has no shorter side; always turn in the positive direction.
@@ -391,6 +399,9 @@ export function stepGame(game: Game): void {
   if (state.sprinting && !sprinting) state.sprintCooldownTicks = secondsToTicks(tuning.sprintCooldownSeconds);
   state.sprinting = sprinting;
   const creatureBefore = creature.position;
+  // The Creature faces the held direction at once (the clients ease the model round), even
+  // into a wall that stops it. A staggered Creature is frozen: it neither turns nor moves.
+  if (!isStaggered(state)) creature.facing = heldDirection(creature.input) ?? creature.facing;
   creature.position = isStaggered(state)
     ? constrainToWalls(game.world, creature.position)
     : move(game.world, creature.position, creature.input, sprinting ? tuning.sprintSpeed : tuning.creatureSpeed);
@@ -546,7 +557,7 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     // linger expires the key is gone, not merely flagged invisible.
     if (isRevealed(state)) {
       snapshot.creature = {
-        position: copyPosition(game.creature.position),
+        position: copyPosition(game.creature.position), facing: game.creature.facing,
         staggered: isStaggered(state), sprinting: state.sprinting, burning: isBurning(state),
       };
     }
@@ -556,6 +567,7 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     ...round,
     role: 'creature',
     creature: copyPosition(game.creature.position),
+    facing: game.creature.facing,
     hp: state.hp,
     lit: state.lit,
     revealed: isRevealed(state),
