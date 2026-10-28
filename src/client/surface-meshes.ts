@@ -9,6 +9,7 @@ import {
 import { FLOOR, TERRAIN, TILE_SIZE, WALLPAPER, type FloorId, type WallpaperId } from '../shared/map/schema.js';
 import type { World } from '../shared/map/world.js';
 import { mapSurfaces, regionMask, type Quad, type RegionMask } from './surfaces.js';
+import { flashlitSurfaceShader } from './vfx.js';
 import starTileUrl from './assets/textures/floor-star-tile.png?url';
 import marbleDiamondUrl from './assets/textures/floor-marble-diamond.png?url';
 import terracottaUrl from './assets/textures/floor-terracotta.png?url';
@@ -27,9 +28,12 @@ import capProfileUrl from './assets/textures/profile-cap.png?url';
 
 const PLAIN_FLOOR = '#303a33';
 const PLAIN_WALL = '#7c857d';
-// Textured surfaces are multiplied by this grey, so cream tile and paper sit in the same dim
-// range as the blockout and the flashlights' pools of light still read on them.
-const SURFACE_TINT = new Color(0.45, 0.45, 0.45);
+// Textured surfaces are multiplied by this grey, so cream tile and paper sit in the same range
+// as the blockout. The scene's dim night light keeps them dark; a flashlight brings them up.
+const SURFACE_TINT = new Color(0.7, 0.7, 0.7);
+// The dark wood caps on top of the walls are brighter than that, or they vanish into the night
+// and the walls lose their shape from above.
+const CAP_TINT = new Color(5, 5, 5);
 // Border bands, in world units from the region's edge: the runner's gold border, the doorway
 // rug's dark edge, and the crown moulding seen along the top of every textured wall.
 const RUNNER_BORDER = 9;
@@ -124,7 +128,14 @@ function geometryOf(quads: Quad[]): BufferGeometry {
   return geometry;
 }
 
-const textured = (map: Texture) => new MeshLambertMaterial({ map, color: SURFACE_TINT });
+// Every floor and wall material is lit by the flashlights (vfx.ts) as well as the scene's lights.
+function flashlit(material: MeshLambertMaterial): MeshLambertMaterial {
+  material.onBeforeCompile = flashlitSurfaceShader;
+  return material;
+}
+
+const plain = (color: string) => flashlit(new MeshLambertMaterial({ color }));
+const textured = (map: Texture, tint = SURFACE_TINT) => flashlit(new MeshLambertMaterial({ map, color: tint }));
 
 function maskTexture(mask: RegionMask): DataTexture {
   const texture = new DataTexture(mask.data.map((flag) => flag * 255), mask.width, mask.height, RedFormat);
@@ -138,8 +149,10 @@ function maskTexture(mask: RegionMask): DataTexture {
 // corner, which squares off inside corners). Within `width` of the edge the colour comes from
 // the profile strip at that distance, keeping the field texture's grain; the profile's alpha
 // lets the field show through where it ends. `outside` is what the mask reads beyond the grid.
+// The material keeps its flashlight lighting, patched in first.
 function bordered(material: MeshLambertMaterial, mask: DataTexture, profile: Texture, width: number, outside: number) {
   material.onBeforeCompile = (shader: WebGLProgramParametersWithUniforms) => {
+    flashlitSurfaceShader(shader);
     Object.assign(shader.uniforms, {
       borderMask: { value: mask },
       borderProfile: { value: profile },
@@ -206,7 +219,7 @@ export function buildSurfaceMeshes(world: World, textures: SurfaceTextures): { g
   for (const [floor, quads] of surfaces.floor) {
     const texture = textures.floor.get(floor);
     if (!texture) {
-      add(quads, new MeshLambertMaterial({ color: PLAIN_FLOOR }));
+      add(quads, plain(PLAIN_FLOOR));
       continue;
     }
     const material = textured(texture);
@@ -217,21 +230,21 @@ export function buildSurfaceMeshes(world: World, textures: SurfaceTextures): { g
   }
   for (const [wallpaper, quads] of surfaces.wall) {
     const texture = textures.wallpaper.get(wallpaper);
-    add(quads, texture ? textured(texture) : new MeshLambertMaterial({ color: PLAIN_WALL }));
+    add(quads, texture ? textured(texture) : plain(PLAIN_WALL));
   }
   for (const [wallpaper, quads] of surfaces.frame) {
-    add(quads, wallpaper === WALLPAPER.plain ? new MeshLambertMaterial({ color: PLAIN_WALL }) : textured(textures.frame));
+    add(quads, wallpaper === WALLPAPER.plain ? plain(PLAIN_WALL) : textured(textures.frame));
   }
   // Caps share one mask: every Wall tile, with the boundary beyond the grid counting as wall,
   // so the moulding runs along every cap edge above an exposed face and nowhere else.
   let walls: DataTexture | null = null;
   for (const [wallpaper, quads] of surfaces.top) {
     if (wallpaper === WALLPAPER.plain) {
-      add(quads, new MeshLambertMaterial({ color: PLAIN_WALL }));
+      add(quads, plain(PLAIN_WALL));
       continue;
     }
     walls ??= maskOf((x, y) => map.terrain[y][x] === TERRAIN.wall);
-    add(quads, bordered(textured(textures.cap), walls, textures.profiles.cap, CAP_MOULDING, 1));
+    add(quads, bordered(textured(textures.cap, CAP_TINT), walls, textures.profiles.cap, CAP_MOULDING, 1));
   }
   return { group, dispose: () => { for (const texture of masks) texture.dispose(); } };
 }

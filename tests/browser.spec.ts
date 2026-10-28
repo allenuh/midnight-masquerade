@@ -378,8 +378,13 @@ test('five players fill a room, receive private roles, move, see only permitted 
     await expect.poll(() => creature.network.creature().timeRemaining).toBeLessThan(clockAt);
     await expect.poll(() => hunters[0].network.hunter().timeRemaining).toBeLessThan(clockAt);
 
-    // Require a real WebGL scene using a perspective projection in its shader.
+    // Require a real WebGL scene using a perspective projection in its shader. Bloom and the
+    // night grade end each frame with a flat full-screen pass, so they are switched off while
+    // the last program drawn is read, which is then the scene's own.
     for (const player of [hunters[0], creature]) {
+      const postEffects = [player.page.locator('[data-vfx="bloom"]'), player.page.locator('[data-vfx="grade"]')];
+      for (const toggle of postEffects) await toggle.uncheck();
+      await player.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       expect(await player.page.locator('#arena').evaluate((element) => {
         const context = (element as HTMLCanvasElement).getContext('webgl2');
         if (!(context instanceof WebGL2RenderingContext) || context.isContextLost()) return false;
@@ -390,6 +395,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
         const projection = context.getUniform(program, location) as Float32Array;
         return projection[11] === -1 && projection[15] === 0;
       })).toBe(true);
+      for (const toggle of postEffects) await toggle.check();
     }
     // The Creature sees four Hunters and itself; a Hunter sees itself, three teammates, no Creature.
     await creature.page.screenshot({ path: testInfo.outputPath('creature-view.png') });

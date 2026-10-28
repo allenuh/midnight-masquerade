@@ -4,6 +4,7 @@ import {
   Box3,
   BufferAttribute,
   BufferGeometry,
+  CircleGeometry,
   Color,
   ConeGeometry,
   DirectionalLight,
@@ -36,10 +37,12 @@ import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
+import { createPost } from './post.js';
 import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
-  OUTLINE_MATERIAL, OUTLINE_WIDTH, STAGGER_OUTLINE_COLOR, STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS,
-  createBeamMaterial, createGlowMaterial, createLightPoolMaterial, createOutlineMaterial, ditheredBody,
+  OUTLINE_MATERIAL, OUTLINE_WIDTH, POOL_MAX_ANGLE, POOL_RAYS, POOL_REACH, POOL_SPREAD, POOL_UNIFORMS,
+  STAGGER_OUTLINE_COLOR, STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS,
+  createBeamMaterial, createBlobShadowMaterial, createGlowMaterial, createOutlineMaterial, ditheredBody,
 } from './vfx.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
@@ -89,6 +92,23 @@ const BATTERY_LEAN = 30 * (Math.PI / 180);
 const BATTERY_HOVER = 1;
 // Radius of the soft glow drawn at the flashlight's lens.
 const LENS_GLOW_RADIUS = 5;
+// Night: a dim, cool moonlight over the mansion, so the flashlights are what light it. The sky
+// and ground colours of the hemisphere light and its intensity, the directional light's colour
+// and intensity, and the background beyond the map. The bodies of the Hunters, the Creature and
+// the batteries are unlit, so they stay readable in the dark.
+const AMBIENT_SKY = '#8fa0c8';
+const AMBIENT_GROUND = '#2a2630';
+const AMBIENT_INTENSITY = 0.25;
+const MOONLIGHT_COLOR = '#c8d2ff';
+const MOONLIGHT_INTENSITY = 0.25;
+const BACKGROUND_COLOR = '#0c0d10';
+// Blob shadow radii: under a Hunter, under the hovering Creature, and under a battery. A downed
+// Hunter's stretches along its body.
+const HUNTER_SHADOW_RADIUS = 1.1 * GAMEPLAY.playerRadius;
+const CREATURE_SHADOW_RADIUS = 1.6 * GAMEPLAY.playerRadius;
+const BATTERY_SHADOW_RADIUS = 0.45 * BATTERY_HEIGHT;
+// Blob shadows sit this far above the floor, under the flat flashlight fan.
+const SHADOW_LIFT = 0.5;
 
 // The Hunter model and its Walk clip, loaded once per page and cloned for every Hunter.
 // `scale` fits it to HUNTER_HEIGHT; `backDepth` is how far its back sticks out behind the
@@ -209,7 +229,7 @@ export function createScene(
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const scene = new Scene();
-  scene.background = new Color('#161918');
+  scene.background = new Color(BACKGROUND_COLOR);
 
   const CAMERA = cameraFor(world);
   const camera = new PerspectiveCamera(CAMERA.fieldOfView, CAMERA.aspect, CAMERA.near, CAMERA.far);
@@ -217,19 +237,33 @@ export function createScene(
   // Target determines the fixed rotation; no client movement or input controls this camera.
   camera.lookAt(CAMERA.target.x, CAMERA.target.y, CAMERA.target.z);
 
+  // Bloom and the night grade (post.ts) between the rendered scene and the canvas.
+  const post = createPost(renderer, scene, camera);
+
   // Floor and walls come from the room's map, tile by tile with each tile's floor and
   // wallpaper. They cover exactly the tiles the server's collision and line-of-sight boxes
   // are built from, so what is drawn is what the server simulates.
   const surfaces = buildSurfaceMeshes(world, surfaceTextures);
   scene.add(surfaces.group);
 
-  scene.add(new HemisphereLight('#ffffff', '#5b665d', 1.8));
-  const light = new DirectionalLight('#ffffff', 1.8);
+  scene.add(new HemisphereLight(AMBIENT_SKY, AMBIENT_GROUND, AMBIENT_INTENSITY));
+  const light = new DirectionalLight(MOONLIGHT_COLOR, MOONLIGHT_INTENSITY);
   light.position.set(-300, 900, 500);
   scene.add(light);
   // The Hunter's dithered shading uses this light's direction, in the fixed camera's view space.
   camera.updateMatrixWorld();
   VFX_UNIFORMS.vfxLightDirection.value.copy(light.position).normalize().transformDirection(camera.matrixWorldInverse);
+
+  // Blob shadows (VFX.blobShadows): one flat unit circle, scaled per use. The Creature's is its
+  // own fainter material.
+  const shadowGeometry = new CircleGeometry(1, 32).rotateX(-Math.PI / 2);
+  const shadowMaterial = createBlobShadowMaterial();
+  const creatureShadowMaterial = createBlobShadowMaterial(true);
+  function blobShadow(radius: number, material = shadowMaterial): Mesh {
+    const shadow = new Mesh(shadowGeometry, material);
+    shadow.scale.set(radius, 1, radius);
+    return shadow;
+  }
 
   // Battery pickups: one battery per Battery Spawn marker the map declares, shown while the
   // server lists that point as active. Both roles see the same set, in the same order the
@@ -250,7 +284,10 @@ export function createScene(
     pose.position.y += world.floorY + BATTERY_HOVER - new Box3().setFromObject(pose, true).min.y;
     pose.visible = false;
     scene.add(pose);
-    return pose;
+    const shadow = blobShadow(BATTERY_SHADOW_RADIUS);
+    shadow.position.set(x, world.floorY + SHADOW_LIFT, z);
+    scene.add(shadow);
+    return { pose, shadow };
   });
 
   // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
@@ -266,7 +303,7 @@ export function createScene(
     group: Group; pose: Group; material: MeshStandardMaterial;
     mixer: AnimationMixer; walk: AnimationAction; walkWeight: number; moving: boolean; lastPosition: Position | null;
     fan: Mesh; fanPositions: Float32Array; fanGeometry: BufferGeometry;
-    flatFan: MeshBasicMaterial; lightPool: ShaderMaterial; beam: Mesh; beamMaterial: ShaderMaterial; glow: Mesh;
+    beam: Mesh; beamMaterial: ShaderMaterial; glow: Mesh; shadow: Mesh;
   };
   const hunters = new Map<HunterId, HunterMesh>();
 
@@ -291,23 +328,24 @@ export function createScene(
     const mixer = new AnimationMixer(model);
     const walk = mixer.clipAction(hunterModel.walk);
     walk.setEffectiveWeight(0).play();
+    const shadow = blobShadow(HUNTER_SHADOW_RADIUS);
+    shadow.position.y = -GAMEPLAY.playerRadius + SHADOW_LIFT;
+    group.add(shadow);
     group.visible = false;
     scene.add(group);
 
-    // Flashlight: a translucent fan on the floor. Each ray is cut by the same wall
-    // boxes the server uses for line of sight, so the drawn light stops where hits stop.
-    // This is gameplay feedback, not lighting.
+    // Flashlight: a translucent fan on the floor, drawn when the light pool (which lights the
+    // floor itself) is off. Each ray is cut by the same wall boxes the server uses for line of
+    // sight, so the drawn light stops where hits stop.
     const fanPositions = new Float32Array((FAN_RAYS + 2) * 3);
     const fanGeometry = new BufferGeometry();
     fanGeometry.setAttribute('position', new BufferAttribute(fanPositions, 3));
     const fanIndex: number[] = [];
     for (let ray = 1; ray <= FAN_RAYS; ray++) fanIndex.push(0, ray, ray + 1);
     fanGeometry.setIndex(fanIndex);
-    // The plain fan, or the same fan drawn as a pool of light (VFX.lightPool).
     const flatFan = new MeshBasicMaterial({
       color: '#f2e8a8', transparent: true, opacity: 0.35, side: DoubleSide, depthWrite: false,
     });
-    const lightPool = createLightPoolMaterial();
     const fan = new Mesh(fanGeometry, flatFan);
     fan.visible = false;
     scene.add(fan);
@@ -325,7 +363,7 @@ export function createScene(
 
     const mesh = {
       group, pose, material, mixer, walk, walkWeight: 0, moving: false, lastPosition: null,
-      fan, fanPositions, fanGeometry, flatFan, lightPool, beam, beamMaterial, glow,
+      fan, fanPositions, fanGeometry, beam, beamMaterial, glow, shadow,
     };
     hunters.set(id, mesh);
     return mesh;
@@ -356,8 +394,8 @@ export function createScene(
     fanGeometry.computeBoundingSphere();
   }
 
-  // Points the beam and the light pool at this frame's light. The beam is sized to the range
-  // and cone angle; its apex is the lens in world space, from the group's position and facing.
+  // Points the beam at this frame's light. It is sized to the range and cone angle; its apex is
+  // the lens in world space, from the group's position and facing.
   function updateLight(mesh: HunterMesh, origin: Position, facing: number, range: number, coneAngle: number): void {
     const halfAngle = (coneAngle / 2) * (Math.PI / 180);
     const radius = range * Math.tan(halfAngle);
@@ -365,16 +403,34 @@ export function createScene(
     const { lens } = hunterModel;
     const cos = Math.cos(facing);
     const sin = Math.sin(facing);
-    for (const material of [mesh.beamMaterial, mesh.lightPool]) {
-      material.uniforms.lightOrigin.value.set(origin.x, origin.y, origin.z);
-      material.uniforms.lightFacing.value = facing;
-      material.uniforms.lightRange.value = range;
-      material.uniforms.lightHalfAngle.value = halfAngle;
-    }
+    const material = mesh.beamMaterial;
+    material.uniforms.lightOrigin.value.set(origin.x, origin.y, origin.z);
+    material.uniforms.lightFacing.value = facing;
+    material.uniforms.lightRange.value = range;
+    material.uniforms.lightHalfAngle.value = halfAngle;
     mesh.beamMaterial.uniforms.lightApex.value.set(
       origin.x + lens.x * cos - lens.z * sin, origin.y + lens.y, origin.z + lens.x * sin + lens.z * cos,
     );
     mesh.beamMaterial.uniforms.floorY.value = world.floorY;
+  }
+
+  // The pool angle for the room's cone angle, in degrees.
+  const poolAngle = (coneAngle: number) => Math.min(coneAngle * POOL_SPREAD, POOL_MAX_ANGLE);
+
+  // Turns on this Hunter's slot of the light pool (vfx.ts) for this frame: where it stands, its
+  // facing, how far the pool reaches at this battery stage, and how far each of its rays gets
+  // before a wall, by the same wall test as the fan.
+  function updatePool(slot: number, origin: Position, facing: number, range: number, coneAngle: number): void {
+    const halfAngle = (poolAngle(coneAngle) / 2) * (Math.PI / 180);
+    const reach = range * POOL_REACH;
+    const component = (['x', 'y', 'z', 'w'] as const)[slot];
+    POOL_UNIFORMS.flashOrigin.value[slot].set(origin.x, origin.z, facing, reach);
+    POOL_UNIFORMS.flashOn.value[component] = 1;
+    for (let ray = 0; ray <= POOL_RAYS; ray++) {
+      const angle = facing - halfAngle + (2 * halfAngle * ray) / POOL_RAYS;
+      const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
+      POOL_UNIFORMS.flashReach.value[ray][component] = wallDistance(origin, direction, reach, world.wallBoxes);
+    }
   }
 
   // The Creature mesh exists only while this client holds a Creature position:
@@ -385,7 +441,7 @@ export function createScene(
   // Float mixer. Like a Hunter's, the group sits at the server's position and turns to the
   // facing along local +X; `pose`, at the floor, carries the model and leans it into its travel.
   type CreatureMesh = {
-    group: Group; pose: Group; material: MeshStandardMaterial; outline: ShaderMaterial; ring: Mesh;
+    group: Group; pose: Group; material: MeshStandardMaterial; outline: ShaderMaterial; ring: Mesh; shadow: Mesh;
     mixer: AnimationMixer; float: AnimationAction;
   };
   let creature: CreatureMesh | null = null;
@@ -426,15 +482,19 @@ export function createScene(
     ring.position.y = -(GAMEPLAY.playerRadius - 2);
     ring.visible = false;
     group.add(ring);
+    // Its blob shadow is part of the group, so it exists exactly while the Creature mesh does.
+    const shadow = blobShadow(CREATURE_SHADOW_RADIUS, creatureShadowMaterial);
+    shadow.position.y = -GAMEPLAY.playerRadius + SHADOW_LIFT;
+    group.add(shadow);
     scene.add(group);
     // The first snapshot after a reveal has nothing to compare with: no movement yet.
     creatureLastPosition = null;
-    creature = { group, pose, material, outline, ring, mixer, float };
+    creature = { group, pose, material, outline, ring, shadow, mixer, float };
     return creature;
   }
 
-  // Frees only what this appearance made; the model's geometry and texture are shared with the
-  // next one.
+  // Frees only what this appearance made; the model's geometry and texture, and the shadow's,
+  // are shared with the next one.
   function removeCreature(): void {
     if (!creature) return;
     scene.remove(creature.group);
@@ -465,6 +525,11 @@ export function createScene(
       mesh.group.visible = false;
       mesh.fan.visible = false;
     }
+    // Every slot of the light pool starts dark; each Hunter whose light is on turns its own on.
+    POOL_UNIFORMS.flashOn.value.set(0, 0, 0, 0);
+    POOL_UNIFORMS.flashHalfAngle.value = (poolAngle(tuning.flashlightConeAngle) / 2) * (Math.PI / 180);
+    POOL_UNIFORMS.flashCoreHalfAngle.value = (tuning.flashlightConeAngle / 2) * (Math.PI / 180);
+    POOL_UNIFORMS.flashFloorY.value = world.floorY;
     const self = snapshot?.role === 'hunter' ? snapshot.self : null;
     for (const view of snapshot?.hunters ?? []) {
       const mesh = ensureHunter(view.id);
@@ -473,6 +538,11 @@ export function createScene(
       // A positive rotation about Y turns local +X toward -Z; the facing angle runs +X toward +Z.
       mesh.group.rotation.y = -view.facing;
       mesh.material.emissive.set(view.down ? DOWN_COLOR : view.id === self ? SELF_COLOR : TEAMMATE_COLOR);
+      // The shadow follows the body: round under a standing Hunter, stretched along a downed one,
+      // whose head points away from its facing.
+      mesh.shadow.visible = VFX.blobShadows;
+      mesh.shadow.position.x = view.down ? -HUNTER_HEIGHT / 2 : 0;
+      mesh.shadow.scale.x = view.down ? HUNTER_HEIGHT * 0.6 : HUNTER_SHADOW_RADIUS;
       // Down: tipped onto its back (face up, head away from its facing), lifted so the back
       // rests on the floor. It cannot move, turn, or shine.
       mesh.pose.rotation.z = view.down ? Math.PI / 2 : 0;
@@ -490,16 +560,23 @@ export function createScene(
       mesh.walk.timeScale = tuning.hunterSpeed / WALK_RATE_SPEED;
       mesh.mixer.update(deltaSeconds);
       // `light` is already false on an empty battery, so a depleted flashlight draws nothing.
-      mesh.fan.visible = view.light;
+      // The light pool lights the floor itself; without it, the flat fan shows the reach.
+      mesh.fan.visible = view.light && !VFX.lightPool;
       mesh.beam.visible = mesh.glow.visible = view.light && VFX.beam;
-      mesh.fan.material = VFX.lightPool ? mesh.lightPool : mesh.flatFan;
       if (view.light) {
         const range = flashlightRange(view.battery, tuning);
         updateFan(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
         updateLight(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
+        if (VFX.lightPool) {
+          POOL_UNIFORMS.flashLensY.value = view.position.y + hunterModel.lens.y;
+          updatePool(Number(view.id.slice(1)) - 1, view.position, view.facing, range, tuning.flashlightConeAngle);
+        }
       }
     }
-    for (const [index, pickup] of pickups.entries()) pickup.visible = snapshot?.pickups.includes(index) ?? false;
+    for (const [index, pickup] of pickups.entries()) {
+      pickup.pose.visible = snapshot?.pickups.includes(index) ?? false;
+      pickup.shadow.visible = pickup.pose.visible && VFX.blobShadows;
+    }
 
     const creatureView = snapshot?.role === 'creature'
       ? { position: snapshot.creature, facing: snapshot.facing, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }
@@ -532,14 +609,16 @@ export function createScene(
       mesh.outline.uniforms.vfxOutlineColor.value.set(creatureView.staggered ? STAGGER_OUTLINE_COLOR : '#000000');
       mesh.outline.uniforms.vfxOutlineWidth.value = creatureView.staggered ? STAGGER_OUTLINE_WIDTH : OUTLINE_WIDTH;
       mesh.ring.visible = creatureView.sprinting;
+      mesh.shadow.visible = VFX.blobShadows;
     } else {
       removeCreature();
     }
-    renderer.render(scene, camera);
+    post.render();
   }
 
   function resize(width: number, height: number): void {
     renderer.setSize(width, height, false);
+    post.setSize(width, height);
     // The outline is a fixed fraction of the view height; its width is corrected by this.
     VFX_UNIFORMS.vfxAspect.value = width / height;
   }
@@ -548,11 +627,11 @@ export function createScene(
   // the next map and disposed only when the page goes away.
   function dispose(keepRenderer = false): void {
     surfaces.dispose();
-    // Each fan holds two materials and only one is in the scene at a time.
-    for (const mesh of hunters.values()) {
-      mesh.flatFan.dispose();
-      mesh.lightPool.dispose();
-    }
+    post.dispose();
+    // Shared by meshes that may already have left the scene (a Creature that was hidden).
+    shadowGeometry.dispose();
+    shadowMaterial.dispose();
+    creatureShadowMaterial.dispose();
     scene.traverse((object) => {
       if (object instanceof Mesh) {
         object.geometry.dispose();
