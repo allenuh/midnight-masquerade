@@ -12,7 +12,7 @@ type CreatureSnapshot = Extract<Snapshot, { role: 'creature' }>;
 
 const HUNTER_KEYS = [
   'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
-  'self', 'proximity', 'creatureHp',
+  'self', 'proximity', 'dread', 'creatureHp',
 ].sort();
 const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'battery', 'down', 'revive'].sort();
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
@@ -83,7 +83,7 @@ async function visiblePlayerColors(page: Page) {
     canvas.height = image.height;
     const context = canvas.getContext('2d')!;
     context.drawImage(image, 0, 0);
-    // Skip the outer margin: the amber proximity-warning border overlays the canvas edges.
+    // Skip the outer margin, where the vignette and the fear effects are darkest.
     const margin = 24;
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
     const charcoal = new Uint8Array(canvas.width * canvas.height);

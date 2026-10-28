@@ -95,6 +95,9 @@ export type HunterSnapshot = RoundSnapshot & {
   self: HunterId;
   // This client's own band only; teammates' bands are never shared.
   proximity: ProximityState;
+  // This client's own distance to the Creature, coarsely: whole steps of the UNEASY radius, from
+  // 0 (SAFE) to GAMEPLAY.proximity.dreadSteps (touching). Never sent to teammates or the Creature.
+  dread: number;
   creatureHp: number;
   // Present only while the Creature is revealed (lit or sprinting, or inside the visibility
   // linger). The key is absent otherwise: the Hunter never holds a hidden Creature transform.

@@ -1,0 +1,203 @@
+// Fear effects: how a Hunter feels the Creature closing in. They replace the old coloured border
+// and say the same thing, magnitude and never direction, but scale with the coarse distance the
+// server sends (`dread`) inside each band, and every band adds a layer, so each threshold is a
+// clear jump. The picture side is the fear pass in post.ts; this module decides the values.
+// No three.js here: the mapping is pure, and tested in tests/fear.test.ts.
+import { GAMEPLAY } from '../shared/gameplay-config.js';
+import type { ProximityState } from '../shared/protocol.js';
+import type { Tuning } from '../shared/tuning.js';
+
+// Stage 0..3 (SAFE, UNEASY, DANGER, IMMEDIATE) and how far through it the Hunter is, from its
+// outer edge (0) to its inner edge (1). SAFE is always 0.
+export type FearInput = { stage: number; t: number };
+
+// Everything the effects are driven by. Distances are world units, so the darkness closes to
+// the same size on screen whatever the map: `radius` is the clear area around the Hunter and
+// `softness` how far beyond it the darkness takes to reach `darkness` (0..1, the share of light
+// taken away). `desaturation` drains colour (strongest far from the Hunter). The heartbeat beats
+// at `heartRate` BPM (0: none) with `heartStrength`. `tendrils` (0..1) breaks the edge of the
+// darkness into creeping ink, `aberration` (0..2) splits the colours around the Hunter,
+// `tvStatic` (0..1) lays black-and-white TV static over the screen, and `flicker` (0..1) is how
+// often the Hunter's own flashlight stutters. The comic panic lines around the Hunter: `lines`
+// jagged strokes (a whole number), each `lineLength` long and `lineWidth` thick at
+// its widest, zigzagging sideways by `lineWave` with `lineWaves` zigs along it, travelling along
+// it `lineSpeed` times a second.
+export type FearLevels = {
+  radius: number; softness: number; darkness: number; desaturation: number;
+  heartRate: number; heartStrength: number; tendrils: number; aberration: number; tvStatic: number; flicker: number;
+  lines: number; lineLength: number; lineWidth: number; lineWave: number; lineWaves: number; lineSpeed: number;
+};
+type Range = readonly [number, number];
+type StageTable = { [K in keyof FearLevels]: Range };
+
+export const NO_FEAR: FearLevels = {
+  radius: 600, softness: 300, darkness: 0, desaturation: 0,
+  heartRate: 0, heartStrength: 0, tendrils: 0, aberration: 0, tvStatic: 0, flicker: 0,
+  lines: 0, lineLength: 0, lineWidth: 0, lineWave: 0, lineWaves: 0, lineSpeed: 0,
+};
+
+// Per band, each value from the band's outer edge to its inner edge. Every band has the comic
+// panic lines; they are the same throughout a band and step up only at each threshold (more,
+// longer, bigger and faster strokes). Each band adds a layer:
+// UNEASY the closing darkness, draining colour, a slow heartbeat and faint TV static; DANGER a
+// faster heartbeat, creeping tendrils, stronger static, a faint colour split and a flashlight that
+// stutters now and then; IMMEDIATE a strong colour split, the strongest static, a racing heart and
+// a failing light. The values jump at every
+// boundary by more than they change inside a band, so crossing a threshold is felt.
+export const FEAR_STAGES: readonly StageTable[] = [
+  // UNEASY
+  {
+    radius: [266, 224], softness: [224, 196], darkness: [0.3, 0.456], desaturation: [0.12, 0.22],
+    heartRate: [55, 65], heartStrength: [0.3, 0.4], tendrils: [0, 0], aberration: [0, 0], tvStatic: [0.7, 0.9], flicker: [0, 0],
+    lines: [8, 8], lineLength: [13, 13], lineWidth: [2.4, 2.4], lineWave: [0.9, 0.9], lineWaves: [1.5, 1.5], lineSpeed: [1.4, 1.4],
+  },
+  // DANGER
+  {
+    radius: [196, 161], softness: [168, 147], darkness: [0.6, 0.72], desaturation: [0.35, 0.45],
+    heartRate: [70, 100], heartStrength: [0.5, 0.7], tendrils: [0.5, 0.8], aberration: [0.2, 0.35], tvStatic: [1.0, 1.35], flicker: [0.1, 0.25],
+    lines: [12, 12], lineLength: [14, 14], lineWidth: [2.95, 2.95], lineWave: [1.4, 1.4], lineWaves: [2, 2], lineSpeed: [2.6, 2.6],
+  },
+  // IMMEDIATE: nearly black beyond a tight clear area (0.98 is the most the pass ever darkens).
+  // The clear radius stays above twice the tag reach (29.4 by default), so the Creature about
+  // to reach the Hunter is always in view.
+  {
+    radius: [95, 75], softness: [100, 85], darkness: [0.936, 0.98], desaturation: [0.55, 0.68],
+    heartRate: [120, 150], heartStrength: [0.9, 1], tendrils: [1, 1], aberration: [1, 1.6], tvStatic: [1.4, 1.65], flicker: [0.45, 0.7],
+    lines: [16, 16], lineLength: [17, 17], lineWidth: [3.45, 3.45], lineWave: [2.05, 2.05], lineWaves: [2.5, 2.5], lineSpeed: [4.4, 4.4],
+  },
+];
+
+const STAGE_OF: Record<ProximityState, number> = { SAFE: 0, UNEASY: 1, DANGER: 2, IMMEDIATE: 3 };
+
+// Where in its band a Hunter is, from the server's band and coarse dread (whole steps of the
+// UNEASY radius). The band decides the stage; dread only places the Hunter inside it.
+export function fearInput(band: ProximityState, dread: number, tuning: Tuning): FearInput {
+  const stage = STAGE_OF[band];
+  if (stage === 0) return { stage: 0, t: 0 };
+  const distance = (1 - dread / GAMEPLAY.proximity.dreadSteps) * tuning.proximityUneasy;
+  const edges = [tuning.proximityUneasy, tuning.proximityDanger, tuning.proximityImmediate, 0];
+  const outer = edges[stage - 1];
+  const inner = edges[stage];
+  const t = outer > inner ? (outer - distance) / (outer - inner) : 1;
+  return { stage, t: Math.min(1, Math.max(0, t)) };
+}
+
+// The ?debug=1&fear=x preview: x from 0 (SAFE) to 3 (the innermost IMMEDIATE). Up to 1 is UNEASY,
+// up to 2 DANGER and up to 3 IMMEDIATE, so 1.5 is halfway through DANGER and 2.05 just inside
+// IMMEDIATE.
+export function previewInput(value: number): FearInput {
+  const x = Math.min(3, Math.max(0, value));
+  if (x === 0) return { stage: 0, t: 0 };
+  const stage = Math.ceil(x);
+  return { stage, t: x - (stage - 1) };
+}
+
+export function fearLevels({ stage, t }: FearInput): FearLevels {
+  if (stage <= 0) return { ...NO_FEAR };
+  const table = FEAR_STAGES[Math.min(stage, 3) - 1];
+  const levels = { ...NO_FEAR };
+  for (const key of Object.keys(table) as (keyof FearLevels)[]) {
+    const [from, to] = table[key];
+    levels[key] = from + (to - from) * t;
+  }
+  return levels;
+}
+
+// How quickly the effects follow a change (seconds to cover about two thirds of it), so a
+// threshold reads as a lurch rather than a pop. The stinger, a hard thump on entering a deeper
+// band, decays over STINGER_SECONDS.
+const EASE_SECONDS = 0.12;
+const STINGER_SECONDS = 0.25;
+// The heartbeat: a lub at LUB and a quieter dub at DUB in each beat (fractions of the beat),
+// each WIDTH wide.
+const LUB = 0.06;
+const DUB = 0.26;
+const DUB_STRENGTH = 0.6;
+const BEAT_WIDTH = 0.05;
+// The colour split swells by ABERRATION_PULSE at each thump, and a stinger flashes it by
+// STINGER_ABERRATION even where there is none yet.
+const ABERRATION_PULSE = 0.6;
+const STINGER_ABERRATION = 0.5;
+// When the band changes the stroke count, all the new strokes grow out of the Hunter together
+// (or all the removed ones shrink back into it) over LINE_GROW_SECONDS.
+const LINE_GROW_SECONDS = 0.25;
+// The flashlight stutter: every FLICKER_INTERVAL seconds (randomised up to twice that), the light
+// dips to between FLICKER_LOW and FLICKER_HIGH with a chance of `flicker * FLICKER_CHANCE`.
+const FLICKER_INTERVAL = 0.06;
+const FLICKER_CHANCE = 0.45;
+const FLICKER_LOW = 0.15;
+const FLICKER_HIGH = 0.6;
+
+// What the fear pass and the flashlight read each frame. `pulse` is the heartbeat plus the
+// stinger. The panic lines: `lines` strokes are drawn, the first `linesSettled` in full and the
+// rest grown out by `lineEmerge` (0..1, all together); `linePhase` is how far their zigzags have
+// travelled (in cycles, kept by the animator so a change of speed never makes them jump).
+// `active` is false once everything has faded out, so the pass can be skipped.
+export type FearFrame = {
+  radius: number; softness: number; darkness: number; desaturation: number; tendrils: number;
+  aberration: number; tvStatic: number; pulse: number; stinger: number; flicker: number;
+  lines: number; linesSettled: number; lineEmerge: number;
+  lineLength: number; lineWidth: number; lineWave: number; lineWaves: number; linePhase: number;
+  active: boolean;
+};
+
+export function createFear() {
+  const levels: FearLevels = { ...NO_FEAR };
+  let lastStage = 0;
+  let beat = 0;
+  let linePhase = 0;
+  // The stroke count changing from `linesFrom` to `linesTo`, `lineGrow` (0..1) of the way.
+  let linesFrom = 0;
+  let linesTo = 0;
+  let lineGrow = 1;
+  let stinger = 0;
+  let flickerTimer = 0;
+  let flicker = 1;
+
+  function update(input: FearInput, deltaSeconds: number): FearFrame {
+    const target = fearLevels(input);
+    const ease = 1 - Math.exp(-deltaSeconds / EASE_SECONDS);
+    for (const key of Object.keys(levels) as (keyof FearLevels)[]) levels[key] += (target[key] - levels[key]) * ease;
+    if (input.stage > lastStage) stinger = 1;
+    lastStage = input.stage;
+    stinger *= Math.exp(-deltaSeconds / STINGER_SECONDS);
+
+    beat = (beat + (deltaSeconds * levels.heartRate) / 60) % 1;
+    linePhase = (linePhase + deltaSeconds * levels.lineSpeed) % 1;
+    const lineTarget = Math.round(target.lines);
+    if (lineTarget !== linesTo) {
+      // A change mid-way starts from whichever count is mostly showing.
+      linesFrom = lineGrow >= 0.5 ? linesTo : linesFrom;
+      linesTo = lineTarget;
+      lineGrow = 0;
+    }
+    lineGrow = Math.min(1, lineGrow + deltaSeconds / LINE_GROW_SECONDS);
+    if (lineGrow >= 1) linesFrom = linesTo;
+    const thump = (centre: number) => Math.exp(-(((beat - centre) / BEAT_WIDTH) ** 2));
+    const heart = levels.heartStrength * (thump(LUB) + DUB_STRENGTH * thump(DUB));
+
+    flickerTimer -= deltaSeconds;
+    if (flickerTimer <= 0) {
+      flickerTimer = FLICKER_INTERVAL * (1 + Math.random());
+      flicker = Math.random() < levels.flicker * FLICKER_CHANCE
+        ? FLICKER_LOW + (FLICKER_HIGH - FLICKER_LOW) * Math.random()
+        : 1;
+    }
+
+    return {
+      radius: levels.radius, softness: levels.softness, darkness: levels.darkness,
+      desaturation: levels.desaturation, tendrils: levels.tendrils,
+      aberration: levels.aberration * (1 + ABERRATION_PULSE * heart) + STINGER_ABERRATION * stinger,
+      tvStatic: levels.tvStatic,
+      lines: Math.max(linesFrom, linesTo), linesSettled: Math.min(linesFrom, linesTo),
+      lineEmerge: linesTo >= linesFrom ? lineGrow : 1 - lineGrow,
+      lineLength: levels.lineLength, lineWidth: levels.lineWidth,
+      lineWave: levels.lineWave, lineWaves: levels.lineWaves, linePhase,
+      pulse: heart + stinger, stinger,
+      flicker: levels.flicker > 0.01 ? flicker : 1,
+      active: levels.darkness > 0.002 || stinger > 0.002,
+    };
+  }
+
+  return { update };
+}

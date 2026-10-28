@@ -317,11 +317,25 @@ export function proximityForDistance(value: number, tuning: Tuning = DEFAULT_TUN
   return 'SAFE';
 }
 
-// One Hunter's own band. Keeping the distance behind this function means nothing outside
-// this module has to touch the Creature's position to ask how close a Hunter is.
+// How close the Creature is, coarsely: a whole number of steps from 0 (at or beyond the UNEASY
+// radius, so always 0 while SAFE) to GAMEPLAY.proximity.dreadSteps (touching). An integer, so the
+// wire carries no long float, and only to the step, so it tells "warmer / colder" and no more.
+export function dreadForDistance(value: number, tuning: Tuning = DEFAULT_TUNING): number {
+  if (tuning.proximityUneasy <= 0) return 0;
+  const closeness = Math.min(1, Math.max(0, 1 - value / tuning.proximityUneasy));
+  return Math.round(closeness * GAMEPLAY.proximity.dreadSteps);
+}
+
+// One Hunter's own band and dread. Keeping the distance behind these functions means nothing
+// outside this module has to touch the Creature's position to ask how close a Hunter is.
 export function hunterProximity(game: Game, hunter: Hunter): ProximityState {
   if (!game.creature) return 'SAFE';
   return proximityForDistance(distance3D(hunter.position, game.creature.position), game.tuning);
+}
+
+export function hunterDread(game: Game, hunter: Hunter): number {
+  if (!game.creature) return 0;
+  return dreadForDistance(distance3D(hunter.position, game.creature.position), game.tuning);
 }
 
 // The flashlight originates at the Hunter's center, which collision keeps out of
@@ -549,8 +563,9 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
       ...round,
       role: 'hunter',
       self: role,
-      // This Hunter's own distance only; each Hunter is told a different band.
+      // This Hunter's own distance only; each Hunter is told a different band and dread.
       proximity: hunterProximity(game, self),
+      dread: hunterDread(game, self),
       creatureHp: state.hp,
     };
     // The Creature position exists in this payload only while revealed. Once the

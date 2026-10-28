@@ -72,7 +72,10 @@ export const GAMEPLAY = {
   // Total beam-seconds of teammate flashlight exposure that revives a downed Hunter. Beams
   // stack (two beams revive in half the time) and progress is kept when the light leaves.
   revive: { seconds: 6 },
-  proximity: { uneasy: 250, danger: 180, immediate: 90 },
+  // Proximity bands by distance to the Creature, and `dreadSteps`: each Hunter is also told its
+  // own distance coarsely, in this many steps of the UNEASY radius (about 10 units each at 250),
+  // which the fear effects scale with inside a band. Not host-tunable.
+  proximity: { uneasy: 250, danger: 180, immediate: 90, dreadSteps: 24 },
   tickRate: 30,
   inputTimeoutMs: 300,
 } as const;

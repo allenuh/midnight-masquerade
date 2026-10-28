@@ -37,10 +37,11 @@ import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
+import { createFear, fearInput, previewInput } from './fear.js';
 import { createPost } from './post.js';
 import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
-  OUTLINE_MATERIAL, OUTLINE_WIDTH, POOL_MAX_ANGLE, POOL_RAYS, POOL_REACH, POOL_SPREAD, POOL_UNIFORMS,
+  LIGHT_COLOR, OUTLINE_MATERIAL, OUTLINE_WIDTH, POOL_MAX_ANGLE, POOL_RAYS, POOL_REACH, POOL_SPREAD, POOL_UNIFORMS,
   STAGGER_OUTLINE_COLOR, STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS,
   createBeamMaterial, createBlobShadowMaterial, createGlowMaterial, createOutlineMaterial, ditheredBody,
 } from './vfx.js';
@@ -98,9 +99,9 @@ const LENS_GLOW_RADIUS = 5;
 // the batteries are unlit, so they stay readable in the dark.
 const AMBIENT_SKY = '#8fa0c8';
 const AMBIENT_GROUND = '#2a2630';
-const AMBIENT_INTENSITY = 0.25;
+const AMBIENT_INTENSITY = 0.45;
 const MOONLIGHT_COLOR = '#c8d2ff';
-const MOONLIGHT_INTENSITY = 0.25;
+const MOONLIGHT_INTENSITY = 0.45;
 const BACKGROUND_COLOR = '#0c0d10';
 // Blob shadow radii: under a Hunter, under the hovering Creature, and under a battery. A downed
 // Hunter's stretches along its body.
@@ -237,8 +238,11 @@ export function createScene(
   // Target determines the fixed rotation; no client movement or input controls this camera.
   camera.lookAt(CAMERA.target.x, CAMERA.target.y, CAMERA.target.z);
 
-  // Bloom and the night grade (post.ts) between the rendered scene and the canvas.
+  // Bloom, the night grade and a Hunter's fear effects (post.ts) between the rendered scene and
+  // the canvas. The fear animator (fear.ts) eases the effects and keeps the heartbeat.
   const post = createPost(renderer, scene, camera);
+  const fear = createFear();
+  const startTime = performance.now();
 
   // Floor and walls come from the room's map, tile by tile with each tile's floor and
   // wallpaper. They cover exactly the tiles the server's collision and line-of-sight boxes
@@ -417,15 +421,17 @@ export function createScene(
   // The pool angle for the room's cone angle, in degrees.
   const poolAngle = (coneAngle: number) => Math.min(coneAngle * POOL_SPREAD, POOL_MAX_ANGLE);
 
-  // Turns on this Hunter's slot of the light pool (vfx.ts) for this frame: where it stands, its
-  // facing, how far the pool reaches at this battery stage, and how far each of its rays gets
-  // before a wall, by the same wall test as the fan.
-  function updatePool(slot: number, origin: Position, facing: number, range: number, coneAngle: number): void {
+  // Turns on this Hunter's slot of the light pool (vfx.ts) for this frame at `brightness`: where
+  // it stands, its facing, how far the pool reaches at this battery stage, and how far each of
+  // its rays gets before a wall, by the same wall test as the fan.
+  function updatePool(
+    slot: number, origin: Position, facing: number, range: number, coneAngle: number, brightness: number,
+  ): void {
     const halfAngle = (poolAngle(coneAngle) / 2) * (Math.PI / 180);
     const reach = range * POOL_REACH;
     const component = (['x', 'y', 'z', 'w'] as const)[slot];
     POOL_UNIFORMS.flashOrigin.value[slot].set(origin.x, origin.z, facing, reach);
-    POOL_UNIFORMS.flashOn.value[component] = 1;
+    POOL_UNIFORMS.flashOn.value[component] = brightness;
     for (let ray = 0; ray <= POOL_RAYS; ray++) {
       const angle = facing - halfAngle + (2 * halfAngle * ray) / POOL_RAYS;
       const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
@@ -510,8 +516,25 @@ export function createScene(
   let lastSnapshot: Snapshot | null = null;
   let lastFrameTime = performance.now();
 
+  // Where the fear effects centre: the viewer's own Hunter on screen, and screen heights per world
+  // unit there (measured across FOCUS_SPAN units). The panic lines centre on the middle of the
+  // model instead (its feet are the floor; lying down, it is no taller than the sphere).
+  const FOCUS_SPAN = 100;
+  const projected = new Vector3();
+  function fearFocus(position: Position, down: boolean) {
+    const at = projected.set(position.x, position.y, position.z).project(camera);
+    const x = (at.x + 1) / 2;
+    const y = (at.y + 1) / 2;
+    const across = projected.set(position.x + FOCUS_SPAN, position.y, position.z).project(camera);
+    const scale = Math.hypot(((across.x + 1) / 2 - x) * CAMERA.aspect, (across.y + 1) / 2 - y) / FOCUS_SPAN;
+    const middle = down ? position.y : position.y - GAMEPLAY.playerRadius + HUNTER_HEIGHT / 2;
+    const model = projected.set(position.x, middle, position.z).project(camera);
+    return { x, y, scale, lineX: (model.x + 1) / 2, lineY: (model.y + 1) / 2 };
+  }
+
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
-  function render(snapshot: Snapshot | null, tuning: Tuning): void {
+  // `fearPreview` (the ?debug=1&fear=x preview) replaces a Hunter's band and dread.
+  function render(snapshot: Snapshot | null, tuning: Tuning, fearPreview: number | null = null): void {
     OUTLINE_MATERIAL.visible = VFX.outline;
     setPixelTextures(surfaceTextures, VFX.pixelTextures);
     VFX_UNIFORMS.vfxDitherShading.value = VFX.ditherShading ? 1 : 0;
@@ -531,6 +554,14 @@ export function createScene(
     POOL_UNIFORMS.flashCoreHalfAngle.value = (tuning.flashlightConeAngle / 2) * (Math.PI / 180);
     POOL_UNIFORMS.flashFloorY.value = world.floorY;
     const self = snapshot?.role === 'hunter' ? snapshot.self : null;
+    // Fear: only a Hunter feels it, only while the round runs, from its own band and dread.
+    const feeling = snapshot?.role !== 'hunter' ? null
+      : fearPreview !== null ? previewInput(fearPreview)
+        : snapshot.roundState === 'running' ? fearInput(snapshot.proximity, snapshot.dread, tuning) : null;
+    const fearFrame = fear.update(feeling ?? { stage: 0, t: 0 }, deltaSeconds);
+    const selfView = snapshot?.hunters.find((view) => view.id === self);
+    if (selfView) post.setFear(fearFrame, fearFocus(selfView.position, selfView.down), (now - startTime) / 1000);
+    else post.setFear({ ...fearFrame, active: false }, { x: 0.5, y: 0.5, scale: 1, lineX: 0.5, lineY: 0.5 }, 0);
     for (const view of snapshot?.hunters ?? []) {
       const mesh = ensureHunter(view.id);
       mesh.group.visible = true;
@@ -567,9 +598,14 @@ export function createScene(
         const range = flashlightRange(view.battery, tuning);
         updateFan(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
         updateLight(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
+        // Near the Creature your own light stutters, on your own screen only, so it never tells a
+        // teammate your band.
+        const brightness = view.id === self ? fearFrame.flicker : 1;
+        mesh.beamMaterial.uniforms.lightColor.value.set(LIGHT_COLOR).multiplyScalar(brightness);
+        (mesh.glow.material as ShaderMaterial).uniforms.lightColor.value.set(LIGHT_COLOR).multiplyScalar(brightness);
         if (VFX.lightPool) {
           POOL_UNIFORMS.flashLensY.value = view.position.y + hunterModel.lens.y;
-          updatePool(Number(view.id.slice(1)) - 1, view.position, view.facing, range, tuning.flashlightConeAngle);
+          updatePool(Number(view.id.slice(1)) - 1, view.position, view.facing, range, tuning.flashlightConeAngle, brightness);
         }
       }
     }

@@ -5,6 +5,7 @@ import { constrainToArena, distance3D, spheresTouchDuringStep } from '../src/ser
 import {
   abandonRound,
   createGame,
+  dreadForDistance,
   proximityForDistance,
   setInput,
   snapshotFor,
@@ -366,17 +367,44 @@ test('swept sphere contact considers vertical separation and vertical crossings'
   'a vertical crossing is detected even when neither endpoint overlaps');
 });
 
-test('different hidden positions in the same proximity band produce identical Hunter messages', () => {
+test('different hidden positions in the same dread step produce identical Hunter messages', () => {
+  // A Hunter learns how far the Creature is only to one dread step, and never which way. Each
+  // distance is the middle of a step (or far beyond the UNEASY radius), moved up to 3 units
+  // within it and around the Hunter in four directions.
   const game = runningGame();
-  game.hunters[0].position = groundPosition(TEST_WORLD.width / 2, TEST_WORLD.depth / 2);
-  for (const distance of [40, 150, 280, 400]) {
-    game.creature!.position = groundPosition(game.hunters[0].position.x + distance, game.hunters[0].position.z);
+  const hunter = groundPosition(TEST_WORLD.width / 2, TEST_WORLD.depth / 2);
+  game.hunters[0].position = hunter;
+  const { uneasy, dreadSteps } = GAMEPLAY.proximity;
+  const middle = (step: number) => uneasy * (1 - step / dreadSteps);
+  for (const distance of [middle(20), middle(13), middle(5), middle(1), 400]) {
+    const at = (offset: number, angle: number) => groundPosition(
+      hunter.x + Math.cos(angle) * (distance + offset), hunter.z + Math.sin(angle) * (distance + offset));
+    game.creature!.position = at(0, 0);
     const first = JSON.stringify(hunterView(game));
-    // Change direction and exact distance without crossing a warning threshold.
-    game.creature!.position = groundPosition(game.hunters[0].position.x - distance - 1, game.hunters[0].position.z);
-    const second = JSON.stringify(hunterView(game));
-    assert.equal(second, first);
+    for (const [offset, angle] of [[-3, Math.PI], [3, Math.PI / 2], [2, -Math.PI / 4], [-2, 2.5]]) {
+      game.creature!.position = at(offset, angle);
+      assert.equal(JSON.stringify(hunterView(game)), first, `${distance.toFixed(1)} units`);
+    }
   }
+});
+
+test('dread is a whole number of steps, 0 whenever SAFE, rising as the Creature closes in', () => {
+  const { uneasy, danger, immediate, dreadSteps } = GAMEPLAY.proximity;
+  assert.equal(dreadForDistance(0), dreadSteps);
+  assert.equal(dreadForDistance(uneasy), 0);
+  assert.equal(dreadForDistance(uneasy + 0.01), 0);
+  assert.equal(dreadForDistance(10_000), 0);
+  let previous: number = dreadSteps;
+  for (let distance = 0; distance <= uneasy + 20; distance += 0.5) {
+    const dread = dreadForDistance(distance);
+    assert.ok(Number.isInteger(dread) && dread >= 0 && dread <= dreadSteps, `${dread} at ${distance}`);
+    assert.ok(dread <= previous, 'never rises as the distance grows');
+    if (proximityForDistance(distance) === 'SAFE') assert.equal(dread, 0);
+    previous = dread;
+  }
+  // Each band's dread sits at or above the next band out's.
+  assert.ok(dreadForDistance(immediate) >= dreadForDistance(immediate + 0.01));
+  assert.ok(dreadForDistance(danger) >= dreadForDistance(danger + 0.01));
 });
 
 test('role snapshots cannot mutate or alias authoritative player positions', () => {

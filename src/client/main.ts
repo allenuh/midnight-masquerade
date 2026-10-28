@@ -15,7 +15,6 @@ const element = <T extends HTMLElement = HTMLElement>(selector: string): T => do
 const canvas = element<HTMLCanvasElement>('#arena');
 const container = element('#arena-container');
 const arenaView = element('#arena-view');
-const warning = element('#proximity-warning');
 const lobby = element('#lobby');
 const menu = element('#menu');
 const createButton = element<HTMLButtonElement>('#create');
@@ -51,6 +50,10 @@ const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
 // Playtest overlay, off unless the page is opened with ?debug=1. It shows only what this
 // client already received: a Hunter page has no Creature position to put in it.
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+// With the overlay, &fear=x previews a Hunter's fear effects without a Creature: x from 0 (SAFE)
+// to 3 (as close as IMMEDIATE gets), e.g. 1.5 for halfway through DANGER (see fear.ts).
+const fearParameter = new URLSearchParams(location.search).get('fear');
+const FEAR_PREVIEW = DEBUG && fearParameter !== null && Number.isFinite(Number(fearParameter)) ? Number(fearParameter) : null;
 
 function start(
   hunterModel: HunterModel, creatureModel: CreatureModel, batteryModel: BatteryModel, surfaceTextures: SurfaceTextures,
@@ -240,7 +243,7 @@ function start(
     }
     if (snapshot.role === 'hunter') {
       lines.push(`creature hp ${snapshot.creatureHp.toFixed(1)}, ${snapshot.creature ? 'revealed' : 'hidden'}`);
-      lines.push(`proximity ${snapshot.proximity} (own band only)`);
+      lines.push(`proximity ${snapshot.proximity}, dread ${snapshot.dread}/${GAMEPLAY.proximity.dreadSteps} (own only)`);
     } else {
       lines.push(`creature hp ${snapshot.hp.toFixed(1)} ${snapshot.staggered ? 'STAGGERED' : ''} ${snapshot.burning ? 'BURNING' : ''}`);
       lines.push(
@@ -296,7 +299,6 @@ function start(
     proximityText.hidden = batteryText.hidden = snapshot?.role !== 'hunter';
     debugPanel.hidden = !DEBUG || !inRound;
     overlay.hidden = true;
-    warning.dataset.state = 'SAFE';
 
     if (closedReason) {
       statusText.textContent = closedReason;
@@ -340,7 +342,6 @@ function start(
             : seen.sprinting ? 'SPRINTING' : 'REVEALED';
       creatureStateText.dataset.state = state;
       creatureStateText.textContent = `Creature: ${state === 'HIDDEN' ? 'hidden' : state}`;
-      if (snapshot.roundState === 'running') warning.dataset.state = snapshot.proximity;
     } else {
       roleText.textContent = 'Role: Creature (hooded wraith)';
       creatureHpText.textContent = `HP: ${Math.ceil(snapshot.hp)}`;
@@ -531,7 +532,7 @@ function start(
   // Render the latest authoritative state; the client does not simulate movement or hits.
   let animationFrame = 0;
   function draw(): void {
-    scene?.render(snapshot, room?.tuning ?? DEFAULT_TUNING);
+    scene?.render(snapshot, room?.tuning ?? DEFAULT_TUNING, FEAR_PREVIEW);
     animationFrame = window.requestAnimationFrame(draw);
   }
 

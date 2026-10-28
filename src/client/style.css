@@ -179,26 +179,6 @@ canvas {
   position: relative;
 }
 
-/* All four edges are identical: the warning communicates magnitude, never direction. */
-#proximity-warning {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border: 0 solid transparent;
-}
-
-#proximity-warning[data-state='UNEASY'] {
-  border: 4px solid #75683d;
-}
-
-#proximity-warning[data-state='DANGER'] {
-  border: 9px solid #b97c39;
-}
-
-#proximity-warning[data-state='IMMEDIATE'] {
-  border: 16px solid #e46448;
-}
-
 /* Role reveal and incapacitation: plain centred text over the arena, nothing else. */
 #overlay {
   position: absolute;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
 import type { Position } from '../src/shared/protocol.js';
+import { distance3D } from '../src/server/spatial.js';
 import {
   CREATURE_SPAWN_FACING,
   HUNTER_IDS,
@@ -12,6 +13,7 @@ import {
   allHuntersDown,
   createGame,
   downedHunters,
+  dreadForDistance,
   flashlightReaches,
   isOnStaggerCooldown,
   isRevealed,
@@ -148,6 +150,7 @@ test('each Hunter receives only its own proximity band, computed from its own di
   for (let slot = 0; slot < 4; slot++) {
     const snapshot = hunterView(game, slot);
     assert.equal(snapshot.proximity, expected[slot]);
+    assert.equal(snapshot.dread, dreadForDistance(distance3D(game.hunters[slot].position, game.creature!.position)));
     assertHunterPayload(snapshot);
     for (const teammate of snapshot.hunters) assert.deepEqual(Object.keys(teammate).sort(), HUNTER_VIEW_KEYS);
     const wire = JSON.stringify(snapshot);
@@ -155,9 +158,10 @@ test('each Hunter receives only its own proximity band, computed from its own di
       assert.equal(wire.includes(band), band === expected[slot], `${snapshot.self} carries only its own band`);
     }
   }
-  // The Creature's view carries no bands at all.
+  // The Creature's view carries no bands and no dread at all.
   const wire = JSON.stringify(creatureView(game));
   for (const band of expected) assert.equal(wire.includes(band), false);
+  assert.equal('dread' in creatureView(game), false);
 });
 
 test('no Hunter payload contains the hidden Creature transform, while every Hunter sees all four Hunters', () => {

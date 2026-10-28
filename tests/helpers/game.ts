@@ -109,7 +109,7 @@ export function closeTo(actual: number, expected: number, tolerance = 1e-8): voi
 
 export const HUNTER_PAYLOAD_KEYS = [
   'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
-  'self', 'proximity', 'creatureHp',
+  'self', 'proximity', 'dread', 'creatureHp',
 ].sort();
 export const CREATURE_PAYLOAD_KEYS = [
   'type', 'role', 'roundId', 'roundState', 'result', 'hunters', 'timeRemaining', 'pickups',
@@ -131,6 +131,9 @@ export function assertHunterPayload(value: unknown): void {
   assert.ok(payload.result === null || ['caught', 'defeated', 'expired'].includes(payload.result));
   assert.ok(['H1', 'H2', 'H3', 'H4'].includes(payload.self));
   assert.ok(['SAFE', 'UNEASY', 'DANGER', 'IMMEDIATE'].includes(payload.proximity));
+  // Own distance, coarsely: a whole number of steps, and nothing at all while SAFE.
+  assert.ok(Number.isInteger(payload.dread) && payload.dread >= 0 && payload.dread <= GAMEPLAY.proximity.dreadSteps);
+  if (payload.proximity === 'SAFE') assert.equal(payload.dread, 0);
   assert.equal(typeof payload.creatureHp, 'number');
   // The clock and the public pickup list: seconds and spawn-point indices, never positions.
   assert.equal(typeof payload.timeRemaining, 'number');

@@ -42,7 +42,7 @@ const SHADOW_STRENGTH = 0.55;
 const DITHER_BAND = { start: -0.15, width: 0.5 };
 
 // Flashlight colour, shared by the beam, the lens glow and the light pool.
-const LIGHT_COLOR = '#ffe9a8';
+export const LIGHT_COLOR = '#ffe9a8';
 // Beam brightness where it is densest, the share of its length after which it fades out, and
 // the height over which it fades into the floor (so the edge where the cone's lower half meets
 // the floor is soft instead of a hard step in brightness).
@@ -147,7 +147,8 @@ float vfxWrapAngle(float a) { return atan(sin(a), cos(a)); }
 
 // The light pool's per-frame state, shared by every floor and wall material (one scene at a
 // time). Each Hunter slot is one component: `flashOrigin[slot]` is (x, z, facing, pool reach)
-// and `flashOn` is 1 for a slot whose light is on. `flashReach[ray]` is how far each slot's ray
+// and `flashOn` is how bright each slot's light is: 0 when off, 1 when on, in between while the
+// viewer's own light stutters near the Creature (fear.ts). `flashReach[ray]` is how far each slot's ray
 // travels before a wall, across the pool's angle (the same wall test as the fan and the server).
 // The angles and heights are the same for every Hunter.
 export const POOL_UNIFORMS = {
@@ -192,7 +193,7 @@ float vfxFlashlight(vec3 world, vec3 normal) {
   if (normal.y > 0.5 && world.y > flashFloorY + 1.0) return 0.0;
   float total = 0.0;
   for (int slot = 0; slot < ${POOL_SLOTS}; slot++) {
-    if (flashOn[slot] < 0.5) continue;
+    if (flashOn[slot] <= 0.0) continue;
     vec4 origin = flashOrigin[slot];
     vec2 offset = world.xz - origin.xy;
     float distance = length(offset);
@@ -211,7 +212,7 @@ float vfxFlashlight(vec3 world, vec3 normal) {
       * (1.0 - smoothstep(0.8, 1.0, distance * ${POOL_REACH.toFixed(3)} / origin.w));
     vec3 toLens = normalize(vec3(origin.x, flashLensY, origin.y) - world);
     float facing = smoothstep(-0.1, 0.3, dot(normal, toLens));
-    total += (${POOL_INTENSITY.toFixed(3)} * sides + ${POOL_CORE_BOOST.toFixed(3)} * core) * fade * wall * facing;
+    total += (${POOL_INTENSITY.toFixed(3)} * sides + ${POOL_CORE_BOOST.toFixed(3)} * core) * fade * wall * facing * flashOn[slot];
   }
   return total;
 }`)
