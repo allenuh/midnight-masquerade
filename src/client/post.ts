@@ -105,8 +105,9 @@ const STATIC_BAND = 1.8;
 // model on screen. Each stroke has a fixed direction, so strokes never move round: stroke k points
 // at the base-2 van der Corput fraction of k of a turn (0, 1/2, 1/4, 3/4, 1/8, ...), so the first 8
 // are spread evenly and every later one lands halfway between two existing ones (12 fills every
-// other gap, 16 all of them). When the band adds strokes they all grow out of the Hunter's centre
-// together (and shrink back into it together when it drops). Each starts LINE_INNER world units
+// other gap, 16 all of them). When the band adds strokes they all grow out together from
+// LINE_EMERGE_FROM of the way to where they start (and shrink back there together when it drops).
+// Each starts LINE_INNER world units
 // out (just clear of the model) plus up to LINE_JITTER, is pushed out by LINE_PULSE at each
 // heartbeat, and varies its length by up to LINE_LENGTH_JITTER either way. Its centreline is a
 // zigzag of straight segments meeting at sharp corners, and it narrows in straight lines to sharp
@@ -120,6 +121,7 @@ const LINE_JITTER = 3;
 const LINE_PULSE = 2;
 const LINE_LENGTH_JITTER = 0.2;
 const LINE_TIP = 1.5;
+const LINE_EMERGE_FROM = 0.7;
 const LINE_COLOR = 'rgb(79, 45, 102)';
 const LINE_OUTLINE = 0.45;
 const LINE_OUTLINE_MIN_PX = 0.75;
@@ -201,13 +203,14 @@ vec2 fearLines() {
   for (int k = 0; k < ${LINE_SLOTS}; k++) {
     if (float(k) >= lines) break;
     float seed = fearHash(vec2(float(k), 3.7));
-    // Growing out of the centre: the strokes the band just added (or removed) all together.
+    // Growing out: the strokes the band just added (or removed) all together, from most of the way
+    // out rather than from the centre.
     float emerge = float(k) < linesSettled ? 1.0 : smoothstep(0.0, 1.0, lineEmerge);
     if (emerge < 0.01) continue;
     float delta = theta - fearCorput(k) * 6.2831853 - 0.4;
     delta = atan(sin(delta), cos(delta));
     if (abs(delta) > 1.2) continue;
-    float strokeStart = (start + seed * ${LINE_JITTER.toFixed(1)}) * emerge;
+    float strokeStart = (start + seed * ${LINE_JITTER.toFixed(1)}) * mix(${LINE_EMERGE_FROM.toFixed(3)}, 1.0, emerge);
     float strokeLength = lineLength * emerge * (1.0 + ${LINE_LENGTH_JITTER.toFixed(3)} * (2.0 * fearHash(vec2(float(k), 9.1)) - 1.0));
     float along = (r * cos(delta) - strokeStart) / strokeLength;
     if (along < 0.0 || along > 1.0) continue;

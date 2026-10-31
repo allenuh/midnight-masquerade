@@ -47,7 +47,7 @@ select {
 }
 
 input[type='number'] {
-  width: 6ch;
+  width: 12ch;
 }
 
 button {
@@ -94,4 +94,13 @@ footer {
 
 [hidden] {
   display: none !important;
+}
+
+.tool-group {
+  margin-left: 8px;
+  color: #aeb5ae;
+}
+
+.tool-group:first-child {
+  margin-left: 0;
 }

@@ -8,6 +8,7 @@ import {
   createScene, loadBatteryModel, loadCreatureModel, loadHunterModel, type BatteryModel, type CreatureModel, type HunterModel,
 } from './scene.js';
 import { VFX, type VfxKey } from './vfx.js';
+import { loadPropModels, type PropModels } from './props.js';
 import { loadSurfaceTextures, type SurfaceTextures } from './surface-meshes.js';
 import './style.css';
 
@@ -57,6 +58,7 @@ const FEAR_PREVIEW = DEBUG && fearParameter !== null && Number.isFinite(Number(f
 
 function start(
   hunterModel: HunterModel, creatureModel: CreatureModel, batteryModel: BatteryModel, surfaceTextures: SurfaceTextures,
+  propModels: PropModels,
 ): void {
   // The client bundles no map. The scene exists only once the server has sent the room's
   // map, and is rebuilt (reusing the WebGL renderer) whenever the host switches map.
@@ -71,7 +73,9 @@ function start(
     const renderer = scene?.renderer;
     scene?.dispose(true);
     try {
-      scene = createScene(canvas, buildWorld(result.map), hunterModel, creatureModel, batteryModel, surfaceTextures, renderer);
+      scene = createScene(
+        canvas, buildWorld(result.map), hunterModel, creatureModel, batteryModel, surfaceTextures, propModels, renderer,
+      );
     } catch {
       scene = null;
       statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
@@ -554,7 +558,8 @@ function start(
 
 // Every model and surface texture is needed by every scene, so they are loaded before
 // anything connects.
-Promise.all([loadHunterModel(), loadCreatureModel(), loadBatteryModel(), loadSurfaceTextures()]).then(
-  ([hunterModel, creatureModel, batteryModel, surfaceTextures]) => start(hunterModel, creatureModel, batteryModel, surfaceTextures), () => {
+Promise.all([loadHunterModel(), loadCreatureModel(), loadBatteryModel(), loadSurfaceTextures(), loadPropModels()]).then(
+  ([hunterModel, creatureModel, batteryModel, surfaceTextures, propModels]) =>
+    start(hunterModel, creatureModel, batteryModel, surfaceTextures, propModels), () => {
   statusText.textContent = 'Could not load the game models. Reload the page to try again.';
 });

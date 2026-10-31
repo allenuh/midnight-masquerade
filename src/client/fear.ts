@@ -39,8 +39,8 @@ export const NO_FEAR: FearLevels = {
 // Per band, each value from the band's outer edge to its inner edge. Every band has the comic
 // panic lines; they are the same throughout a band and step up only at each threshold (more,
 // longer, bigger and faster strokes). Each band adds a layer:
-// UNEASY the closing darkness, draining colour, a slow heartbeat and faint TV static; DANGER a
-// faster heartbeat, creeping tendrils, stronger static, a faint colour split and a flashlight that
+// UNEASY the closing darkness, draining colour and a slow heartbeat; DANGER a faster heartbeat,
+// creeping tendrils, TV static, a faint colour split and a flashlight that
 // stutters now and then; IMMEDIATE a strong colour split, the strongest static, a racing heart and
 // a failing light. The values jump at every
 // boundary by more than they change inside a band, so crossing a threshold is felt.
@@ -48,14 +48,14 @@ export const FEAR_STAGES: readonly StageTable[] = [
   // UNEASY
   {
     radius: [266, 224], softness: [224, 196], darkness: [0.3, 0.456], desaturation: [0.12, 0.22],
-    heartRate: [55, 65], heartStrength: [0.3, 0.4], tendrils: [0, 0], aberration: [0, 0], tvStatic: [0.7, 0.9], flicker: [0, 0],
-    lines: [8, 8], lineLength: [13, 13], lineWidth: [2.4, 2.4], lineWave: [0.9, 0.9], lineWaves: [1.5, 1.5], lineSpeed: [1.4, 1.4],
+    heartRate: [55, 65], heartStrength: [0.3, 0.4], tendrils: [0, 0], aberration: [0, 0], tvStatic: [0, 0], flicker: [0, 0],
+    lines: [8, 8], lineLength: [9.75, 9.75], lineWidth: [2.4, 2.4], lineWave: [0.9, 0.9], lineWaves: [1.5, 1.5], lineSpeed: [1.4, 1.4],
   },
   // DANGER
   {
     radius: [196, 161], softness: [168, 147], darkness: [0.6, 0.72], desaturation: [0.35, 0.45],
     heartRate: [70, 100], heartStrength: [0.5, 0.7], tendrils: [0.5, 0.8], aberration: [0.2, 0.35], tvStatic: [1.0, 1.35], flicker: [0.1, 0.25],
-    lines: [12, 12], lineLength: [14, 14], lineWidth: [2.95, 2.95], lineWave: [1.4, 1.4], lineWaves: [2, 2], lineSpeed: [2.6, 2.6],
+    lines: [12, 12], lineLength: [11.9, 11.9], lineWidth: [2.95, 2.95], lineWave: [1.4, 1.4], lineWaves: [2, 2], lineSpeed: [2.6, 2.6],
   },
   // IMMEDIATE: nearly black beyond a tight clear area (0.98 is the most the pass ever darkens).
   // The clear radius stays above twice the tag reach (29.4 by default), so the Creature about
@@ -118,9 +118,9 @@ const BEAT_WIDTH = 0.05;
 // STINGER_ABERRATION even where there is none yet.
 const ABERRATION_PULSE = 0.6;
 const STINGER_ABERRATION = 0.5;
-// When the band changes the stroke count, all the new strokes grow out of the Hunter together
-// (or all the removed ones shrink back into it) over LINE_GROW_SECONDS.
-const LINE_GROW_SECONDS = 0.25;
+// When the band changes the stroke count, all the new strokes grow out together (or all the
+// removed ones shrink back) over LINE_GROW_SECONDS.
+const LINE_GROW_SECONDS = 0.125;
 // The flashlight stutter: every FLICKER_INTERVAL seconds (randomised up to twice that), the light
 // dips to between FLICKER_LOW and FLICKER_HIGH with a chance of `flicker * FLICKER_CHANCE`.
 const FLICKER_INTERVAL = 0.06;

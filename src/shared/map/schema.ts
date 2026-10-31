@@ -5,9 +5,9 @@
 import { GAMEPLAY } from '../gameplay-config.js';
 
 // Version 2 added the floor and wallpaper layers. A version 1 file still loads, with
-// every tile's floor and wallpaper Plain.
-export const MAP_VERSION = 2;
-export const SUPPORTED_MAP_VERSIONS: readonly number[] = [1, 2];
+// every tile's floor and wallpaper Plain. Version 3 added props; an older file loads with none.
+export const MAP_VERSION = 3;
+export const SUPPORTED_MAP_VERSIONS: readonly number[] = [1, 2, 3];
 
 // One tile is this many world units on both ground axes. The grid is the playable
 // floor: X grows with the column, Z grows with the row, and Y is height.
@@ -71,10 +71,25 @@ export const WALLPAPER_LABELS: Record<WallpaperId, string> = {
   [WALLPAPER.creamFloral]: 'Cream floral',
 };
 
+// Props are the furniture and clutter in props.ts, which describes each one. Every tile a
+// prop stands on blocks movement and sight like a Wall tile; wall props (the sconces) hang on
+// a wall face and block nothing. New props get the next free id.
+export const PROP = {
+  bookshelf: 1, dresser: 2, cupboard: 3, diningTable: 4, sideTable: 5, storageTable: 6, chair: 7, stool: 8,
+  barrelStandard: 9, barrelWeathered: 10, crateStandard: 11, crateDark: 12, candelabra: 13, chamberstick: 14,
+  wallCandle: 15, wallCandleDouble: 16,
+} as const;
+export type PropId = (typeof PROP)[keyof typeof PROP];
+
+// The wall a wall prop hangs on, seen from the Open tile in front of it: north is toward row 0.
+export const WALL_SIDES = ['north', 'east', 'south', 'west'] as const;
+export type WallSide = (typeof WALL_SIDES)[number];
+
 export const TERRAIN_IDS: readonly TerrainId[] = Object.values(TERRAIN);
 export const MARKER_IDS: readonly MarkerId[] = Object.values(MARKER);
 export const FLOOR_IDS: readonly FloorId[] = Object.values(FLOOR);
 export const WALLPAPER_IDS: readonly WallpaperId[] = Object.values(WALLPAPER);
+export const PROP_IDS: readonly PropId[] = Object.values(PROP);
 
 // A playable map must be able to seat a full lobby: one Creature and every Hunter slot,
 // each on its own marker. A round may use fewer Hunter spawns than the map declares.
@@ -85,13 +100,24 @@ export const isTerrainId = (value: unknown): value is TerrainId => TERRAIN_IDS.i
 export const isMarkerId = (value: unknown): value is MarkerId => MARKER_IDS.includes(value as MarkerId);
 export const isFloorId = (value: unknown): value is FloorId => FLOOR_IDS.includes(value as FloorId);
 export const isWallpaperId = (value: unknown): value is WallpaperId => WALLPAPER_IDS.includes(value as WallpaperId);
+export const isPropId = (value: unknown): value is PropId => PROP_IDS.includes(value as PropId);
+export const isWallSide = (value: unknown): value is WallSide => WALL_SIDES.includes(value as WallSide);
 
 // `x` is the column (0 .. width - 1) and `y` the row (0 .. height - 1).
 export type MapMarker = { type: MarkerId; x: number; y: number };
 
+// A prop standing on the floor or on another prop: (x, y) is the top-left tile of its
+// footprint as turned, and `rotation` is degrees clockwise as seen from above (in the editor),
+// 0 facing +Z, down the grid toward the camera. It stands on whatever an earlier prop in the
+// list left on top of its tiles, or on the floor (props.ts).
+export type MapProp = { type: PropId; x: number; y: number; rotation: number };
+// A wall prop: (x, y) is the Open tile in front of the wall and `side` the wall it hangs on.
+export type MapWallProp = { type: PropId; x: number; y: number; side: WallSide };
+
 // `terrain`, `floor` and `wallpaper` are each `height` rows of `width` ids: terrain[y][x].
 // Every tile has all three, whatever its terrain, so repainting terrain never loses a
-// finish. `boundaryWallpaper` covers the implicit arena boundary's inner faces.
+// finish. `boundaryWallpaper` covers the implicit arena boundary's inner faces. `props` are in
+// stacking order: a prop is listed after the one it stands on.
 export type GameMap = {
   version: number;
   name: string;
@@ -102,6 +128,8 @@ export type GameMap = {
   wallpaper: WallpaperId[][];
   boundaryWallpaper: WallpaperId;
   markers: MapMarker[];
+  props: MapProp[];
+  wallProps: MapWallProp[];
 };
 
 // The one place grid coordinates become world coordinates. A tile spans
@@ -117,7 +145,7 @@ export const filledGrid = <T>(width: number, height: number, value: T): T[][] =>
 export const countMarkers = (map: GameMap, type: MarkerId): number =>
   map.markers.filter((marker) => marker.type === type).length;
 
-// A blank map: every tile Open and Plain, no markers. The arena's boundary wall is implicit
+// A blank map: every tile Open and Plain, no markers or props. The arena's boundary wall is implicit
 // (the runtime builds it around the grid), so an all-Open map is already enclosed.
 export function createEmptyMap(name: string, width: number, height: number): GameMap {
   return {
@@ -130,5 +158,7 @@ export function createEmptyMap(name: string, width: number, height: number): Gam
     wallpaper: filledGrid<WallpaperId>(width, height, WALLPAPER.plain),
     boundaryWallpaper: WALLPAPER.plain,
     markers: [],
+    props: [],
+    wallProps: [],
   };
 }

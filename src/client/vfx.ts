@@ -2,13 +2,18 @@ import {
   AdditiveBlending,
   BackSide,
   Color,
+  DataTexture,
   DoubleSide,
+  FloatType,
   type Material,
+  RedFormat,
   ShaderMaterial,
+  type Texture,
   Vector3,
   Vector4,
   type WebGLProgramParametersWithUniforms,
 } from 'three';
+import { TILE_SIZE } from '../shared/map/schema.js';
 
 // Visual experiments, client-only and individually switchable. On the Hunter and the Creature: a
 // black cartoon outline, and shading from the scene's light with a dithered edge between light
@@ -17,6 +22,10 @@ import {
 // lighting the floors and walls it reaches. None of it changes what the light hits; the server
 // decides that.
 // On the floors and walls: hard, unfiltered texels instead of smooth filtering.
+// On the battery pickups: a pale yellow halo and rising motes, the same light on the floors and
+// walls round them, and glowing symbols with a charge sweeping up the can.
+// On the candles (props.ts): a warm, flickering light on everything round them, and a small halo
+// round each flame.
 // On the whole picture (post.ts): a soft bloom, and a night grade with a vignette. Under the
 // players and batteries: soft round blob shadows.
 export const VFX = {
@@ -28,6 +37,8 @@ export const VFX = {
   bloom: true,
   grade: true,
   pixelTextures: false,
+  batteryGlow: true,
+  candleLight: true,
 };
 export type VfxKey = keyof typeof VFX;
 
@@ -68,6 +79,72 @@ const POOL_SOFT_SIDES = 0.35;
 const POOL_CORE_BOOST = 0.35;
 // Pool slots: one per Hunter, each in one component of a vec4.
 export const POOL_SLOTS = 4;
+// Battery glow: each pickup lights the floors and walls within BATTERY_LIGHT_RADIUS in a pale
+// yellow, lighter than the flashlight's, at BATTERY_LIGHT_INTENSITY times the surface's own colour beside it, fading to nothing
+// at the radius. BATTERY_LIGHT_RAYS rays around each battery measure where walls stop it, so it
+// never shows on the far side of a wall. Up to MAX_BATTERY_LIGHTS batteries light their
+// surroundings; any further spawn points on a map only get the halo.
+export const BATTERY_LIGHT_COLOR = '#fff4c4';
+export const BATTERY_LIGHT_RADIUS = 60;
+export const BATTERY_LIGHT_RAYS = 24;
+export const MAX_BATTERY_LIGHTS = 16;
+const BATTERY_LIGHT_INTENSITY = 2.6;
+// Candle light: each candle flame lights what is within CANDLE_LIGHT_RADIUS of it in a warm
+// amber, at CANDLE_LIGHT_INTENSITY times the surface's own colour times its share of its candle's
+// brightness (props.ts), fading to nothing at the
+// radius. All the candles together light a surface by at most CANDLE_LIGHT_MAX times its colour,
+// so the holder or wallpaper right by a flame stays a warm colour rather than blowing out.
+// CANDLE_LIGHT_RAYS rays round each light measure where walls and props taller than its flames
+// stop it. Up to MAX_CANDLE_LIGHTS flames light their surroundings; any more only glow.
+export const CANDLE_LIGHT_COLOR = '#ffa04a';
+export const CANDLE_LIGHT_RADIUS = 100;
+export const CANDLE_LIGHT_RAYS = 24;
+export const MAX_CANDLE_LIGHTS = 48;
+const CANDLE_LIGHT_INTENSITY = 2.2;
+const CANDLE_LIGHT_MAX = 1.3;
+// The halo's brightness at its centre (hidden behind the battery) before it fades out, before
+// the pulse (scene.ts) scales it.
+const HALO_INTENSITY = 2.6;
+// The battery's own body is lit, PlayStation style (createBatteryMaterial): by the night's
+// ambient and moonlight like the floors and, with the glow off, a key, BATTERY_KEY_COLOR at
+// BATTERY_KEY_INTENSITY, falling to half at BATTERY_KEY_FALLOFF units from the key's point.
+// With the glow on, its lampshade glow takes the key's place.
+const BATTERY_KEY_COLOR = '#fff6dc';
+const BATTERY_KEY_INTENSITY = 1.1;
+const BATTERY_KEY_FALLOFF = 30;
+// The battery glows from inside like a lampshade over a bulb, so it reads as charged: its paint
+// shines at BATTERY_SHADE_LIGHT, tinted toward BATTERY_SHADE_COLOR by BATTERY_SHADE_TINT the
+// way pigments mix (a weighted geometric mean, so its blue turns teal rather than grey). It is
+// full where it faces the view and dims to BATTERY_SHADE_EDGE at its silhouette, so it still
+// looks round. Its glow mask (the label, the symbols, the streaks) shines brighter still in
+// BATTERY_LIGHT_COLOR at BATTERY_EMISSION, past the bloom threshold. Every
+// BATTERY_CHARGE_PERIOD seconds a charge, a band BATTERY_CHARGE_WIDTH of the profile tall,
+// sweeps up from the base to the cap in the first BATTERY_CHARGE_SWEEP of the period: it lights
+// the paint it crosses by BATTERY_CHARGE_SELF_LIGHT more and the mask by BATTERY_CHARGE_BOOST.
+// When it reaches the cap the halo and the floor light flash (batteryChargeFlash) and fade.
+const BATTERY_SHADE_COLOR = '#ffd860';
+const BATTERY_SHADE_TINT = 0.5;
+const BATTERY_SHADE_LIGHT = 1.3;
+const BATTERY_SHADE_EDGE = 0.45;
+const BATTERY_EMISSION = 1.3;
+const BATTERY_CHARGE_PERIOD = 2.4;
+const BATTERY_CHARGE_SWEEP = 0.6;
+const BATTERY_CHARGE_WIDTH = 0.07;
+const BATTERY_CHARGE_SELF_LIGHT = 0.6;
+const BATTERY_CHARGE_BOOST = 1.8;
+// Motes of light rising round each battery: MOTE_COUNT of them, each MOTE_PIXELS CSS pixels
+// square, climbing from MOTE_FROM to MOTE_TO (battery heights from its middle) over
+// MOTE_LIFE seconds on a ring MOTE_RADIUS battery heights out, at MOTE_INTENSITY times the glow
+// colour (past the bloom threshold).
+export const MOTE_COUNT = 8;
+export const MOTE_PIXELS = 2;
+const MOTE_FROM = -0.4;
+const MOTE_TO = 1.3;
+const MOTE_LIFE = 2.6;
+const MOTE_RADIUS = 0.36;
+const MOTE_INTENSITY = 2.0;
+// PlayStation colour depth: levels per channel, in display (sRGB) space.
+const PS1_COLOR_LEVELS = 32;
 // Blob shadows: their darkness at the centre, under the Hunters and batteries and under the
 // hovering Creature.
 const BLOB_SHADOW_OPACITY = 0.45;
@@ -145,6 +222,26 @@ const ANGLE_GLSL = /* glsl */ `
 float vfxWrapAngle(float a) { return atan(sin(a), cos(a)); }
 `;
 
+// How much a round light centred on `center` lights a fragment, before its brightness: row `slot`
+// of `reaches` holds how far each of its `rays` rays travels before something stops it; ray i
+// points at angle 2*pi*i/rays from +X toward +Z. Needs FLASH_MARGIN.
+const ROUND_LIGHT_GLSL = /* glsl */ `
+float vfxRoundLight(vec3 world, vec3 normal, vec3 center, float radius, sampler2D reaches, int slot, int rays) {
+  vec2 offset = world.xz - center.xz;
+  float across = length(offset);
+  if (across > radius + 2.0) return 0.0;
+  float ray = fract(atan(offset.y, offset.x) / (2.0 * PI)) * float(rays);
+  int first = min(int(floor(ray)), rays - 1);
+  float reach = mix(texelFetch(reaches, ivec2(first, slot), 0).r,
+    texelFetch(reaches, ivec2((first + 1) % rays, slot), 0).r, ray - float(first));
+  float wall = 1.0 - smoothstep(reach + FLASH_MARGIN, reach + FLASH_MARGIN + 2.0, across);
+  vec3 toLight = center - world;
+  float fade = 1.0 - smoothstep(0.0, 1.0, length(toLight) / radius);
+  float facing = smoothstep(-0.1, 0.3, dot(normal, normalize(toLight)));
+  return fade * fade * wall * facing;
+}
+`;
+
 // The light pool's per-frame state, shared by every floor and wall material (one scene at a
 // time). Each Hunter slot is one component: `flashOrigin[slot]` is (x, z, facing, pool reach)
 // and `flashOn` is how bright each slot's light is: 0 when off, 1 when on, in between while the
@@ -162,14 +259,42 @@ export const POOL_UNIFORMS = {
   flashColor: { value: new Color(LIGHT_COLOR) },
 };
 
+// The battery lights' state, shared by every floor and wall material like POOL_UNIFORMS. Each
+// slot of `batteryLights` is (x, z, brightness, unused): brightness 0 while that pickup is
+// taken. `batteryLightReach` holds, per slot (row), how far each ray (column) travels before a
+// wall; ray i points at angle 2*pi*i/BATTERY_LIGHT_RAYS from +X toward +Z. `batteryLightY` is
+// the height of the batteries' middles.
+export const BATTERY_LIGHT_UNIFORMS = {
+  batteryLights: { value: Array.from({ length: MAX_BATTERY_LIGHTS }, () => new Vector4()) },
+  batteryLightReach: {
+    value: new DataTexture(new Float32Array(BATTERY_LIGHT_RAYS * MAX_BATTERY_LIGHTS), BATTERY_LIGHT_RAYS,
+      MAX_BATTERY_LIGHTS, RedFormat, FloatType),
+  },
+  batteryLightY: { value: 0 },
+  batteryLightColor: { value: new Color(BATTERY_LIGHT_COLOR) },
+};
+
+// The candle lights' state, shared like BATTERY_LIGHT_UNIFORMS. Each slot of `candleLights` is
+// (x, y, z, brightness), set by props.ts: brightness 0 for an unused slot or with the light
+// toggled off. `candleLightReach` is laid out like `batteryLightReach`.
+export const CANDLE_LIGHT_UNIFORMS = {
+  candleLights: { value: Array.from({ length: MAX_CANDLE_LIGHTS }, () => new Vector4()) },
+  candleLightReach: {
+    value: new DataTexture(new Float32Array(CANDLE_LIGHT_RAYS * MAX_CANDLE_LIGHTS), CANDLE_LIGHT_RAYS,
+      MAX_CANDLE_LIGHTS, RedFormat, FloatType),
+  },
+  candleLightColor: { value: new Color(CANDLE_LIGHT_COLOR) },
+};
+
 // The flashlight lighting a floor or wall material (MeshLambertMaterial): every lit slot adds
 // warm light to the surface's own colour, brightest near the Hunter and fading with distance,
 // with soft sides and a brighter core inside the hit cone. A fragment further than its ray's
 // reach is behind a wall and gets nothing; the small margin lets the wall face the ray stops at
 // catch the light, while wall tops stay dark. Positions and normals are world space (the
-// surface meshes are untransformed). Called first by every surface material's onBeforeCompile.
+// surface meshes are untransformed). The battery and candle lights are added the same way, each
+// a round pool cut at its walls. Called first by every surface material's onBeforeCompile.
 export function flashlitSurfaceShader(shader: WebGLProgramParametersWithUniforms): void {
-  Object.assign(shader.uniforms, POOL_UNIFORMS);
+  Object.assign(shader.uniforms, POOL_UNIFORMS, BATTERY_LIGHT_UNIFORMS, CANDLE_LIGHT_UNIFORMS);
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nvarying vec3 vFlashWorld;\nvarying vec3 vFlashNormal;')
     .replace('#include <project_vertex>', `#include <project_vertex>
@@ -187,10 +312,24 @@ uniform float flashCoreHalfAngle;
 uniform float flashLensY;
 uniform float flashFloorY;
 uniform vec3 flashColor;
+uniform vec4 batteryLights[${MAX_BATTERY_LIGHTS}];
+uniform sampler2D batteryLightReach;
+uniform float batteryLightY;
+uniform vec3 batteryLightColor;
+uniform vec4 candleLights[${MAX_CANDLE_LIGHTS}];
+uniform sampler2D candleLightReach;
+uniform vec3 candleLightColor;
 ${ANGLE_GLSL}
-float vfxFlashlight(vec3 world, vec3 normal) {
+#ifdef FLASHLIT_PROP
+#define FLASH_MARGIN ${PROP_LIGHT_MARGIN.toFixed(1)}
+#else
+#define FLASH_MARGIN 0.0
+#endif
+${ROUND_LIGHT_GLSL}float vfxFlashlight(vec3 world, vec3 normal) {
+#ifndef FLASHLIT_PROP
   // Wall tops are never lit: the light stops at the face below them.
   if (normal.y > 0.5 && world.y > flashFloorY + 1.0) return 0.0;
+#endif
   float total = 0.0;
   for (int slot = 0; slot < ${POOL_SLOTS}; slot++) {
     if (flashOn[slot] <= 0.0) continue;
@@ -204,7 +343,7 @@ float vfxFlashlight(vec3 world, vec3 normal) {
     float ray = (across * 0.5 + 0.5) * float(${POOL_RAYS});
     int first = int(min(floor(ray), float(${POOL_RAYS - 1})));
     float reach = mix(flashReach[first][slot], flashReach[first + 1][slot], ray - float(first));
-    float wall = 1.0 - smoothstep(reach, reach + 2.0, distance);
+    float wall = 1.0 - smoothstep(reach + FLASH_MARGIN, reach + FLASH_MARGIN + 2.0, distance);
     float fade = pow(1.0 - smoothstep(0.0, 1.0, distance / origin.w), ${POOL_FALLOFF.toFixed(3)});
     float sides = 1.0 - smoothstep(${POOL_SOFT_SIDES.toFixed(3)}, 1.0, abs(across));
     // The core: the hit cone, out to the battery stage's range.
@@ -215,9 +354,47 @@ float vfxFlashlight(vec3 world, vec3 normal) {
     total += (${POOL_INTENSITY.toFixed(3)} * sides + ${POOL_CORE_BOOST.toFixed(3)} * core) * fade * wall * facing * flashOn[slot];
   }
   return total;
+}
+float vfxBatteryLight(vec3 world, vec3 normal) {
+#ifndef FLASHLIT_PROP
+  if (normal.y > 0.5 && world.y > flashFloorY + 1.0) return 0.0;
+#endif
+  float total = 0.0;
+  for (int slot = 0; slot < ${MAX_BATTERY_LIGHTS}; slot++) {
+    vec4 light = batteryLights[slot];
+    if (light.z <= 0.0) continue;
+    total += ${BATTERY_LIGHT_INTENSITY.toFixed(3)} * light.z * vfxRoundLight(world, normal,
+      vec3(light.x, batteryLightY, light.y), ${BATTERY_LIGHT_RADIUS.toFixed(1)}, batteryLightReach, slot, ${BATTERY_LIGHT_RAYS});
+  }
+  return total;
+}
+float vfxCandleLight(vec3 world, vec3 normal) {
+#ifndef FLASHLIT_PROP
+  if (normal.y > 0.5 && world.y > flashFloorY + 1.0) return 0.0;
+#endif
+  float total = 0.0;
+  for (int slot = 0; slot < ${MAX_CANDLE_LIGHTS}; slot++) {
+    vec4 light = candleLights[slot];
+    if (light.w <= 0.0) continue;
+    total += ${CANDLE_LIGHT_INTENSITY.toFixed(3)} * light.w * vfxRoundLight(world, normal,
+      light.xyz, ${CANDLE_LIGHT_RADIUS.toFixed(1)}, candleLightReach, slot, ${CANDLE_LIGHT_RAYS});
+  }
+  return min(total, ${CANDLE_LIGHT_MAX.toFixed(3)});
 }`)
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
-reflectedLight.directDiffuse += diffuseColor.rgb * flashColor * vfxFlashlight(vFlashWorld, normalize(vFlashNormal));`);
+reflectedLight.directDiffuse += diffuseColor.rgb * flashColor * vfxFlashlight(vFlashWorld, normalize(vFlashNormal));
+reflectedLight.directDiffuse += diffuseColor.rgb * batteryLightColor * vfxBatteryLight(vFlashWorld, normalize(vFlashNormal));
+reflectedLight.directDiffuse += diffuseColor.rgb * candleLightColor * vfxCandleLight(vFlashWorld, normalize(vFlashNormal));`);
+}
+
+// The same lighting on a prop's material. A prop stands inside the tile it blocks, so a ray stops
+// at the tile's edge, short of the prop: its light carries PROP_LIGHT_MARGIN further, across the
+// prop's own tile but not through a wall tile to a prop beyond (a prop right behind another one
+// does catch some). Upward faces are lit too, so table tops show.
+const PROP_LIGHT_MARGIN = TILE_SIZE - 2;
+export function flashlitPropShader(shader: WebGLProgramParametersWithUniforms): void {
+  flashlitSurfaceShader(shader);
+  shader.fragmentShader = `#define FLASHLIT_PROP\n${shader.fragmentShader}`;
 }
 
 // A soft round shadow on the floor: black, fading out from the centre. Drawn on a unit circle
@@ -333,6 +510,173 @@ varying vec3 vViewPosition;
 void main() {
   float facingView = abs(dot(normalize(vViewNormal), normalize(-vViewPosition)));
   gl_FragColor = vec4(lightColor * ${GLOW_INTENSITY.toFixed(3)} * pow(facingView, 3.0), 1.0);
+}`,
+  });
+}
+
+// A battery's halo (or, in another `color`, a candle flame's): a flat disc facing the camera
+// through the battery's middle, drawn
+// additively and brightest at its centre, fading out to its rim. It is drawn before the battery
+// (scene.ts orders them), which then covers its middle, so only the glow round the battery
+// shows; it still sits behind anything nearer the camera. Not `transparent`, so it is drawn in
+// that order with the opaque meshes.
+export function createHaloMaterial(color = BATTERY_LIGHT_COLOR): ShaderMaterial {
+  return new ShaderMaterial({
+    depthWrite: false,
+    blending: AdditiveBlending,
+    uniforms: {
+      haloColor: { value: new Color(color) },
+      haloPulse: { value: 1 },
+    },
+    vertexShader: /* glsl */ `
+varying vec2 vOffset;
+void main() {
+  vOffset = position.xy;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+    fragmentShader: /* glsl */ `
+uniform vec3 haloColor;
+uniform float haloPulse;
+varying vec2 vOffset;
+void main() {
+  float fade = 1.0 - min(length(vOffset), 1.0);
+  gl_FragColor = vec4(haloColor * ${HALO_INTENSITY.toFixed(3)} * haloPulse * fade * fade, 1.0);
+}`,
+  });
+}
+
+// The lighting the battery bodies share: the hemisphere light's sky and ground colours and the
+// moonlight's colour (each already times its intensity) and world direction, set by scene.ts
+// from its own lights; the glow's pulse, whether the glow is on (1 or 0), its colour, and the
+// seconds the charge sweep and the motes run on.
+export const BATTERY_BODY_UNIFORMS = {
+  batteryAmbientSky: { value: new Color() },
+  batteryAmbientGround: { value: new Color() },
+  batteryMoonColor: { value: new Color() },
+  batteryMoonDirection: { value: new Vector3(0, 1, 0) },
+  batteryGlowPulse: { value: 1 },
+  batteryGlowOn: { value: 1 },
+  batteryGlowColor: { value: new Color(BATTERY_LIGHT_COLOR) },
+  batteryTime: { value: 0 },
+};
+
+// The flash as a charge reaches the cap: 1 that moment, fading to 0 by the next sweep.
+export function batteryChargeFlash(seconds: number): number {
+  const phase = (seconds / BATTERY_CHARGE_PERIOD) % 1;
+  return phase < BATTERY_CHARGE_SWEEP ? 0 : (1 - (phase - BATTERY_CHARGE_SWEEP) / (1 - BATTERY_CHARGE_SWEEP)) ** 2;
+}
+
+// A battery body drawn the way a PlayStation would: lit per vertex and blended across each
+// face (Gouraud), the texture stretched straight across the screen instead of in perspective
+// (affine), and the colour cut to 15 bits with an ordered dither. The ambient and moonlight
+// follow three's Lambert maths so the battery sits in the same night as the floors;
+// `keyPosition` is where its glow key lights it from, in world space. On top comes its own
+// light: the lampshade glow, the glow mask `glow` and the charge sweep.
+export function createBatteryMaterial(map: Texture, glow: Texture, keyPosition: Vector3): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: {
+      ...BATTERY_BODY_UNIFORMS,
+      map: { value: map },
+      glow: { value: glow },
+      batteryKeyPosition: { value: keyPosition.clone() },
+      batteryKeyColor: { value: new Color(BATTERY_KEY_COLOR).multiplyScalar(BATTERY_KEY_INTENSITY) },
+      batteryShadeColor: { value: new Color(BATTERY_SHADE_COLOR) },
+    },
+    vertexShader: /* glsl */ `
+#include <common>
+uniform vec3 batteryAmbientSky;
+uniform vec3 batteryAmbientGround;
+uniform vec3 batteryMoonColor;
+uniform vec3 batteryMoonDirection;
+uniform float batteryGlowOn;
+uniform vec3 batteryKeyPosition;
+uniform vec3 batteryKeyColor;
+varying vec3 vLight;
+varying vec3 vAffineUv;
+varying float vFacing;
+void main() {
+  vec4 world = modelMatrix * vec4(position, 1.0);
+  vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
+  vFacing = max(dot(worldNormal, normalize(cameraPosition - world.xyz)), 0.0);
+  vec3 ambient = mix(batteryAmbientGround, batteryAmbientSky, 0.5 * worldNormal.y + 0.5);
+  vec3 moon = batteryMoonColor * max(dot(worldNormal, batteryMoonDirection), 0.0);
+  vec3 toKey = batteryKeyPosition - world.xyz;
+  float keyDistance = length(toKey) / ${BATTERY_KEY_FALLOFF.toFixed(1)};
+  float key = max(dot(worldNormal, normalize(toKey)), 0.0) / (1.0 + keyDistance * keyDistance);
+  // With the glow on, the lampshade glow (below) stands in for the key.
+  vLight = (ambient + moon) * RECIPROCAL_PI + batteryKeyColor * key * (1.0 - batteryGlowOn);
+  gl_Position = projectionMatrix * viewMatrix * world;
+  // Interpolated in perspective and divided back by w, this comes out screen-linear: affine.
+  vAffineUv = vec3(uv * gl_Position.w, gl_Position.w);
+}`,
+    fragmentShader: /* glsl */ `
+uniform sampler2D map;
+uniform sampler2D glow;
+uniform float batteryGlowPulse;
+uniform float batteryGlowOn;
+uniform vec3 batteryGlowColor;
+uniform float batteryTime;
+uniform vec3 batteryShadeColor;
+varying vec3 vLight;
+varying vec3 vAffineUv;
+varying float vFacing;
+${BAYER_GLSL}
+void main() {
+  vec2 uv = vAffineUv.xy / vAffineUv.z;
+  vec3 paint = texture2D(map, uv).rgb;
+  // The charge band's middle runs from below the base to above the cap; up the profile is
+  // 1 - uv.y (glTF's v runs down from the top).
+  float phase = fract(batteryTime / ${BATTERY_CHARGE_PERIOD.toFixed(3)});
+  float head = mix(-2.0, 2.0 + 1.0 / ${BATTERY_CHARGE_WIDTH.toFixed(3)}, phase / ${BATTERY_CHARGE_SWEEP.toFixed(3)});
+  float across = (1.0 - uv.y) / ${BATTERY_CHARGE_WIDTH.toFixed(3)} - head;
+  float charge = phase < ${BATTERY_CHARGE_SWEEP.toFixed(3)} ? exp(-across * across) * batteryGlowOn : 0.0;
+  float shadeLight = batteryGlowOn * batteryGlowPulse * ${BATTERY_SHADE_LIGHT.toFixed(3)}
+    * mix(${BATTERY_SHADE_EDGE.toFixed(3)}, 1.0, vFacing);
+  vec3 tinted = pow(paint, vec3(${(1 - BATTERY_SHADE_TINT).toFixed(3)})) * pow(batteryShadeColor, vec3(${BATTERY_SHADE_TINT.toFixed(3)}));
+  vec3 shade = tinted * (shadeLight + charge * ${BATTERY_CHARGE_SELF_LIGHT.toFixed(3)});
+  float emission = texture2D(glow, uv).r * batteryGlowOn
+    * (${BATTERY_EMISSION.toFixed(3)} * batteryGlowPulse + charge * ${BATTERY_CHARGE_BOOST.toFixed(3)});
+  vec3 color = paint * vLight + shade + batteryGlowColor * emission;
+  vec3 display = pow(max(color, 0.0), vec3(1.0 / 2.2)) * ${(PS1_COLOR_LEVELS - 1).toFixed(1)};
+  display = floor(display + vfxBayer4(gl_FragCoord.xy)) / ${(PS1_COLOR_LEVELS - 1).toFixed(1)};
+  gl_FragColor = vec4(pow(display, vec3(2.2)), 1.0);
+}`,
+  });
+}
+
+// The motes rising round a battery (see MOTE_COUNT): `Points` at the battery's middle, each
+// point's `seed` its angle round the battery and its phase in the climb. Square, unsmoothed
+// points, the PlayStation way, drawn additively; `pointSize` is MOTE_PIXELS in device pixels.
+// `batteryHeight` scales the climb and the ring.
+export function createMoteMaterial(pointSize: number, batteryHeight: number): ShaderMaterial {
+  return new ShaderMaterial({
+    depthWrite: false,
+    blending: AdditiveBlending,
+    uniforms: {
+      batteryTime: BATTERY_BODY_UNIFORMS.batteryTime,
+      moteColor: { value: new Color(BATTERY_LIGHT_COLOR).multiplyScalar(MOTE_INTENSITY) },
+      moteSize: { value: pointSize },
+    },
+    vertexShader: /* glsl */ `
+#include <common>
+attribute vec2 seed;
+uniform float batteryTime;
+uniform float moteSize;
+varying float vFade;
+void main() {
+  float life = fract(batteryTime / ${MOTE_LIFE.toFixed(3)} + seed.y);
+  float angle = seed.x + life * 1.5;
+  float radius = ${(MOTE_RADIUS * batteryHeight).toFixed(3)} * (1.0 - 0.4 * life);
+  vec3 offset = vec3(cos(angle) * radius, mix(${MOTE_FROM.toFixed(3)}, ${MOTE_TO.toFixed(3)}, life) * ${batteryHeight.toFixed(3)}, sin(angle) * radius);
+  vFade = sin(PI * life);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position + offset, 1.0);
+  gl_PointSize = moteSize;
+}`,
+    fragmentShader: /* glsl */ `
+uniform vec3 moteColor;
+varying float vFade;
+void main() {
+  gl_FragColor = vec4(moteColor * vFade, 1.0);
 }`,
   });
 }

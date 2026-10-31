@@ -14,12 +14,18 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  NearestFilter,
+  NearestMipmapNearestFilter,
+  NoColorSpace,
   Object3D,
   PerspectiveCamera,
+  Points,
   RingGeometry,
   Scene,
   type ShaderMaterial,
   SphereGeometry,
+  type Texture,
+  TextureLoader,
   Vector3,
   WebGLRenderer,
   type AnimationAction,
@@ -28,6 +34,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { clone as cloneModel } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import batteryModelUrl from './assets/battery.glb?url';
+import batteryGlowUrl from './assets/battery_glow.png?url';
 import creatureModelUrl from './assets/creature.glb?url';
 import hunterModelUrl from './assets/hunter.glb?url';
 import { flashlightRange } from '../shared/flashlight.js';
@@ -39,11 +46,14 @@ import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
 import { createFear, fearInput, previewInput } from './fear.js';
 import { createPost } from './post.js';
+import { buildProps, type PropModels } from './props.js';
 import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
-  LIGHT_COLOR, OUTLINE_MATERIAL, OUTLINE_WIDTH, POOL_MAX_ANGLE, POOL_RAYS, POOL_REACH, POOL_SPREAD, POOL_UNIFORMS,
-  STAGGER_OUTLINE_COLOR, STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS,
-  createBeamMaterial, createBlobShadowMaterial, createGlowMaterial, createOutlineMaterial, ditheredBody,
+  BATTERY_LIGHT_RADIUS, BATTERY_LIGHT_RAYS, BATTERY_LIGHT_UNIFORMS, LIGHT_COLOR, MAX_BATTERY_LIGHTS, OUTLINE_MATERIAL,
+  OUTLINE_WIDTH, POOL_MAX_ANGLE, POOL_RAYS, POOL_REACH, POOL_SPREAD, POOL_UNIFORMS, STAGGER_OUTLINE_COLOR,
+  STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS, BATTERY_BODY_UNIFORMS, MOTE_COUNT, MOTE_PIXELS, batteryChargeFlash,
+  createBatteryMaterial, createBeamMaterial, createBlobShadowMaterial, createGlowMaterial, createHaloMaterial,
+  createMoteMaterial, createOutlineMaterial, ditheredBody,
 } from './vfx.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
@@ -84,19 +94,36 @@ const CREATURE_LEAN = 0.15;
 const CREATURE_TINT = new Color(1, 1, 1);
 const CREATURE_BURNING_TINT = new Color(6, 2, 0.8);
 // Battery pickup: battery.glb scaled to BATTERY_HEIGHT and posed for the fixed camera. It is
-// tipped back until its face (the bolt) looks at the camera, short of square-on by
+// tipped back until its face (the label) looks at the camera, short of square-on by
 // BATTERY_TOP_SHOW so a sliver of its cap shows, then leaned BATTERY_LEAN on screen, right
 // and left on alternate spawn points. Its lowest point rests BATTERY_HOVER above the floor.
-const BATTERY_HEIGHT = 30;
+// It is lit by a key from its own glow (vfx.ts), from a point BATTERY_KEY_FRONT in front of
+// its middle (toward the camera) and BATTERY_KEY_UP above it on screen, in battery heights.
+const BATTERY_HEIGHT = 28;
 const BATTERY_TOP_SHOW = 15 * (Math.PI / 180);
 const BATTERY_LEAN = 30 * (Math.PI / 180);
 const BATTERY_HOVER = 1;
+const BATTERY_KEY_FRONT = 0.7;
+const BATTERY_KEY_UP = 0.35;
+// Battery glow (VFX.batteryGlow): the halo's radius, and its pulse, shared by every battery and
+// its light: brightness swings between 1 - BATTERY_PULSE_DEPTH and 1, BATTERY_PULSE_RATE times
+// a second, and flashes up by BATTERY_CHARGE_FLASH as each charge reaches the cap (vfx.ts).
+const BATTERY_HALO_RADIUS = 1.1 * BATTERY_HEIGHT;
+const BATTERY_PULSE_DEPTH = 0.15;
+const BATTERY_PULSE_RATE = 0.6;
+const BATTERY_CHARGE_FLASH = 0.25;
+// Draw order among the opaque meshes: a battery's halo after everything else at the default
+// order 0, then the battery, so the battery covers the halo's middle, then its motes, which
+// the battery hides when they pass behind it.
+const HALO_RENDER_ORDER = 1;
+const BATTERY_RENDER_ORDER = 2;
+const MOTE_RENDER_ORDER = 3;
 // Radius of the soft glow drawn at the flashlight's lens.
 const LENS_GLOW_RADIUS = 5;
 // Night: a dim, cool moonlight over the mansion, so the flashlights are what light it. The sky
 // and ground colours of the hemisphere light and its intensity, the directional light's colour
-// and intensity, and the background beyond the map. The bodies of the Hunters, the Creature and
-// the batteries are unlit, so they stay readable in the dark.
+// and intensity, and the background beyond the map. The bodies of the Hunters and the Creature
+// are unlit, so they stay readable in the dark; the batteries are lit by their own glow.
 const AMBIENT_SKY = '#8fa0c8';
 const AMBIENT_GROUND = '#2a2630';
 const AMBIENT_INTENSITY = 0.45;
@@ -170,24 +197,34 @@ export async function loadCreatureModel(): Promise<CreatureModel> {
   return { scene: gltf.scene, float, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
 }
 
-// The battery pickup model, loaded once per page and cloned per spawn point. Its one material
-// gets the dithered shading in place, since every battery looks the same. `scale` fits it to
-// BATTERY_HEIGHT; `center` is its middle in the file, the point it is posed around. Like the
-// players, it faces +Z in the file, cap up.
-export type BatteryModel = { scene: Object3D; scale: number; center: Vector3 };
+// The battery pickup model, loaded once per page and cloned per spawn point. `map` is its
+// texture (the emissive map in the file) and `glow` its glow mask (battery_glow.png, same
+// layout), which each battery's own lit material (vfx.ts) draws with; it has no outline,
+// unlike the players. `scale` fits it to BATTERY_HEIGHT; `center` is
+// its middle in the file, the point it is posed around. Like the players, it faces +Z in the
+// file, cap up.
+export type BatteryModel = { scene: Object3D; map: Texture; glow: Texture; scale: number; center: Vector3 };
 
 export async function loadBatteryModel(): Promise<BatteryModel> {
-  const gltf = await new GLTFLoader().loadAsync(batteryModelUrl);
+  const [gltf, glow] = await Promise.all([
+    new GLTFLoader().loadAsync(batteryModelUrl), new TextureLoader().loadAsync(batteryGlowUrl),
+  ]);
+  // Sampled like the glb's own texture: glTF's v runs down the image, unfiltered texels.
+  glow.flipY = false;
+  glow.colorSpace = NoColorSpace;
+  glow.magFilter = NearestFilter;
+  glow.minFilter = NearestMipmapNearestFilter;
   const meshes: Mesh[] = [];
   gltf.scene.traverse((object) => {
     if (object instanceof Mesh) meshes.push(object);
   });
   const material = meshes[0]?.material;
-  if (!(material instanceof MeshStandardMaterial)) throw new Error('battery.glb has no battery mesh');
-  ditheredBody(material);
+  if (!(material instanceof MeshStandardMaterial) || !material.emissiveMap) throw new Error('battery.glb has no battery mesh');
   const bounds = new Box3().setFromObject(gltf.scene);
-  addOutlineHulls(meshes);
-  return { scene: gltf.scene, scale: BATTERY_HEIGHT / (bounds.max.y - bounds.min.y), center: bounds.getCenter(new Vector3()) };
+  return {
+    scene: gltf.scene, map: material.emissiveMap, glow, scale: BATTERY_HEIGHT / (bounds.max.y - bounds.min.y),
+    center: bounds.getCenter(new Vector3()),
+  };
 }
 
 // Gives each model part an outline hull (vfx.ts) drawn with OUTLINE_MATERIAL. Call after the
@@ -225,7 +262,7 @@ function wrapAngle(angle: number): number {
 // from the previous scene so a map switch never creates a second WebGL context.
 export function createScene(
   canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, creatureModel: CreatureModel,
-  batteryModel: BatteryModel, surfaceTextures: SurfaceTextures, existingRenderer?: WebGLRenderer,
+  batteryModel: BatteryModel, surfaceTextures: SurfaceTextures, propModels: PropModels, existingRenderer?: WebGLRenderer,
 ) {
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -249,11 +286,18 @@ export function createScene(
   // are built from, so what is drawn is what the server simulates.
   const surfaces = buildSurfaceMeshes(world, surfaceTextures);
   scene.add(surfaces.group);
+  // The furniture and clutter standing on the floor, and the candles on the walls (props.ts).
+  const props = buildProps(world, propModels, camera.quaternion);
+  scene.add(props.group);
 
   scene.add(new HemisphereLight(AMBIENT_SKY, AMBIENT_GROUND, AMBIENT_INTENSITY));
   const light = new DirectionalLight(MOONLIGHT_COLOR, MOONLIGHT_INTENSITY);
   light.position.set(-300, 900, 500);
   scene.add(light);
+  BATTERY_BODY_UNIFORMS.batteryAmbientSky.value.set(AMBIENT_SKY).multiplyScalar(AMBIENT_INTENSITY);
+  BATTERY_BODY_UNIFORMS.batteryAmbientGround.value.set(AMBIENT_GROUND).multiplyScalar(AMBIENT_INTENSITY);
+  BATTERY_BODY_UNIFORMS.batteryMoonColor.value.set(MOONLIGHT_COLOR).multiplyScalar(MOONLIGHT_INTENSITY);
+  BATTERY_BODY_UNIFORMS.batteryMoonDirection.value.copy(light.position).normalize();
   // The Hunter's dithered shading uses this light's direction, in the fixed camera's view space.
   camera.updateMatrixWorld();
   VFX_UNIFORMS.vfxLightDirection.value.copy(light.position).normalize().transformDirection(camera.matrixWorldInverse);
@@ -271,11 +315,27 @@ export function createScene(
 
   // Battery pickups: one battery per Battery Spawn marker the map declares, shown while the
   // server lists that point as active. Both roles see the same set, in the same order the
-  // server uses, so a pickup index means the same thing on every client.
+  // server uses, so a pickup index means the same thing on every client. Each has a halo, rising
+  // motes and (the first MAX_BATTERY_LIGHTS) a light slot (vfx.ts), whose wall reaches are
+  // measured once here: the batteries never move.
+  const haloGeometry = new CircleGeometry(BATTERY_HALO_RADIUS, 32);
+  const haloMaterial = createHaloMaterial();
+  const moteGeometry = new BufferGeometry();
+  moteGeometry.setAttribute('position', new BufferAttribute(new Float32Array(3 * MOTE_COUNT), 3));
+  moteGeometry.setAttribute('seed', new BufferAttribute(Float32Array.from({ length: 2 * MOTE_COUNT }, (_, i) =>
+    i % 2 === 0 ? Math.random() * 2 * Math.PI : Math.floor(i / 2) / MOTE_COUNT), 2));
+  const moteMaterial = createMoteMaterial(MOTE_PIXELS * renderer.getPixelRatio(), BATTERY_HEIGHT);
+  const lightReaches = BATTERY_LIGHT_UNIFORMS.batteryLightReach.value;
+  const reachData = lightReaches.image.data as Float32Array;
+  // Slots left over from the previous map's batteries go dark.
+  for (const light of BATTERY_LIGHT_UNIFORMS.batteryLights.value) light.set(0, 0, 0, 0);
   const pickups = world.batterySpawns.map(({ x, z }, index) => {
     const model = batteryModel.scene.clone();
     model.scale.setScalar(batteryModel.scale);
     model.position.copy(batteryModel.center).multiplyScalar(-batteryModel.scale);
+    model.traverse((object) => {
+      object.renderOrder = BATTERY_RENDER_ORDER;
+    });
     // `pose` turns and leans the battery about its middle: turned like the camera, so its face is
     // parallel to the screen with the cap up, then leaned about the line of sight, then the cap
     // tipped toward the camera. Every battery leans the same on screen wherever it stands.
@@ -286,13 +346,45 @@ export function createScene(
     pose.rotateX(BATTERY_TOP_SHOW);
     pose.updateMatrixWorld(true);
     pose.position.y += world.floorY + BATTERY_HOVER - new Box3().setFromObject(pose, true).min.y;
+    const keyPosition = new Vector3().subVectors(camera.position, pose.position).normalize()
+      .multiplyScalar(BATTERY_KEY_FRONT * BATTERY_HEIGHT)
+      .addScaledVector(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), BATTERY_KEY_UP * BATTERY_HEIGHT)
+      .add(pose.position);
+    const material = createBatteryMaterial(batteryModel.map, batteryModel.glow, keyPosition);
+    model.traverse((object) => {
+      if (object instanceof Mesh) object.material = material;
+    });
     pose.visible = false;
     scene.add(pose);
     const shadow = blobShadow(BATTERY_SHADOW_RADIUS);
     shadow.position.set(x, world.floorY + SHADOW_LIFT, z);
     scene.add(shadow);
-    return { pose, shadow };
+    const halo = new Mesh(haloGeometry, haloMaterial);
+    halo.position.copy(pose.position);
+    halo.quaternion.copy(camera.quaternion);
+    halo.renderOrder = HALO_RENDER_ORDER;
+    halo.visible = false;
+    scene.add(halo);
+    const motes = new Points(moteGeometry, moteMaterial);
+    motes.position.copy(pose.position);
+    motes.renderOrder = MOTE_RENDER_ORDER;
+    motes.frustumCulled = false;
+    motes.visible = false;
+    scene.add(motes);
+    if (index < MAX_BATTERY_LIGHTS) {
+      BATTERY_LIGHT_UNIFORMS.batteryLights.value[index].set(x, z, 0, 0);
+      BATTERY_LIGHT_UNIFORMS.batteryLightY.value = pose.position.y;
+      const origin = { x, y: pose.position.y, z };
+      for (let ray = 0; ray < BATTERY_LIGHT_RAYS; ray++) {
+        const angle = (2 * Math.PI * ray) / BATTERY_LIGHT_RAYS;
+        const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
+        reachData[index * BATTERY_LIGHT_RAYS + ray] =
+          wallDistance(origin, direction, BATTERY_LIGHT_RADIUS, world.wallBoxes);
+      }
+    }
+    return { pose, shadow, halo, motes };
   });
+  lightReaches.needsUpdate = true;
 
   // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
   // at the origin opening along +X, scaled each frame to the light's range and width.
@@ -544,6 +636,7 @@ export function createScene(
     lastFrameTime = now;
     const newSnapshot = snapshot !== lastSnapshot;
     lastSnapshot = snapshot;
+    props.update(now / 1000);
     for (const mesh of hunters.values()) {
       mesh.group.visible = false;
       mesh.fan.visible = false;
@@ -609,9 +702,20 @@ export function createScene(
         }
       }
     }
+    // Every battery glows and charges in step; a taken one, or every one with the glow off, is dark.
+    const seconds = (now - startTime) / 1000;
+    const pulse = 1 - BATTERY_PULSE_DEPTH * (0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI * BATTERY_PULSE_RATE))
+      + BATTERY_CHARGE_FLASH * batteryChargeFlash(seconds);
+    haloMaterial.uniforms.haloPulse.value = pulse;
+    BATTERY_BODY_UNIFORMS.batteryGlowPulse.value = VFX.batteryGlow ? pulse : 1;
+    BATTERY_BODY_UNIFORMS.batteryGlowOn.value = VFX.batteryGlow ? 1 : 0;
+    BATTERY_BODY_UNIFORMS.batteryTime.value = seconds;
     for (const [index, pickup] of pickups.entries()) {
       pickup.pose.visible = snapshot?.pickups.includes(index) ?? false;
       pickup.shadow.visible = pickup.pose.visible && VFX.blobShadows;
+      pickup.halo.visible = pickup.pose.visible && VFX.batteryGlow;
+      pickup.motes.visible = pickup.halo.visible;
+      if (index < MAX_BATTERY_LIGHTS) BATTERY_LIGHT_UNIFORMS.batteryLights.value[index].z = pickup.halo.visible ? pulse : 0;
     }
 
     const creatureView = snapshot?.role === 'creature'
@@ -662,6 +766,7 @@ export function createScene(
   // Frees this scene's geometry; the renderer is kept when the caller will reuse it for
   // the next map and disposed only when the page goes away.
   function dispose(keepRenderer = false): void {
+    props.dispose();
     surfaces.dispose();
     post.dispose();
     // Shared by meshes that may already have left the scene (a Creature that was hidden).
@@ -669,7 +774,7 @@ export function createScene(
     shadowMaterial.dispose();
     creatureShadowMaterial.dispose();
     scene.traverse((object) => {
-      if (object instanceof Mesh) {
+      if (object instanceof Mesh || object instanceof Points) {
         object.geometry.dispose();
         object.material.dispose();
       }

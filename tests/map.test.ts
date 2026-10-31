@@ -76,7 +76,7 @@ test('a valid map passes validation and keeps its terrain, finishes and markers'
   assert.deepEqual(reloaded.map, finished);
 });
 
-test('a version 1 map, which predates finishes, loads as version 2 with every finish Plain', () => {
+test('a version 1 map, which predates finishes and props, loads as the current version with every finish Plain', () => {
   const legacy: Record<string, unknown> = { ...sampleMap(), version: 1 };
   delete legacy.floor;
   delete legacy.wallpaper;
@@ -88,10 +88,12 @@ test('a version 1 map, which predates finishes, loads as version 2 with every fi
   assert.deepEqual(result.map.wallpaper, filledGrid(6, 5, WALLPAPER.plain));
   assert.equal(result.map.boundaryWallpaper, WALLPAPER.plain);
   assert.deepEqual(result.map.terrain, sampleMap().terrain);
+  assert.deepEqual(result.map.props, []);
+  assert.deepEqual(result.map.wallProps, []);
 });
 
 test('validation rejects malformed maps with a readable reason and never repairs them', () => {
-  assert.match(errorsFor((map) => { (map as { version: number }).version = 3; }).join(), /unsupported map version 3/);
+  assert.match(errorsFor((map) => { (map as { version: number }).version = 4; }).join(), /unsupported map version 4/);
   assert.match(errorsFor((map) => { delete (map as Partial<GameMap>).version; }).join(), /missing "version"/);
   assert.match(errorsFor((map) => { map.terrain[0][0] = 7 as never; }).join(), /terrain \(0, 0\) has unknown id 7/);
   assert.match(errorsFor((map) => { map.markers[0].type = 9 as never; }).join(), /marker 0 has unknown type 9/);

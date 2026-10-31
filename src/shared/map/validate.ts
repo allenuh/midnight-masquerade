@@ -1,9 +1,10 @@
 import {
   FLOOR, MAP_VERSION, MARKER, MARKER_LABELS, MAX_DIMENSION, MIN_CREATURE_SPAWNS, MIN_DIMENSION, MIN_HUNTER_SPAWNS,
   SUPPORTED_MAP_VERSIONS, TERRAIN, WALLPAPER, filledGrid,
-  isFloorId, isMarkerId, isTerrainId, isWallpaperId,
-  type FloorId, type GameMap, type MapMarker, type MarkerId, type TerrainId, type WallpaperId,
+  isFloorId, isMarkerId, isPropId, isTerrainId, isWallSide, isWallpaperId,
+  type FloorId, type GameMap, type MapMarker, type MapProp, type MapWallProp, type MarkerId, type TerrainId, type WallpaperId,
 } from './schema.js';
+import { layoutProps, wallPropErrors } from './props.js';
 
 // Shared validation: the editor refuses to export anything this rejects, and the
 // runtime refuses to load it. Errors are developer-readable sentences, and a
@@ -13,6 +14,8 @@ export type MapValidation = { ok: true; map: GameMap } | { ok: false; errors: st
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isWhole = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value);
 
 const isDimension = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= MIN_DIMENSION && value <= MAX_DIMENSION;
@@ -98,6 +101,33 @@ export function validateMap(value: unknown): MapValidation {
     }
   });
 
+  // Version 3 added the props; an older file has none. Each entry's shape is checked first,
+  // and only a list of well-formed entries goes on to the placement rules (props.ts).
+  const propped = value.version !== 1 && value.version !== 2;
+  const props: unknown[] = [];
+  const wallProps: unknown[] = [];
+  if (propped) {
+    for (const [field, list, detail] of [['props', props, 'rotation'], ['wallProps', wallProps, 'side']] as const) {
+      const entries = value[field];
+      if (!Array.isArray(entries)) {
+        errors.push(`"${field}" must be an array`);
+        continue;
+      }
+      const label = field === 'props' ? 'prop' : 'wall prop';
+      entries.forEach((entry, index) => {
+        if (!isRecord(entry)) errors.push(`${label} ${index} must be an object`);
+        else if (!isPropId(entry.type)) errors.push(`${label} ${index} has unknown type ${JSON.stringify(entry.type)}`);
+        else if (!isWhole(entry.x) || !isWhole(entry.y)) {
+          errors.push(`${label} ${index} needs whole-number "x" and "y", got (${JSON.stringify(entry.x)}, ${JSON.stringify(entry.y)})`);
+        } else if (detail === 'rotation' ? !isWhole(entry.rotation) : !isWallSide(entry.side)) {
+          errors.push(detail === 'rotation'
+            ? `${label} ${index} needs a whole-number "rotation" in degrees, got ${JSON.stringify(entry.rotation)}`
+            : `${label} ${index} has unknown side ${JSON.stringify(entry.side)}; use north, east, south or west`);
+        } else list.push(entry);
+      });
+    }
+  }
+
   // Playability: the round needs somewhere to put one Creature and a full team of
   // Hunters, each on a marker of its own. More markers than that are fine and give the
   // spawn roll something to vary; fewer leave the server nothing to choose from.
@@ -114,20 +144,27 @@ export function validateMap(value: unknown): MapValidation {
 
   if (errors.length > 0) return { ok: false, errors };
   // A version 1 map is upgraded, not repaired: it had no finishes, so every one is Plain.
-  return {
-    ok: true,
-    map: {
-      version: MAP_VERSION,
-      name: value.name as string,
-      width,
-      height,
-      terrain: value.terrain as TerrainId[][],
-      floor: finished ? value.floor as FloorId[][] : filledGrid<FloorId>(width, height, FLOOR.plain),
-      wallpaper: finished ? value.wallpaper as WallpaperId[][] : filledGrid<WallpaperId>(width, height, WALLPAPER.plain),
-      boundaryWallpaper: finished ? value.boundaryWallpaper as WallpaperId : WALLPAPER.plain,
-      markers: value.markers as MapMarker[],
-    },
+  const map: GameMap = {
+    version: MAP_VERSION,
+    name: value.name as string,
+    width,
+    height,
+    terrain: value.terrain as TerrainId[][],
+    floor: finished ? value.floor as FloorId[][] : filledGrid<FloorId>(width, height, FLOOR.plain),
+    wallpaper: finished ? value.wallpaper as WallpaperId[][] : filledGrid<WallpaperId>(width, height, WALLPAPER.plain),
+    boundaryWallpaper: finished ? value.boundaryWallpaper as WallpaperId : WALLPAPER.plain,
+    markers: value.markers as MapMarker[],
+    props: props as MapProp[],
+    wallProps: wallProps as MapWallProp[],
   };
+  const layout = layoutProps(map);
+  errors.push(...layout.errors, ...wallPropErrors(map, layout));
+  // A marker spawns a player or a battery on its tile, which a prop's tile blocks.
+  map.markers.forEach((marker, index) => {
+    const prop = layout.top[marker.y][marker.x];
+    if (prop >= 0) errors.push(`marker ${index} (${MARKER_LABELS[marker.type]}) at (${marker.x}, ${marker.y}) is under prop ${prop}`);
+  });
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, map };
 }
 
 // Convenience for the two runtime entry points: parse + validate or throw with every error.

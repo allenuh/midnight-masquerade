@@ -1,5 +1,6 @@
 import { GAMEPLAY } from '../gameplay-config.js';
 import type { Position } from '../protocol.js';
+import { PROP_SPECS, layoutProps, stackTop } from './props.js';
 import { MARKER, TERRAIN, TILE_SIZE, tileCenter, tileOrigin, type GameMap, type MarkerId } from './schema.js';
 
 // Turns a validated map into the 3D world the game already knows how to use: axis
@@ -18,7 +19,8 @@ export type World = {
   wallThickness: number;
   wallHeight: number;
   walls: BoundaryWalls;
-  // Interior walls from the map's Wall tiles, merged into as few boxes as possible.
+  // Interior walls from the map's Wall tiles and every tile a prop stands on, merged into as
+  // few boxes as possible: a prop blocks movement and sight like a wall, whatever its height.
   obstacles: readonly WallBox[];
   // Boundary walls first, then obstacles: line of sight, rendering, and collision.
   wallBoxes: readonly WallBox[];
@@ -27,23 +29,25 @@ export type World = {
   hunterSpawns: readonly Position[];
 };
 
-// Greedy rectangle merge over the Wall tiles: take the first unclaimed tile, extend it
-// right while the row stays wall, then down while the whole run stays wall. A slab of
+// Greedy rectangle merge over the blocked tiles: take the first unclaimed tile, extend it
+// right while the row stays blocked, then down while the whole run stays blocked. A slab of
 // 200 tiles becomes one box, which keeps the per-tick collision loop and the flashlight
 // fan cheap and leaves no seams inside a wall for the sphere push-out to catch on.
-function mergeWallRectangles(map: GameMap): { x: number; y: number; width: number; height: number }[] {
+function mergeWallRectangles(
+  map: GameMap, blocked: (x: number, y: number) => boolean,
+): { x: number; y: number; width: number; height: number }[] {
   const claimed = map.terrain.map((row) => row.map(() => false));
   const rectangles: { x: number; y: number; width: number; height: number }[] = [];
   for (let y = 0; y < map.height; y++) {
     for (let x = 0; x < map.width; x++) {
-      if (map.terrain[y][x] !== TERRAIN.wall || claimed[y][x]) continue;
+      if (!blocked(x, y) || claimed[y][x]) continue;
       let width = 1;
-      while (x + width < map.width && map.terrain[y][x + width] === TERRAIN.wall && !claimed[y][x + width]) width++;
+      while (x + width < map.width && blocked(x + width, y) && !claimed[y][x + width]) width++;
       let height = 1;
       while (y + height < map.height) {
         let full = true;
         for (let step = 0; step < width && full; step++) {
-          full = map.terrain[y + height][x + step] === TERRAIN.wall && !claimed[y + height][x + step];
+          full = blocked(x + step, y + height) && !claimed[y + height][x + step];
         }
         if (!full) break;
         height++;
@@ -71,7 +75,9 @@ export function buildWorld(map: GameMap): World {
     south: { min: { x: 0, y: floorY, z: depth }, max: { x: width, y: top, z: depth + thickness } },
   };
 
-  const obstacles: WallBox[] = mergeWallRectangles(map).map((rectangle) => ({
+  const { top: propOn } = layoutProps(map);
+  const blocked = (x: number, y: number) => map.terrain[y][x] === TERRAIN.wall || propOn[y][x] >= 0;
+  const obstacles: WallBox[] = mergeWallRectangles(map, blocked).map((rectangle) => ({
     min: { x: tileOrigin(rectangle.x), y: floorY, z: tileOrigin(rectangle.y) },
     max: { x: tileOrigin(rectangle.x + rectangle.width), y: top, z: tileOrigin(rectangle.y + rectangle.height) },
   }));
@@ -96,4 +102,33 @@ export function buildWorld(map: GameMap): World {
     creatureSpawns: positionsOf(MARKER.creatureSpawn),
     hunterSpawns: positionsOf(MARKER.hunterSpawn),
   };
+}
+
+// What stops the candles' light (drawn only, client side): the boundary and the Wall tiles at
+// full height, and each prop tile only as tall as the props stacked on it, so a candle on a table
+// shines over the rest of the table and the chairs round it but not through a bookshelf. A candle
+// stops nothing (it would only hide its own flame), so its tile is as tall as what it stands on.
+// A prop tile is its own box: stacks differ in height tile to tile.
+export function lightOccluders(world: World): WallBox[] {
+  const { map, floorY, wallHeight } = world;
+  const terrain = mergeWallRectangles(map, (x, y) => map.terrain[y][x] === TERRAIN.wall).map((rectangle) => ({
+    min: { x: tileOrigin(rectangle.x), y: floorY, z: tileOrigin(rectangle.y) },
+    max: { x: tileOrigin(rectangle.x + rectangle.width), y: floorY + wallHeight, z: tileOrigin(rectangle.y + rectangle.height) },
+  }));
+  const layout = layoutProps(map);
+  const props: WallBox[] = [];
+  for (let y = 0; y < map.height; y++) {
+    for (let x = 0; x < map.width; x++) {
+      const index = layout.top[y][x];
+      if (index < 0) continue;
+      const height = PROP_SPECS[map.props[index].type].kind === 'tabletop'
+        ? layout.stacks[index].baseHeight
+        : stackTop(map, layout, x, y);
+      props.push({
+        min: { x: tileOrigin(x), y: floorY, z: tileOrigin(y) },
+        max: { x: tileOrigin(x + 1), y: floorY + height, z: tileOrigin(y + 1) },
+      });
+    }
+  }
+  return [...Object.values(world.walls), ...terrain, ...props];
 }

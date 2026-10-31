@@ -28,6 +28,8 @@
         <label><input type="checkbox" data-vfx="bloom" /> bloom</label>
         <label><input type="checkbox" data-vfx="grade" /> night grade</label>
         <label><input type="checkbox" data-vfx="pixelTextures" /> pixel textures</label>
+        <label><input type="checkbox" data-vfx="batteryGlow" /> battery glow</label>
+        <label><input type="checkbox" data-vfx="candleLight" /> candle light</label>
       </span>
       <button id="start" type="button" hidden disabled>Start match</button>
     </header>
@@ -51,7 +53,7 @@
     </details>
     <main id="arena-container" hidden>
       <div id="arena-view">
-        <canvas id="arena" aria-label="3D hunt arena. Hunters: figures with flashlight cones, your own in white. Creature: a hooded, skull-faced wraith, visible to Hunters only while lit or sprinting. Blue batteries with a yellow lightning bolt: battery pickups."></canvas>
+        <canvas id="arena" aria-label="3D hunt arena. Hunters: figures with flashlight cones, your own in white. Creature: a hooded, skull-faced wraith, visible to Hunters only while lit or sprinting. Glowing blue and orange JohnBattery cans: battery pickups."></canvas>
         <div id="overlay" hidden><p id="overlay-title"></p><p id="overlay-detail"></p></div>
         <pre id="debug" hidden></pre>
       </div>
