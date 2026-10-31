@@ -49,50 +49,59 @@ import { createPost } from './post.js';
 import { buildProps, type PropModels } from './props.js';
 import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
-  BATTERY_LIGHT_RADIUS, BATTERY_LIGHT_RAYS, BATTERY_LIGHT_UNIFORMS, LIGHT_COLOR, MAX_BATTERY_LIGHTS, OUTLINE_MATERIAL,
-  OUTLINE_WIDTH, POOL_MAX_ANGLE, POOL_RAYS, POOL_REACH, POOL_SPREAD, POOL_UNIFORMS, STAGGER_OUTLINE_COLOR,
-  STAGGER_OUTLINE_WIDTH, VFX, VFX_UNIFORMS, BATTERY_BODY_UNIFORMS, MOTE_COUNT, MOTE_PIXELS, batteryChargeFlash,
-  createBatteryMaterial, createBeamMaterial, createBlobShadowMaterial, createGlowMaterial, createHaloMaterial,
-  createMoteMaterial, createOutlineMaterial, ditheredBody,
+  BATTERY_LIGHT, BATTERY_LIGHT_REACH, BATTERY_LIGHT_RAYS, BATTERY_LIGHT_UNIFORMS, FLASHLIGHT, MAX_BATTERY_LIGHTS,
+  OUTLINE_MATERIAL, POOL_RAYS, POOL_UNIFORMS, SHADING, VFX, VFX_UNIFORMS, BATTERY_BODY_UNIFORMS, MOTE_COUNT, MOTE_PIXELS,
+  batteryChargeFlash, createBatteryMaterial, createBeamMaterial, createBlobShadowMaterial, createGlowMaterial,
+  createHaloMaterial, createMoteMaterial, createOutlineMaterial, ditheredBody, syncVfxUniforms,
 } from './vfx.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 // Rays across the cone for the drawn flashlight fan. Purely visual resolution.
 const FAN_RAYS = 32;
-// Flat Hunter colours: the viewer's own Hunter, every other Hunter, and a downed Hunter.
-const SELF_COLOR = '#e6e7e4';
-const TEAMMATE_COLOR = '#8fa3b8';
-const DOWN_COLOR = '#8a3a4a';
 // The Hunter model is scaled to this height: 1.8x the collision sphere's diameter, so it
 // reads clearly from the camera. Presentation only; collision still uses playerRadius.
 // Walk fades in and out over WALK_FADE_SECONDS; at zero weight the model is in its rest
 // pose, which is the idle.
 const HUNTER_HEIGHT = 1.8 * 2 * GAMEPLAY.playerRadius;
 const WALK_FADE_SECONDS = 0.15;
-// The Hunter speed (units/s) at which Walk plays at its authored rate. Playback scales with
-// the room's tuned hunterSpeed, so a speed of 60 plays it at about 1.56x. Lower this for a
-// faster walk.
-const WALK_RATE_SPEED = 38.5;
 // The Creature model is scaled to this height (3x the collision sphere's diameter, towering
 // over a Hunter) and hovers with its lowest point CREATURE_HOVER above the floor.
 // Presentation only, like the Hunter's.
 const CREATURE_HEIGHT = 3 * 2 * GAMEPLAY.playerRadius;
 const CREATURE_HOVER = 3;
-// Float always plays: at its authored rate while still, faster while moving, faster still while
-// sprinting, easing between rates over FLOAT_RATE_EASE seconds.
-const FLOAT_RATE_MOVING = 1.6;
-const FLOAT_RATE_SPRINT = 2.4;
-const FLOAT_RATE_EASE = 0.25;
-// The server's Creature facing jumps straight to the held direction, so the model eases round
-// to it at CREATURE_TURN_SPEED (radians per second), and leans CREATURE_LEAN radians into its
-// travel while moving.
-const CREATURE_TURN_SPEED = 3 * Math.PI;
-const CREATURE_LEAN = 0.15;
-// The emissive multiplier on the Creature's texture: its own colours, and the ember glow it
-// takes while burning (unable to tag). Components above 1 brighten it; the charcoal robe needs
-// a strong red to glow.
-const CREATURE_TINT = new Color(1, 1, 1);
-const CREATURE_BURNING_TINT = new Color(6, 2, 0.8);
+// How the players look and move, read every frame (the debug menu edits them live):
+// - Flat Hunter colours: SELF_COLOR for the viewer's own Hunter, TEAMMATE_COLOR for every other,
+//   DOWN_COLOR for a downed one.
+// - WALK_RATE_SPEED: the Hunter speed (units/s) at which Walk plays at its authored rate.
+//   Playback scales with the room's tuned hunterSpeed, so a speed of 60 plays it at about 1.56x.
+//   Lower this for a faster walk.
+// - The Creature's Float always plays: at its authored rate while still, FLOAT_RATE_MOVING while
+//   moving, FLOAT_RATE_SPRINT while sprinting, easing between rates over FLOAT_RATE_EASE seconds.
+// - The server's Creature facing jumps straight to the held direction, so the model eases round
+//   to it at CREATURE_TURN_SPEED (radians per second), and leans CREATURE_LEAN radians into its
+//   travel while moving.
+// - The emissive multiplier (r, g, b) on the Creature's texture: CREATURE_TINT, its own colours,
+//   and CREATURE_BURNING_TINT, the ember glow it takes while burning (unable to tag). Components
+//   above 1 brighten it; the charcoal robe needs a strong red to glow.
+// - Blob shadow radii: under a Hunter and under the hovering Creature. A downed Hunter's
+//   stretches along its body.
+// - LENS_GLOW_RADIUS: the soft glow drawn at the flashlight's lens.
+export const CHARACTERS = {
+  SELF_COLOR: '#e6e7e4',
+  TEAMMATE_COLOR: '#8fa3b8',
+  DOWN_COLOR: '#8a3a4a',
+  WALK_RATE_SPEED: 38.5,
+  FLOAT_RATE_MOVING: 1.6,
+  FLOAT_RATE_SPRINT: 2.4,
+  FLOAT_RATE_EASE: 0.25,
+  CREATURE_TURN_SPEED: 3 * Math.PI,
+  CREATURE_LEAN: 0.15,
+  CREATURE_TINT: [1, 1, 1],
+  CREATURE_BURNING_TINT: [6, 2, 0.8],
+  HUNTER_SHADOW_RADIUS: 1.1 * GAMEPLAY.playerRadius,
+  CREATURE_SHADOW_RADIUS: 1.6 * GAMEPLAY.playerRadius,
+  LENS_GLOW_RADIUS: 5,
+};
 // Battery pickup: battery.glb scaled to BATTERY_HEIGHT and posed for the fixed camera. It is
 // tipped back until its face (the label) looks at the camera, short of square-on by
 // BATTERY_TOP_SHOW so a sliver of its cap shows, then leaned BATTERY_LEAN on screen, right
@@ -105,36 +114,44 @@ const BATTERY_LEAN = 30 * (Math.PI / 180);
 const BATTERY_HOVER = 1;
 const BATTERY_KEY_FRONT = 0.7;
 const BATTERY_KEY_UP = 0.35;
-// Battery glow (VFX.batteryGlow): the halo's radius, and its pulse, shared by every battery and
-// its light: brightness swings between 1 - BATTERY_PULSE_DEPTH and 1, BATTERY_PULSE_RATE times
-// a second, and flashes up by BATTERY_CHARGE_FLASH as each charge reaches the cap (vfx.ts).
-const BATTERY_HALO_RADIUS = 1.1 * BATTERY_HEIGHT;
-const BATTERY_PULSE_DEPTH = 0.15;
-const BATTERY_PULSE_RATE = 0.6;
-const BATTERY_CHARGE_FLASH = 0.25;
+// Battery glow (VFX.batteryGlow), read every frame: the halo's radius, and its pulse, shared by
+// every battery and its light: brightness swings between 1 - BATTERY_PULSE_DEPTH and 1,
+// BATTERY_PULSE_RATE times a second, and flashes up by BATTERY_CHARGE_FLASH as each charge reaches
+// the cap (vfx.ts). BATTERY_SHADOW_RADIUS is the blob shadow under each battery.
+export const BATTERY_LOOK = {
+  BATTERY_HALO_RADIUS: 1.1 * BATTERY_HEIGHT,
+  BATTERY_PULSE_DEPTH: 0.15,
+  BATTERY_PULSE_RATE: 0.6,
+  BATTERY_CHARGE_FLASH: 0.25,
+  BATTERY_SHADOW_RADIUS: 0.45 * BATTERY_HEIGHT,
+};
 // Draw order among the opaque meshes: a battery's halo after everything else at the default
 // order 0, then the battery, so the battery covers the halo's middle, then its motes, which
 // the battery hides when they pass behind it.
 const HALO_RENDER_ORDER = 1;
 const BATTERY_RENDER_ORDER = 2;
 const MOTE_RENDER_ORDER = 3;
-// Radius of the soft glow drawn at the flashlight's lens.
-const LENS_GLOW_RADIUS = 5;
 // Night: a dim, cool moonlight over the mansion, so the flashlights are what light it. The sky
-// and ground colours of the hemisphere light and its intensity, the directional light's colour
-// and intensity, and the background beyond the map. The bodies of the Hunters and the Creature
-// are unlit, so they stay readable in the dark; the batteries are lit by their own glow.
-const AMBIENT_SKY = '#8fa0c8';
-const AMBIENT_GROUND = '#2a2630';
-const AMBIENT_INTENSITY = 0.45;
-const MOONLIGHT_COLOR = '#c8d2ff';
-const MOONLIGHT_INTENSITY = 0.45;
-const BACKGROUND_COLOR = '#0c0d10';
-// Blob shadow radii: under a Hunter, under the hovering Creature, and under a battery. A downed
-// Hunter's stretches along its body.
-const HUNTER_SHADOW_RADIUS = 1.1 * GAMEPLAY.playerRadius;
-const CREATURE_SHADOW_RADIUS = 1.6 * GAMEPLAY.playerRadius;
-const BATTERY_SHADOW_RADIUS = 0.45 * BATTERY_HEIGHT;
+// and ground colours of the hemisphere light and its intensity, the directional light's colour,
+// intensity and position (MOON_X, MOON_Y, MOON_Z: only its direction matters), and the background
+// beyond the map. The bodies of the Hunters and the Creature are unlit, so they stay readable in
+// the dark, though the moon's direction shades them (VFX.ditherShading); the batteries are lit by
+// their own glow. Read every frame.
+export const NIGHT = {
+  AMBIENT_SKY: '#8fa0c8',
+  AMBIENT_GROUND: '#2a2630',
+  AMBIENT_INTENSITY: 0.45,
+  MOONLIGHT_COLOR: '#c8d2ff',
+  MOONLIGHT_INTENSITY: 0.45,
+  MOON_X: -300,
+  MOON_Y: 900,
+  MOON_Z: 500,
+  BACKGROUND_COLOR: '#0c0d10',
+};
+// Debugging views, read every frame: RENDER_SCALE multiplies the canvas's pixel ratio (below 1
+// renders fewer pixels, stretched up); SHOW_PROPS and SHOW_SURFACES hide the furniture and the
+// floors and walls.
+export const VIEW = { RENDER_SCALE: 1, SHOW_PROPS: true, SHOW_SURFACES: true };
 // Blob shadows sit this far above the floor, under the flat flashlight fan.
 const SHADOW_LIFT = 0.5;
 
@@ -265,9 +282,13 @@ export function createScene(
   batteryModel: BatteryModel, surfaceTextures: SurfaceTextures, propModels: PropModels, existingRenderer?: WebGLRenderer,
 ) {
   const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // The canvas's pixel ratio, scaled by VIEW.RENDER_SCALE; render() re-applies it when that changes.
+  let renderScale = VIEW.RENDER_SCALE;
+  const pixelRatio = () => Math.min(window.devicePixelRatio, 2) * renderScale;
+  renderer.setPixelRatio(pixelRatio());
   const scene = new Scene();
-  scene.background = new Color(BACKGROUND_COLOR);
+  const background = new Color(NIGHT.BACKGROUND_COLOR);
+  scene.background = background;
 
   const CAMERA = cameraFor(world);
   const camera = new PerspectiveCamera(CAMERA.fieldOfView, CAMERA.aspect, CAMERA.near, CAMERA.far);
@@ -290,17 +311,27 @@ export function createScene(
   const props = buildProps(world, propModels, camera.quaternion);
   scene.add(props.group);
 
-  scene.add(new HemisphereLight(AMBIENT_SKY, AMBIENT_GROUND, AMBIENT_INTENSITY));
-  const light = new DirectionalLight(MOONLIGHT_COLOR, MOONLIGHT_INTENSITY);
-  light.position.set(-300, 900, 500);
-  scene.add(light);
-  BATTERY_BODY_UNIFORMS.batteryAmbientSky.value.set(AMBIENT_SKY).multiplyScalar(AMBIENT_INTENSITY);
-  BATTERY_BODY_UNIFORMS.batteryAmbientGround.value.set(AMBIENT_GROUND).multiplyScalar(AMBIENT_INTENSITY);
-  BATTERY_BODY_UNIFORMS.batteryMoonColor.value.set(MOONLIGHT_COLOR).multiplyScalar(MOONLIGHT_INTENSITY);
-  BATTERY_BODY_UNIFORMS.batteryMoonDirection.value.copy(light.position).normalize();
-  // The Hunter's dithered shading uses this light's direction, in the fixed camera's view space.
+  const ambient = new HemisphereLight();
+  const light = new DirectionalLight();
+  scene.add(ambient, light);
   camera.updateMatrixWorld();
-  VFX_UNIFORMS.vfxLightDirection.value.copy(light.position).normalize().transformDirection(camera.matrixWorldInverse);
+  // The night's lights from NIGHT, every frame. The batteries' own lighting follows them, and the
+  // Hunter's dithered shading uses the moon's direction, in the fixed camera's view space.
+  function syncNight(): void {
+    background.set(NIGHT.BACKGROUND_COLOR);
+    ambient.color.set(NIGHT.AMBIENT_SKY);
+    ambient.groundColor.set(NIGHT.AMBIENT_GROUND);
+    ambient.intensity = NIGHT.AMBIENT_INTENSITY;
+    light.color.set(NIGHT.MOONLIGHT_COLOR);
+    light.intensity = NIGHT.MOONLIGHT_INTENSITY;
+    light.position.set(NIGHT.MOON_X, NIGHT.MOON_Y, NIGHT.MOON_Z);
+    BATTERY_BODY_UNIFORMS.batteryAmbientSky.value.copy(ambient.color).multiplyScalar(NIGHT.AMBIENT_INTENSITY);
+    BATTERY_BODY_UNIFORMS.batteryAmbientGround.value.copy(ambient.groundColor).multiplyScalar(NIGHT.AMBIENT_INTENSITY);
+    BATTERY_BODY_UNIFORMS.batteryMoonColor.value.copy(light.color).multiplyScalar(NIGHT.MOONLIGHT_INTENSITY);
+    BATTERY_BODY_UNIFORMS.batteryMoonDirection.value.copy(light.position).normalize();
+    VFX_UNIFORMS.vfxLightDirection.value.copy(light.position).normalize().transformDirection(camera.matrixWorldInverse);
+  }
+  syncNight();
 
   // Blob shadows (VFX.blobShadows): one flat unit circle, scaled per use. The Creature's is its
   // own fainter material.
@@ -317,8 +348,9 @@ export function createScene(
   // server lists that point as active. Both roles see the same set, in the same order the
   // server uses, so a pickup index means the same thing on every client. Each has a halo, rising
   // motes and (the first MAX_BATTERY_LIGHTS) a light slot (vfx.ts), whose wall reaches are
-  // measured once here: the batteries never move.
-  const haloGeometry = new CircleGeometry(BATTERY_HALO_RADIUS, 32);
+  // measured once here, out to the largest radius the light may be given: the batteries never
+  // move. The halo is a unit disc, scaled to BATTERY_HALO_RADIUS every frame.
+  const haloGeometry = new CircleGeometry(1, 32);
   const haloMaterial = createHaloMaterial();
   const moteGeometry = new BufferGeometry();
   moteGeometry.setAttribute('position', new BufferAttribute(new Float32Array(3 * MOTE_COUNT), 3));
@@ -356,7 +388,7 @@ export function createScene(
     });
     pose.visible = false;
     scene.add(pose);
-    const shadow = blobShadow(BATTERY_SHADOW_RADIUS);
+    const shadow = blobShadow(BATTERY_LOOK.BATTERY_SHADOW_RADIUS);
     shadow.position.set(x, world.floorY + SHADOW_LIFT, z);
     scene.add(shadow);
     const halo = new Mesh(haloGeometry, haloMaterial);
@@ -379,7 +411,7 @@ export function createScene(
         const angle = (2 * Math.PI * ray) / BATTERY_LIGHT_RAYS;
         const direction = { x: Math.cos(angle), y: 0, z: Math.sin(angle) };
         reachData[index * BATTERY_LIGHT_RAYS + ray] =
-          wallDistance(origin, direction, BATTERY_LIGHT_RADIUS, world.wallBoxes);
+          wallDistance(origin, direction, BATTERY_LIGHT_REACH, world.wallBoxes);
       }
     }
     return { pose, shadow, halo, motes };
@@ -387,9 +419,10 @@ export function createScene(
   lightReaches.needsUpdate = true;
 
   // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
-  // at the origin opening along +X, scaled each frame to the light's range and width.
+  // at the origin opening along +X, scaled each frame to the light's range and width. The lens
+  // glow is a unit sphere, scaled to LENS_GLOW_RADIUS each frame.
   const beamGeometry = new ConeGeometry(1, 1, 32, 1, true).translate(0, -0.5, 0).rotateZ(Math.PI / 2);
-  const glowGeometry = new SphereGeometry(LENS_GLOW_RADIUS, 16, 12);
+  const glowGeometry = new SphereGeometry(1, 16, 12);
 
   // Hunter: the hunter.glb model plus a flashlight fan of its own. The group sits at the
   // server's position (the collision sphere's center) and is rotated to its facing, which
@@ -398,7 +431,7 @@ export function createScene(
   type HunterMesh = {
     group: Group; pose: Group; material: MeshStandardMaterial;
     mixer: AnimationMixer; walk: AnimationAction; walkWeight: number; moving: boolean; lastPosition: Position | null;
-    fan: Mesh; fanPositions: Float32Array; fanGeometry: BufferGeometry;
+    fan: Mesh; fanMaterial: MeshBasicMaterial; fanPositions: Float32Array; fanGeometry: BufferGeometry;
     beam: Mesh; beamMaterial: ShaderMaterial; glow: Mesh; shadow: Mesh;
   };
   const hunters = new Map<HunterId, HunterMesh>();
@@ -424,7 +457,7 @@ export function createScene(
     const mixer = new AnimationMixer(model);
     const walk = mixer.clipAction(hunterModel.walk);
     walk.setEffectiveWeight(0).play();
-    const shadow = blobShadow(HUNTER_SHADOW_RADIUS);
+    const shadow = blobShadow(CHARACTERS.HUNTER_SHADOW_RADIUS);
     shadow.position.y = -GAMEPLAY.playerRadius + SHADOW_LIFT;
     group.add(shadow);
     group.visible = false;
@@ -432,7 +465,7 @@ export function createScene(
 
     // Flashlight: a translucent fan on the floor, drawn when the light pool (which lights the
     // floor itself) is off. Each ray is cut by the same wall boxes the server uses for line of
-    // sight, so the drawn light stops where hits stop.
+    // sight, so the drawn light stops where hits stop. Its colour and opacity are set each frame.
     const fanPositions = new Float32Array((FAN_RAYS + 2) * 3);
     const fanGeometry = new BufferGeometry();
     fanGeometry.setAttribute('position', new BufferAttribute(fanPositions, 3));
@@ -440,7 +473,7 @@ export function createScene(
     for (let ray = 1; ray <= FAN_RAYS; ray++) fanIndex.push(0, ray, ray + 1);
     fanGeometry.setIndex(fanIndex);
     const flatFan = new MeshBasicMaterial({
-      color: '#f2e8a8', transparent: true, opacity: 0.35, side: DoubleSide, depthWrite: false,
+      color: FLASHLIGHT.FAN_COLOR, transparent: true, opacity: FLASHLIGHT.FAN_OPACITY, side: DoubleSide, depthWrite: false,
     });
     const fan = new Mesh(fanGeometry, flatFan);
     fan.visible = false;
@@ -459,7 +492,7 @@ export function createScene(
 
     const mesh = {
       group, pose, material, mixer, walk, walkWeight: 0, moving: false, lastPosition: null,
-      fan, fanPositions, fanGeometry, beam, beamMaterial, glow, shadow,
+      fan, fanMaterial: flatFan, fanPositions, fanGeometry, beam, beamMaterial, glow, shadow,
     };
     hunters.set(id, mesh);
     return mesh;
@@ -511,7 +544,7 @@ export function createScene(
   }
 
   // The pool angle for the room's cone angle, in degrees.
-  const poolAngle = (coneAngle: number) => Math.min(coneAngle * POOL_SPREAD, POOL_MAX_ANGLE);
+  const poolAngle = (coneAngle: number) => Math.min(coneAngle * FLASHLIGHT.POOL_SPREAD, FLASHLIGHT.POOL_MAX_ANGLE);
 
   // Turns on this Hunter's slot of the light pool (vfx.ts) for this frame at `brightness`: where
   // it stands, its facing, how far the pool reaches at this battery stage, and how far each of
@@ -520,7 +553,7 @@ export function createScene(
     slot: number, origin: Position, facing: number, range: number, coneAngle: number, brightness: number,
   ): void {
     const halfAngle = (poolAngle(coneAngle) / 2) * (Math.PI / 180);
-    const reach = range * POOL_REACH;
+    const reach = range * FLASHLIGHT.POOL_REACH;
     const component = (['x', 'y', 'z', 'w'] as const)[slot];
     POOL_UNIFORMS.flashOrigin.value[slot].set(origin.x, origin.z, facing, reach);
     POOL_UNIFORMS.flashOn.value[component] = brightness;
@@ -581,7 +614,7 @@ export function createScene(
     ring.visible = false;
     group.add(ring);
     // Its blob shadow is part of the group, so it exists exactly while the Creature mesh does.
-    const shadow = blobShadow(CREATURE_SHADOW_RADIUS, creatureShadowMaterial);
+    const shadow = blobShadow(CHARACTERS.CREATURE_SHADOW_RADIUS, creatureShadowMaterial);
     shadow.position.y = -GAMEPLAY.playerRadius + SHADOW_LIFT;
     group.add(shadow);
     scene.add(group);
@@ -624,9 +657,26 @@ export function createScene(
     return { x, y, scale, lineX: (model.x + 1) / 2, lineY: (model.y + 1) / 2 };
   }
 
+  // The last size the canvas was given, so a change of VIEW.RENDER_SCALE can re-apply it.
+  let lastWidth = 1;
+  let lastHeight = 1;
+
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
-  // `fearPreview` (the ?debug=1&fear=x preview) replaces a Hunter's band and dread.
+  // `fearPreview` (the debug menu's fear preview) replaces a Hunter's band and dread.
   function render(snapshot: Snapshot | null, tuning: Tuning, fearPreview: number | null = null): void {
+    // The look values (NIGHT, CHARACTERS, BATTERY_LOOK, VIEW and vfx.ts's) may have been edited
+    // in the debug menu since the last frame.
+    syncNight();
+    syncVfxUniforms();
+    if (renderScale !== VIEW.RENDER_SCALE) {
+      renderScale = VIEW.RENDER_SCALE;
+      renderer.setPixelRatio(pixelRatio());
+      resize(lastWidth, lastHeight);
+    }
+    props.group.visible = VIEW.SHOW_PROPS;
+    surfaces.group.visible = VIEW.SHOW_SURFACES;
+    shadowMaterial.uniforms.opacity.value = SHADING.BLOB_SHADOW_OPACITY;
+    creatureShadowMaterial.uniforms.opacity.value = SHADING.CREATURE_BLOB_SHADOW_OPACITY;
     OUTLINE_MATERIAL.visible = VFX.outline;
     setPixelTextures(surfaceTextures, VFX.pixelTextures);
     VFX_UNIFORMS.vfxDitherShading.value = VFX.ditherShading ? 1 : 0;
@@ -661,12 +711,13 @@ export function createScene(
       mesh.group.position.set(view.position.x, view.position.y, view.position.z);
       // A positive rotation about Y turns local +X toward -Z; the facing angle runs +X toward +Z.
       mesh.group.rotation.y = -view.facing;
-      mesh.material.emissive.set(view.down ? DOWN_COLOR : view.id === self ? SELF_COLOR : TEAMMATE_COLOR);
+      mesh.material.emissive.set(view.down ? CHARACTERS.DOWN_COLOR : view.id === self ? CHARACTERS.SELF_COLOR : CHARACTERS.TEAMMATE_COLOR);
       // The shadow follows the body: round under a standing Hunter, stretched along a downed one,
       // whose head points away from its facing.
       mesh.shadow.visible = VFX.blobShadows;
       mesh.shadow.position.x = view.down ? -HUNTER_HEIGHT / 2 : 0;
-      mesh.shadow.scale.x = view.down ? HUNTER_HEIGHT * 0.6 : HUNTER_SHADOW_RADIUS;
+      mesh.shadow.scale.x = view.down ? HUNTER_HEIGHT * 0.6 : CHARACTERS.HUNTER_SHADOW_RADIUS;
+      mesh.shadow.scale.z = CHARACTERS.HUNTER_SHADOW_RADIUS;
       // Down: tipped onto its back (face up, head away from its facing), lifted so the back
       // rests on the floor. It cannot move, turn, or shine.
       mesh.pose.rotation.z = view.down ? Math.PI / 2 : 0;
@@ -681,12 +732,15 @@ export function createScene(
       const step = deltaSeconds / WALK_FADE_SECONDS;
       mesh.walkWeight += Math.max(-step, Math.min(step, targetWeight - mesh.walkWeight));
       mesh.walk.setEffectiveWeight(mesh.walkWeight);
-      mesh.walk.timeScale = tuning.hunterSpeed / WALK_RATE_SPEED;
+      mesh.walk.timeScale = tuning.hunterSpeed / CHARACTERS.WALK_RATE_SPEED;
       mesh.mixer.update(deltaSeconds);
       // `light` is already false on an empty battery, so a depleted flashlight draws nothing.
       // The light pool lights the floor itself; without it, the flat fan shows the reach.
       mesh.fan.visible = view.light && !VFX.lightPool;
+      mesh.fanMaterial.color.set(FLASHLIGHT.FAN_COLOR);
+      mesh.fanMaterial.opacity = FLASHLIGHT.FAN_OPACITY;
       mesh.beam.visible = mesh.glow.visible = view.light && VFX.beam;
+      mesh.glow.scale.setScalar(CHARACTERS.LENS_GLOW_RADIUS);
       if (view.light) {
         const range = flashlightRange(view.battery, tuning);
         updateFan(mesh, view.position, view.facing, range, tuning.flashlightConeAngle);
@@ -694,8 +748,8 @@ export function createScene(
         // Near the Creature your own light stutters, on your own screen only, so it never tells a
         // teammate your band.
         const brightness = view.id === self ? fearFrame.flicker : 1;
-        mesh.beamMaterial.uniforms.lightColor.value.set(LIGHT_COLOR).multiplyScalar(brightness);
-        (mesh.glow.material as ShaderMaterial).uniforms.lightColor.value.set(LIGHT_COLOR).multiplyScalar(brightness);
+        mesh.beamMaterial.uniforms.lightColor.value.set(FLASHLIGHT.LIGHT_COLOR).multiplyScalar(brightness);
+        (mesh.glow.material as ShaderMaterial).uniforms.lightColor.value.set(FLASHLIGHT.LIGHT_COLOR).multiplyScalar(brightness);
         if (VFX.lightPool) {
           POOL_UNIFORMS.flashLensY.value = view.position.y + hunterModel.lens.y;
           updatePool(Number(view.id.slice(1)) - 1, view.position, view.facing, range, tuning.flashlightConeAngle, brightness);
@@ -704,16 +758,21 @@ export function createScene(
     }
     // Every battery glows and charges in step; a taken one, or every one with the glow off, is dark.
     const seconds = (now - startTime) / 1000;
-    const pulse = 1 - BATTERY_PULSE_DEPTH * (0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI * BATTERY_PULSE_RATE))
-      + BATTERY_CHARGE_FLASH * batteryChargeFlash(seconds);
+    const pulse = 1 - BATTERY_LOOK.BATTERY_PULSE_DEPTH * (0.5 + 0.5 * Math.sin(seconds * 2 * Math.PI * BATTERY_LOOK.BATTERY_PULSE_RATE))
+      + BATTERY_LOOK.BATTERY_CHARGE_FLASH * batteryChargeFlash(seconds);
     haloMaterial.uniforms.haloPulse.value = pulse;
+    haloMaterial.uniforms.haloColor.value.set(BATTERY_LIGHT.BATTERY_LIGHT_COLOR);
+    haloMaterial.uniforms.haloIntensity.value = BATTERY_LIGHT.HALO_INTENSITY;
+    moteMaterial.uniforms.moteColor.value.set(BATTERY_LIGHT.BATTERY_LIGHT_COLOR).multiplyScalar(BATTERY_LIGHT.MOTE_INTENSITY);
     BATTERY_BODY_UNIFORMS.batteryGlowPulse.value = VFX.batteryGlow ? pulse : 1;
     BATTERY_BODY_UNIFORMS.batteryGlowOn.value = VFX.batteryGlow ? 1 : 0;
     BATTERY_BODY_UNIFORMS.batteryTime.value = seconds;
     for (const [index, pickup] of pickups.entries()) {
       pickup.pose.visible = snapshot?.pickups.includes(index) ?? false;
       pickup.shadow.visible = pickup.pose.visible && VFX.blobShadows;
+      pickup.shadow.scale.set(BATTERY_LOOK.BATTERY_SHADOW_RADIUS, 1, BATTERY_LOOK.BATTERY_SHADOW_RADIUS);
       pickup.halo.visible = pickup.pose.visible && VFX.batteryGlow;
+      pickup.halo.scale.setScalar(BATTERY_LOOK.BATTERY_HALO_RADIUS);
       pickup.motes.visible = pickup.halo.visible;
       if (index < MAX_BATTERY_LIGHTS) BATTERY_LIGHT_UNIFORMS.batteryLights.value[index].z = pickup.halo.visible ? pulse : 0;
     }
@@ -733,23 +792,26 @@ export function createScene(
         creatureLastPosition = { ...position };
       }
       const turn = wrapAngle(creatureView.facing - creatureFacing);
-      creatureFacing = wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CREATURE_TURN_SPEED * deltaSeconds));
+      const { CREATURE_LEAN, FLOAT_RATE_EASE } = CHARACTERS;
+      creatureFacing = wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CHARACTERS.CREATURE_TURN_SPEED * deltaSeconds));
       mesh.group.rotation.y = -creatureFacing;
       // Leaning forward is a negative turn about the pose's Z (its +X is the facing).
       const leanStep = (CREATURE_LEAN * deltaSeconds) / FLOAT_RATE_EASE;
       creatureLean += Math.max(-leanStep, Math.min(leanStep, (creatureMoving ? CREATURE_LEAN : 0) - creatureLean));
       mesh.pose.rotation.z = -creatureLean;
-      const rate = creatureView.sprinting ? FLOAT_RATE_SPRINT : creatureMoving ? FLOAT_RATE_MOVING : 1;
+      const rate = creatureView.sprinting ? CHARACTERS.FLOAT_RATE_SPRINT : creatureMoving ? CHARACTERS.FLOAT_RATE_MOVING : 1;
       mesh.float.timeScale += (rate - mesh.float.timeScale) * Math.min(1, deltaSeconds / FLOAT_RATE_EASE);
       mesh.mixer.update(deltaSeconds);
       // Burning feedback: the whole model glows ember red while the Creature cannot tag.
-      mesh.material.emissive.copy(creatureView.burning ? CREATURE_BURNING_TINT : CREATURE_TINT);
+      const [red, green, blue] = creatureView.burning ? CHARACTERS.CREATURE_BURNING_TINT : CHARACTERS.CREATURE_TINT;
+      mesh.material.emissive.setRGB(red, green, blue);
       // Stagger feedback: a thick white outline, drawn even with the outline experiment off.
       mesh.outline.visible = VFX.outline || creatureView.staggered;
-      mesh.outline.uniforms.vfxOutlineColor.value.set(creatureView.staggered ? STAGGER_OUTLINE_COLOR : '#000000');
-      mesh.outline.uniforms.vfxOutlineWidth.value = creatureView.staggered ? STAGGER_OUTLINE_WIDTH : OUTLINE_WIDTH;
+      mesh.outline.uniforms.vfxOutlineColor.value.set(creatureView.staggered ? SHADING.STAGGER_OUTLINE_COLOR : '#000000');
+      mesh.outline.uniforms.vfxOutlineWidth.value = creatureView.staggered ? SHADING.STAGGER_OUTLINE_WIDTH : SHADING.OUTLINE_WIDTH;
       mesh.ring.visible = creatureView.sprinting;
       mesh.shadow.visible = VFX.blobShadows;
+      mesh.shadow.scale.set(CHARACTERS.CREATURE_SHADOW_RADIUS, 1, CHARACTERS.CREATURE_SHADOW_RADIUS);
     } else {
       removeCreature();
     }
@@ -757,6 +819,8 @@ export function createScene(
   }
 
   function resize(width: number, height: number): void {
+    lastWidth = width;
+    lastHeight = height;
     renderer.setSize(width, height, false);
     post.setSize(width, height);
     // The outline is a fixed fraction of the view height; its width is corrected by this.

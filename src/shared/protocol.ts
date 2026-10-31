@@ -28,7 +28,15 @@ export type ClientMessage =
   // Host only, and only between rounds: replace the room's gameplay tuning (every value,
   // validated and bounded on the server; see src/shared/tuning.ts).
   | { type: 'tune'; tuning: Tuning }
-  | ({ type: 'input'; roundId: number } & InputState);
+  | ({ type: 'input'; roundId: number } & InputState)
+  // DEBUG-MENU: host only, while a round runs: set the match clock (0 ends the round as expired).
+  | { type: 'setClock'; seconds: number }
+  // DEBUG-ROOM: a room that can start without a full party, and its start with the host's role.
+  | { type: 'debugCreate' }
+  | { type: 'debugStart'; role: DebugRole };
+
+// DEBUG-ROOM: the role the host takes in a debug room (src/server/debug-room.ts).
+export type DebugRole = 'hunter' | 'creature' | 'random';
 
 // What every player in a round learns about each Hunter: public position and facing,
 // whether the server counts its flashlight as on, its remaining battery, and its team

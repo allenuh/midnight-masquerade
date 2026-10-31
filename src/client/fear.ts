@@ -27,7 +27,8 @@ export type FearLevels = {
   heartRate: number; heartStrength: number; tendrils: number; aberration: number; tvStatic: number; flicker: number;
   lines: number; lineLength: number; lineWidth: number; lineWave: number; lineWaves: number; lineSpeed: number;
 };
-type Range = readonly [number, number];
+// Mutable so the debug menu can edit the bands live; fearLevels reads them every frame.
+type Range = [number, number];
 type StageTable = { [K in keyof FearLevels]: Range };
 
 export const NO_FEAR: FearLevels = {
@@ -44,7 +45,7 @@ export const NO_FEAR: FearLevels = {
 // stutters now and then; IMMEDIATE a strong colour split, the strongest static, a racing heart and
 // a failing light. The values jump at every
 // boundary by more than they change inside a band, so crossing a threshold is felt.
-export const FEAR_STAGES: readonly StageTable[] = [
+export const FEAR_STAGES: StageTable[] = [
   // UNEASY
   {
     radius: [266, 224], softness: [224, 196], darkness: [0.3, 0.456], desaturation: [0.12, 0.22],
@@ -103,30 +104,33 @@ export function fearLevels({ stage, t }: FearInput): FearLevels {
   return levels;
 }
 
-// How quickly the effects follow a change (seconds to cover about two thirds of it), so a
-// threshold reads as a lurch rather than a pop. The stinger, a hard thump on entering a deeper
-// band, decays over STINGER_SECONDS.
-const EASE_SECONDS = 0.12;
-const STINGER_SECONDS = 0.25;
-// The heartbeat: a lub at LUB and a quieter dub at DUB in each beat (fractions of the beat),
-// each WIDTH wide.
-const LUB = 0.06;
-const DUB = 0.26;
-const DUB_STRENGTH = 0.6;
-const BEAT_WIDTH = 0.05;
-// The colour split swells by ABERRATION_PULSE at each thump, and a stinger flashes it by
-// STINGER_ABERRATION even where there is none yet.
-const ABERRATION_PULSE = 0.6;
-const STINGER_ABERRATION = 0.5;
-// When the band changes the stroke count, all the new strokes grow out together (or all the
-// removed ones shrink back) over LINE_GROW_SECONDS.
-const LINE_GROW_SECONDS = 0.125;
-// The flashlight stutter: every FLICKER_INTERVAL seconds (randomised up to twice that), the light
-// dips to between FLICKER_LOW and FLICKER_HIGH with a chance of `flicker * FLICKER_CHANCE`.
-const FLICKER_INTERVAL = 0.06;
-const FLICKER_CHANCE = 0.45;
-const FLICKER_LOW = 0.15;
-const FLICKER_HIGH = 0.6;
+// The animator's timing, read every frame (the debug menu edits it live):
+// - EASE_SECONDS: how quickly the effects follow a change (seconds to cover about two thirds of
+//   it), so a threshold reads as a lurch rather than a pop. The stinger, a hard thump on entering a
+//   deeper band, decays over STINGER_SECONDS.
+// - The heartbeat: a lub at LUB and a quieter dub (DUB_STRENGTH) at DUB in each beat (fractions of
+//   the beat), each BEAT_WIDTH wide.
+// - The colour split swells by ABERRATION_PULSE at each thump, and a stinger flashes it by
+//   STINGER_ABERRATION even where there is none yet.
+// - When the band changes the stroke count, all the new strokes grow out together (or all the
+//   removed ones shrink back) over LINE_GROW_SECONDS.
+// - The flashlight stutter: every FLICKER_INTERVAL seconds (randomised up to twice that), the light
+//   dips to between FLICKER_LOW and FLICKER_HIGH with a chance of `flicker * FLICKER_CHANCE`.
+export const FEAR_TIMING = {
+  EASE_SECONDS: 0.12,
+  STINGER_SECONDS: 0.25,
+  LUB: 0.06,
+  DUB: 0.26,
+  DUB_STRENGTH: 0.6,
+  BEAT_WIDTH: 0.05,
+  ABERRATION_PULSE: 0.6,
+  STINGER_ABERRATION: 0.5,
+  LINE_GROW_SECONDS: 0.125,
+  FLICKER_INTERVAL: 0.06,
+  FLICKER_CHANCE: 0.45,
+  FLICKER_LOW: 0.15,
+  FLICKER_HIGH: 0.6,
+};
 
 // What the fear pass and the flashlight read each frame. `pulse` is the heartbeat plus the
 // stinger. The panic lines: `lines` strokes are drawn, the first `linesSettled` in full and the
@@ -155,6 +159,10 @@ export function createFear() {
   let flicker = 1;
 
   function update(input: FearInput, deltaSeconds: number): FearFrame {
+    const {
+      EASE_SECONDS, STINGER_SECONDS, LUB, DUB, DUB_STRENGTH, BEAT_WIDTH, ABERRATION_PULSE, STINGER_ABERRATION,
+      LINE_GROW_SECONDS, FLICKER_INTERVAL, FLICKER_CHANCE, FLICKER_LOW, FLICKER_HIGH,
+    } = FEAR_TIMING;
     const target = fearLevels(input);
     const ease = 1 - Math.exp(-deltaSeconds / EASE_SECONDS);
     for (const key of Object.keys(levels) as (keyof FearLevels)[]) levels[key] += (target[key] - levels[key]) * ease;

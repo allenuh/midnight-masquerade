@@ -219,9 +219,26 @@ async function fillRoom(players: Player[]): Promise<string> {
   return code;
 }
 
-// The host starts; every page reaches the reveal and then the running round.
+// During a round the page is only the game; the VFX toggles and the host's room controls are in
+// the debug menu (toggled with `), each in a collapsible section. The menu is left closed
+// otherwise, so it never covers the arena the colour checks read.
+async function openMenu(page: Page, section: string) {
+  if (await page.locator('#debug-menu').isHidden()) await page.keyboard.press('Backquote');
+  await page.locator(section).evaluate((details) => {
+    (details as HTMLDetailsElement).open = true;
+  });
+}
+async function closeMenu(page: Page) {
+  if (await page.locator('#debug-menu').isVisible()) await page.keyboard.press('Backquote');
+}
+
+// The host starts; every page reaches the reveal and then the running round. Once a round exists,
+// Start / Restart match is in the debug menu's Room section.
 async function startMatch(host: Player, players: Player[], previousRoundId?: number) {
+  const inRound = await host.page.locator('body.in-round').count() > 0;
+  if (inRound) await openMenu(host.page, '#menu-room-section');
   await host.page.getByRole('button', { name: /Start match|Restart match/ }).click();
+  if (inRound) await closeMenu(host.page);
   for (const player of players) {
     await expect.poll(() => {
       const snapshot = player.network.latest();
@@ -383,6 +400,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     // the last program drawn is read, which is then the scene's own.
     for (const player of [hunters[0], creature]) {
       const postEffects = [player.page.locator('[data-vfx="bloom"]'), player.page.locator('[data-vfx="grade"]')];
+      await openMenu(player.page, '#vfx-section');
       for (const toggle of postEffects) await toggle.uncheck();
       await player.page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       expect(await player.page.locator('#arena').evaluate((element) => {
@@ -396,6 +414,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
         return projection[11] === -1 && projection[15] === 0;
       })).toBe(true);
       for (const toggle of postEffects) await toggle.check();
+      await closeMenu(player.page);
     }
     // The Creature sees four Hunters and itself; a Hunter sees itself, three teammates, no Creature.
     await creature.page.screenshot({ path: testInfo.outputPath('creature-view.png') });

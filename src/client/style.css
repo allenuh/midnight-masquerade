@@ -47,7 +47,13 @@ button {
   cursor: pointer;
 }
 
-#start {
+/* The room's controls sit at the right of the header in the lobby (main.ts moves them into the
+   debug menu during a round). */
+#room-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
   margin-left: auto;
 }
 
@@ -72,9 +78,14 @@ input {
   text-transform: uppercase;
 }
 
-/* VFX toggles: plain native checkboxes, not the room-code input style above. */
+/* VFX toggles (in the debug menu): plain native checkboxes, not the room-code input style above. */
+#vfx {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
 #vfx label {
-  margin-left: 8px;
   cursor: pointer;
 }
 
@@ -234,17 +245,148 @@ footer {
   color: #e46448;
 }
 
-/* Playtest overlay (?debug=1): plain text over the arena corner, never in a normal build. */
-#debug {
+/* During a round the page is only the game: it fills the window, letterboxed in the night's
+   background colour (main.ts), and everything else is hidden or moved into the debug menu. */
+body.in-round {
+  padding: 0;
+}
+
+body.in-round > header,
+body.in-round > #status,
+body.in-round > #lobby,
+body.in-round > #tuning,
+body.in-round > footer {
+  display: none;
+}
+
+body.in-round #arena-container {
+  position: fixed;
+  inset: 0;
+}
+
+/* Debug menu (debug-menu.ts): a translucent panel down the right of the game, toggled with `. */
+#debug-menu {
   position: absolute;
-  top: 20px;
-  left: 20px;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 100%);
+  overflow-y: auto;
+  padding: 8px 12px 16px;
+  background: rgba(22, 25, 24, 0.9);
+  border-left: 1px solid #474d47;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#debug-menu details {
+  border-top: 1px solid #343a36;
+  padding-top: 4px;
+}
+
+#debug-menu summary {
+  cursor: pointer;
+  color: #e8d27a;
+}
+
+#look-sections details > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+
+.look-reset {
+  align-self: flex-end;
+  padding: 1px 6px;
+  color: #a5a9a6;
+}
+
+#debug-menu .debug-row button {
+  padding: 3px 8px;
+}
+
+.debug-hint {
   margin: 0;
-  padding: 4px 8px;
-  background: #161918;
+  color: #a5a9a6;
+}
+
+.debug-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+#hud {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#perf {
+  margin: 0;
+  color: #a5a9a6;
+}
+
+/* The round's details (formerly the ?debug=1 overlay): plain text in the menu. */
+#debug {
+  margin: 4px 0;
   color: #aeb5ae;
   font: inherit;
   line-height: 1.35;
-  white-space: pre;
-  pointer-events: none;
+  white-space: pre-wrap;
+}
+
+#menu-room #room-controls {
+  margin-left: 0;
+}
+
+/* One look value: its name, then a slider and a number box, a colour picker or a checkbox. Changed
+   values are marked like the tuning table's. */
+.look-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 72px;
+  align-items: center;
+  gap: 6px;
+}
+
+.look-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.look-row[data-changed] > span::after {
+  content: ' *';
+  color: #f2e8a8;
+}
+
+#debug-menu input[type='range'],
+#debug-menu input[type='number'],
+#debug-menu input[type='color'],
+#debug-menu input[type='checkbox'] {
+  width: 100%;
+  margin: 0;
+  padding: 1px 3px;
+  text-transform: none;
+}
+
+#debug-menu input[type='checkbox'] {
+  justify-self: start;
+  width: auto;
+}
+
+#debug-menu input[type='color'] {
+  height: 22px;
+  padding: 0 2px;
+}
+
+#debug-menu textarea {
+  width: 100%;
+  background: #282c2a;
+  color: inherit;
+  font: inherit;
+  border: 1px solid #858a85;
 }

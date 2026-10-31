@@ -7,15 +7,19 @@ import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { RoomMessage, ServerMessage } from '../shared/protocol.js';
 import {
   PLAYER_COUNT, STEP_SECONDS, abandonRound, createGame, expireInput,
-  hunterProximity, reviveTicks, setInput, snapshotFor, startRound, stepGame, type Game,
+  hunterProximity, reviveTicks, secondsToTicks, setInput, snapshotFor, startRound, stepGame, type Game,
 } from './game.js';
 import { loadMapCatalog, type MapCatalog, type MapEntry } from './maps.js';
 import { defaultTuning, tuningDifferences, validateTuning, type Tuning } from '../shared/tuning.js';
+import { isDebugRole, startDebugRound } from './debug-room.js'; // DEBUG-ROOM
 
 type Client = { id: string; socket: WebSocket; lastInput: number; alive: boolean; room: Room | null };
 // The host's only authority is starting rounds and choosing the map between them; the
 // simulation never consults it. `map` is the catalogue entry the room's game plays on.
-type Room = { code: string; host: Client; players: Client[]; game: Game; map: MapEntry; lastStart: number };
+type Room = {
+  code: string; host: Client; players: Client[]; game: Game; map: MapEntry; lastStart: number;
+  debug?: true; // DEBUG-ROOM
+};
 
 // Room codes avoid characters that are easily confused when read aloud or typed.
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -142,14 +146,15 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
     return code;
   }
 
-  function createRoom(client: Client): void {
+  function createRoom(client: Client, debug = false): void { // DEBUG-ROOM: the debug parameter
     const map = catalog.default;
     const room: Room = {
       code: newCode(), host: client, players: [client], game: createGame(map.world, roomTuning()), map, lastStart: -Infinity,
     };
+    if (debug) room.debug = true; // DEBUG-ROOM
     rooms.set(room.code, room);
     client.room = room;
-    logRoom(room, `created by ${client.id} on ${map.id}`);
+    logRoom(room, `${debug ? 'debug room ' : ''}created by ${client.id} on ${map.id}`); // DEBUG-ROOM: the debug label
     sendMap(client, room);
     broadcastRoom(room);
   }
@@ -257,6 +262,24 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       room.lastStart = now;
       startRound(room.game, room.players.map((player) => player.id));
       broadcastSnapshots(room);
+    // DEBUG-ROOM: create a debug room, and start one with any number of players.
+    } else if (fields.type === 'debugCreate' && keys.length === 1 && !room) {
+      createRoom(client, true);
+    } else if (
+      fields.type === 'debugStart' && keys.length === 2 && isDebugRole(fields.role) && room?.debug && room.host === client &&
+      now - room.lastStart >= 500
+    ) {
+      room.lastStart = now;
+      startDebugRound(room.game, room.players.map((player) => player.id), client.id, fields.role);
+      broadcastSnapshots(room);
+    // DEBUG-ROOM end
+    // DEBUG-MENU: the host sets the running clock; at 0 the next step ends the round as expired.
+    } else if (
+      fields.type === 'setClock' && keys.length === 2 && typeof fields.seconds === 'number' && room && room.host === client &&
+      room.game.roundState === 'running' && fields.seconds >= 0 && fields.seconds <= room.game.tuning.matchSeconds
+    ) {
+      room.game.timeTicks = secondsToTicks(fields.seconds);
+    // DEBUG-MENU end
     }
   }
 

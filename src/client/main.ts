@@ -5,11 +5,13 @@ import { buildWorld } from '../shared/map/world.js';
 import type { ClientMessage, InputState, RoomMessage, ServerMessage } from '../shared/protocol.js';
 import { DEFAULT_TUNING, TUNABLES, defaultTuning, type Tunable, type Tuning } from '../shared/tuning.js';
 import {
-  createScene, loadBatteryModel, loadCreatureModel, loadHunterModel, type BatteryModel, type CreatureModel, type HunterModel,
+  NIGHT, createScene, loadBatteryModel, loadCreatureModel, loadHunterModel, type BatteryModel, type CreatureModel, type HunterModel,
 } from './scene.js';
 import { VFX, type VfxKey } from './vfx.js';
 import { loadPropModels, type PropModels } from './props.js';
 import { loadSurfaceTextures, type SurfaceTextures } from './surface-meshes.js';
+import { debugRoom } from './debug-room.js'; // DEBUG-ROOM
+import { mountDebugMenu } from './debug-menu.js'; // DEBUG-MENU
 import './style.css';
 
 const element = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
@@ -38,6 +40,8 @@ const overlay = element('#overlay');
 const overlayTitle = element('#overlay-title');
 const overlayDetail = element('#overlay-detail');
 const debugPanel = element('#debug');
+const roomControls = element('#room-controls');
+const menuRoom = element('#menu-room');
 const mapSelect = element<HTMLSelectElement>('#map');
 const vfxToggles = document.querySelectorAll<HTMLInputElement>('#vfx input');
 const mapText = element('#map-name');
@@ -48,11 +52,10 @@ const tuningBody = element<HTMLTableSectionElement>('#tuning-table tbody');
 const tuningReset = element<HTMLButtonElement>('#tuning-reset');
 
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
-// Playtest overlay, off unless the page is opened with ?debug=1. It shows only what this
-// client already received: a Hunter page has no Creature position to put in it.
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
-// With the overlay, &fear=x previews a Hunter's fear effects without a Creature: x from 0 (SAFE)
-// to 3 (as close as IMMEDIATE gets), e.g. 1.5 for halfway through DANGER (see fear.ts).
+// ?debug=1&fear=x opens a page with the debug menu's fear preview on at x: a Hunter's fear effects
+// without a Creature, x from 0 (SAFE) to 3 (as close as IMMEDIATE gets), e.g. 1.5 for halfway
+// through DANGER (see fear.ts).
 const fearParameter = new URLSearchParams(location.search).get('fear');
 const FEAR_PREVIEW = DEBUG && fearParameter !== null && Number.isFinite(Number(fearParameter)) ? Number(fearParameter) : null;
 
@@ -106,6 +109,23 @@ function start(
 
   function send(message: ClientMessage): void {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  }
+
+  const debugMenu = mountDebugMenu(send, FEAR_PREVIEW); // DEBUG-MENU
+
+  // In the lobby the room's controls sit in the header and the tuning table below it; during a
+  // round the page shows only the game, so they move into the debug menu's Room section. Each
+  // keeps its id and listeners wherever it is.
+  const lobbyHomes = [roomControls, tuningPanel].map((control) => ({
+    control, parent: control.parentElement!, next: control.nextSibling,
+  }));
+  function placeRoomControls(inRound: boolean): void {
+    for (const { control, parent, next } of lobbyHomes) {
+      const home = inRound ? menuRoom : parent;
+      if (control.parentElement === home) continue;
+      if (inRound) home.append(control);
+      else parent.insertBefore(control, next);
+    }
   }
 
   function sendInput(): void {
@@ -263,6 +283,10 @@ function start(
   function updateUi(): void {
     const connected = socket.readyState === WebSocket.OPEN;
     const inRound = snapshot !== null;
+    // During a round (the reveal, the play and the result) the page is only the game, filling
+    // the window; everything else is in the debug menu.
+    document.body.classList.toggle('in-round', inRound);
+    placeRoomControls(inRound);
     lobby.hidden = inRound;
     container.hidden = !inRound;
     menu.hidden = !connected || room !== null || closedReason !== null;
@@ -275,9 +299,12 @@ function start(
       waitingText.textContent = room.players < PLAYER_COUNT
         ? 'Waiting for players…'
         : room.host ? 'Everyone is here. Start the match.' : 'Everyone is here. Waiting for the host to start.';
+      // DEBUG-ROOM
+      if (debugRoom.active) waitingText.textContent = 'Debug room: start any time. Empty slots are dummies that stand still.';
     }
     startButton.hidden = !room?.host;
-    startButton.disabled = !connected || !room || room.players < PLAYER_COUNT;
+    startButton.disabled = !connected || !room || (room.players < PLAYER_COUNT && !debugRoom.active); // DEBUG-ROOM: the debugRoom check
+    debugRoom.update(createButton.disabled, startButton.hidden); // DEBUG-ROOM
     startButton.textContent = snapshot && snapshot.roundState !== 'ended' ? 'Restart match' : 'Start match';
 
     // Map choice: a picker for the host between rounds, a label for everyone else. The
@@ -301,7 +328,8 @@ function start(
     roleText.hidden = creatureHpText.hidden = creatureStateText.hidden = teamText.hidden = !inRound;
     timerText.hidden = !inRound;
     proximityText.hidden = batteryText.hidden = snapshot?.role !== 'hunter';
-    debugPanel.hidden = !DEBUG || !inRound;
+    debugPanel.hidden = !inRound;
+    debugMenu.update({ host: room?.host ?? false, running: snapshot?.roundState === 'running' }); // DEBUG-MENU
     overlay.hidden = true;
 
     if (closedReason) {
@@ -327,7 +355,7 @@ function start(
     timerText.textContent = `Time: ${clockText(snapshot.timeRemaining)}`;
     timerText.dataset.state = snapshot.roundState === 'running' && snapshot.timeRemaining <= GAMEPLAY.round.finalWarningSeconds
       ? 'final' : 'normal';
-    if (DEBUG) debugPanel.textContent = debugText(snapshot);
+    debugPanel.textContent = debugText(snapshot);
 
     if (snapshot.role === 'hunter') {
       roleText.textContent = `Role: Hunter ${snapshot.self} (white)`;
@@ -385,9 +413,13 @@ function start(
           statusText.textContent = 'Touch Hunters to incapacitate them; down all four to win, or outlast the timer. Hold Space or the left mouse button to sprint: faster, but visible. Being lit staggers you, drains HP, and leaves you burning: you cannot incapacitate anyone while burning.';
         }
         break;
-      case 'ended':
-        statusText.textContent = `${resultText(snapshot.result)} ${room?.host ? 'Start the match to play again.' : 'Waiting for the host to start the next round.'}`;
+      case 'ended': {
+        const next = room?.host ? 'Start the match to play again.' : 'Waiting for the host to start the next round.';
+        statusText.textContent = `${resultText(snapshot.result)} ${next}`;
+        // The page is only the game now, so the result is shown over it.
+        showOverlay(resultText(snapshot.result), room?.host ? 'Start match is in the debug menu (`).' : next);
         break;
+      }
     }
   }
 
@@ -449,8 +481,9 @@ function start(
   });
 
   function handleKey(event: KeyboardEvent, pressed: boolean): void {
-    // Typing a room code must never be read as movement.
-    if (event.target instanceof HTMLInputElement) return;
+    // Typing a room code, or working a debug menu control, must never be read as movement.
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement
+      || event.target instanceof HTMLTextAreaElement) return;
     const key = keyBindings[event.code];
     if (!key) return;
     event.preventDefault();
@@ -518,8 +551,9 @@ function start(
     // Drop focus so a later Space press works the action button instead of this button.
     startButton.blur();
     releaseInput();
-    send({ type: 'start' });
+    send(debugRoom.active ? debugRoom.startMessage() : { type: 'start' }); // DEBUG-ROOM: was send({ type: 'start' })
   });
+  debugRoom.mount(send, updateUi); // DEBUG-ROOM
 
   // Held flags are refreshed so the server can stop a stalled client's input.
   const inputTimer = window.setInterval(sendInput, 100);
@@ -535,8 +569,12 @@ function start(
 
   // Render the latest authoritative state; the client does not simulate movement or hits.
   let animationFrame = 0;
+  let letterbox = '';
   function draw(): void {
-    scene?.render(snapshot, room?.tuning ?? DEFAULT_TUNING, FEAR_PREVIEW);
+    scene?.render(snapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview); // DEBUG-MENU: was FEAR_PREVIEW
+    if (scene) debugMenu.frame(scene.renderer); // DEBUG-MENU
+    // The letterbox round the game matches the night beyond the map.
+    if (letterbox !== NIGHT.BACKGROUND_COLOR) container.style.background = letterbox = NIGHT.BACKGROUND_COLOR;
     animationFrame = window.requestAnimationFrame(draw);
   }
 

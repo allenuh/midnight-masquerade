@@ -42,69 +42,106 @@ export const VFX = {
 };
 export type VfxKey = keyof typeof VFX;
 
-// Outline thickness as a fraction of the viewport height, so it reads the same at any resolution.
-export const OUTLINE_WIDTH = 1 / 600;
-// The staggered Creature's outline: white and thicker, shown even with the outline toggled off.
-export const STAGGER_OUTLINE_COLOR = '#ffffff';
-export const STAGGER_OUTLINE_WIDTH = 3.5 / 600;
-// The Hunter's shadow tone as a multiple of its body colour.
-const SHADOW_STRENGTH = 0.55;
-// Where the dithered edge between light and shadow sits on N·L, and how wide it is.
-const DITHER_BAND = { start: -0.15, width: 0.5 };
+// The look values below are plain objects, read every frame (syncVfxUniforms, scene.ts and
+// props.ts push them to the shaders), so the debug menu can edit them live. The counts that size
+// the shaders' arrays and the reach textures stay constants.
 
-// Flashlight colour, shared by the beam, the lens glow and the light pool.
-export const LIGHT_COLOR = '#ffe9a8';
-// Beam brightness where it is densest, the share of its length after which it fades out, and
-// the height over which it fades into the floor (so the edge where the cone's lower half meets
-// the floor is soft instead of a hard step in brightness).
-const BEAM_INTENSITY = 0.27;
-const BEAM_FADE_START = 0.8;
-const BEAM_FLOOR_SOFT = 14;
-// Lens glow brightness at its centre.
-const GLOW_INTENSITY = 0.9;
-// The light pool: the flashlight lighting the floors and walls it reaches. It spreads wider than
-// the hit cone (POOL_SPREAD times its angle, at most POOL_MAX_ANGLE) and further (POOL_REACH
-// times the battery stage's range), so it shortens with the battery like the beam. Its
-// brightness, as a share of the surface's own colour, is POOL_INTENSITY at the Hunter, fading
-// smoothly to nothing at its reach (sharpened by POOL_FALLOFF above 1) and softened toward its sides from POOL_SOFT_SIDES of its
-// half-angle. Inside the real hit cone it is brighter by POOL_CORE_BOOST, so the aim still reads.
-// POOL_RAYS rays measure where walls stop it, like the fan.
-export const POOL_SPREAD = 1.8;
-export const POOL_MAX_ANGLE = 170;
-export const POOL_REACH = 1.5;
+// The Hunter and the Creature:
+// - OUTLINE_WIDTH: outline thickness as a fraction of the viewport height, so it reads the same at
+//   any resolution. The staggered Creature's outline is STAGGER_OUTLINE_COLOR and
+//   STAGGER_OUTLINE_WIDTH thick, shown even with the outline toggled off.
+// - SHADOW_STRENGTH: the dithered shading's shadow tone as a multiple of the body colour.
+//   DITHER_START and DITHER_WIDTH: where the dithered edge between light and shadow sits on N·L,
+//   and how wide it is.
+// - Blob shadows: their darkness at the centre, under the Hunters and batteries
+//   (BLOB_SHADOW_OPACITY) and under the hovering Creature (CREATURE_BLOB_SHADOW_OPACITY).
+export const SHADING = {
+  OUTLINE_WIDTH: 1 / 600,
+  STAGGER_OUTLINE_COLOR: '#ffffff',
+  STAGGER_OUTLINE_WIDTH: 3.5 / 600,
+  SHADOW_STRENGTH: 0.55,
+  DITHER_START: -0.15,
+  DITHER_WIDTH: 0.5,
+  BLOB_SHADOW_OPACITY: 0.45,
+  CREATURE_BLOB_SHADOW_OPACITY: 0.3,
+};
+
+// The flashlight:
+// - LIGHT_COLOR, shared by the beam, the lens glow and the light pool.
+// - The beam's brightness where it is densest (BEAM_INTENSITY), the share of its length after
+//   which it fades out (BEAM_FADE_START), and the height over which it fades into the floor
+//   (BEAM_FLOOR_SOFT, so the edge where the cone's lower half meets the floor is soft instead of a
+//   hard step in brightness). GLOW_INTENSITY: the lens glow's brightness at its centre.
+// - The light pool, the flashlight lighting the floors and walls it reaches. It spreads wider than
+//   the hit cone (POOL_SPREAD times its angle, at most POOL_MAX_ANGLE degrees) and further
+//   (POOL_REACH times the battery stage's range), so it shortens with the battery like the beam.
+//   Its brightness, as a share of the surface's own colour, is POOL_INTENSITY at the Hunter, fading
+//   smoothly to nothing at its reach (sharpened by POOL_FALLOFF above 1) and softened toward its
+//   sides from POOL_SOFT_SIDES of its half-angle. Inside the real hit cone it is brighter by
+//   POOL_CORE_BOOST, so the aim still reads.
+// - The flat fan drawn on the floor instead when the light pool is off: FAN_COLOR at FAN_OPACITY.
+export const FLASHLIGHT = {
+  LIGHT_COLOR: '#ffe9a8',
+  BEAM_INTENSITY: 0.27,
+  BEAM_FADE_START: 0.8,
+  BEAM_FLOOR_SOFT: 14,
+  GLOW_INTENSITY: 0.9,
+  POOL_SPREAD: 1.8,
+  POOL_MAX_ANGLE: 170,
+  POOL_REACH: 1.5,
+  POOL_INTENSITY: 1.3,
+  POOL_FALLOFF: 1.0,
+  POOL_SOFT_SIDES: 0.35,
+  POOL_CORE_BOOST: 0.35,
+  FAN_COLOR: '#f2e8a8',
+  FAN_OPACITY: 0.35,
+};
+// POOL_RAYS rays measure where walls stop the pool, like the fan. Pool slots: one per Hunter,
+// each in one component of a vec4.
 export const POOL_RAYS = 32;
-const POOL_INTENSITY = 1.3;
-const POOL_FALLOFF = 1.0;
-const POOL_SOFT_SIDES = 0.35;
-const POOL_CORE_BOOST = 0.35;
-// Pool slots: one per Hunter, each in one component of a vec4.
 export const POOL_SLOTS = 4;
-// Battery glow: each pickup lights the floors and walls within BATTERY_LIGHT_RADIUS in a pale
-// yellow, lighter than the flashlight's, at BATTERY_LIGHT_INTENSITY times the surface's own colour beside it, fading to nothing
-// at the radius. BATTERY_LIGHT_RAYS rays around each battery measure where walls stop it, so it
-// never shows on the far side of a wall. Up to MAX_BATTERY_LIGHTS batteries light their
-// surroundings; any further spawn points on a map only get the halo.
-export const BATTERY_LIGHT_COLOR = '#fff4c4';
-export const BATTERY_LIGHT_RADIUS = 60;
+
+// Battery glow: each pickup lights the floors and walls within BATTERY_LIGHT_RADIUS in
+// BATTERY_LIGHT_COLOR, a pale yellow lighter than the flashlight's, at BATTERY_LIGHT_INTENSITY
+// times the surface's own colour beside it, fading to nothing at the radius. Its halo is
+// HALO_INTENSITY bright at its centre (hidden behind the battery) before it fades out, before the
+// pulse (scene.ts) scales it; its motes are MOTE_INTENSITY times the glow colour (past the bloom
+// threshold).
+export const BATTERY_LIGHT = {
+  BATTERY_LIGHT_COLOR: '#fff4c4',
+  BATTERY_LIGHT_RADIUS: 60,
+  BATTERY_LIGHT_INTENSITY: 2.6,
+  HALO_INTENSITY: 2.6,
+  MOTE_INTENSITY: 2.0,
+};
+// BATTERY_LIGHT_RAYS rays around each battery measure where walls stop its light, so it never
+// shows on the far side of a wall; they are measured out to BATTERY_LIGHT_REACH, the largest radius
+// the light may be given. Up to MAX_BATTERY_LIGHTS batteries light their surroundings; any further
+// spawn points on a map only get the halo.
 export const BATTERY_LIGHT_RAYS = 24;
+export const BATTERY_LIGHT_REACH = 180;
 export const MAX_BATTERY_LIGHTS = 16;
-const BATTERY_LIGHT_INTENSITY = 2.6;
-// Candle light: each candle flame lights what is within CANDLE_LIGHT_RADIUS of it in a warm
-// amber, at CANDLE_LIGHT_INTENSITY times the surface's own colour times its share of its candle's
-// brightness (props.ts), fading to nothing at the
-// radius. All the candles together light a surface by at most CANDLE_LIGHT_MAX times its colour,
-// so the holder or wallpaper right by a flame stays a warm colour rather than blowing out.
-// CANDLE_LIGHT_RAYS rays round each light measure where walls and props taller than its flames
-// stop it. Up to MAX_CANDLE_LIGHTS flames light their surroundings; any more only glow.
-export const CANDLE_LIGHT_COLOR = '#ffa04a';
-export const CANDLE_LIGHT_RADIUS = 100;
+
+// Candle light: each candle flame lights what is within CANDLE_LIGHT_RADIUS of it in
+// CANDLE_LIGHT_COLOR, a warm amber, at CANDLE_LIGHT_INTENSITY times the surface's own colour times
+// its share of its candle's brightness (props.ts), fading to nothing at the radius. All the candles
+// together light a surface by at most CANDLE_LIGHT_MAX times its colour, so the holder or wallpaper
+// right by a flame stays a warm colour rather than blowing out. Each flame's halo (props.ts) is
+// CANDLE_HALO_INTENSITY bright at its centre.
+export const CANDLE_LIGHT = {
+  CANDLE_LIGHT_COLOR: '#ffa04a',
+  CANDLE_LIGHT_RADIUS: 100,
+  CANDLE_LIGHT_INTENSITY: 2.2,
+  CANDLE_LIGHT_MAX: 1.3,
+  CANDLE_HALO_INTENSITY: 2.6,
+};
+// CANDLE_LIGHT_RAYS rays round each light measure where walls and props taller than its flames stop
+// it, out to CANDLE_LIGHT_REACH, the largest radius it may be given. Up to MAX_CANDLE_LIGHTS flames
+// light their surroundings; any more only glow.
 export const CANDLE_LIGHT_RAYS = 24;
+export const CANDLE_LIGHT_REACH = 300;
 export const MAX_CANDLE_LIGHTS = 48;
-const CANDLE_LIGHT_INTENSITY = 2.2;
-const CANDLE_LIGHT_MAX = 1.3;
-// The halo's brightness at its centre (hidden behind the battery) before it fades out, before
-// the pulse (scene.ts) scales it.
-const HALO_INTENSITY = 2.6;
+
 // The battery's own body is lit, PlayStation style (createBatteryMaterial): by the night's
 // ambient and moonlight like the floors and, with the glow off, a key, BATTERY_KEY_COLOR at
 // BATTERY_KEY_INTENSITY, falling to half at BATTERY_KEY_FALLOFF units from the key's point.
@@ -134,27 +171,24 @@ const BATTERY_CHARGE_SELF_LIGHT = 0.6;
 const BATTERY_CHARGE_BOOST = 1.8;
 // Motes of light rising round each battery: MOTE_COUNT of them, each MOTE_PIXELS CSS pixels
 // square, climbing from MOTE_FROM to MOTE_TO (battery heights from its middle) over
-// MOTE_LIFE seconds on a ring MOTE_RADIUS battery heights out, at MOTE_INTENSITY times the glow
-// colour (past the bloom threshold).
+// MOTE_LIFE seconds on a ring MOTE_RADIUS battery heights out.
 export const MOTE_COUNT = 8;
 export const MOTE_PIXELS = 2;
 const MOTE_FROM = -0.4;
 const MOTE_TO = 1.3;
 const MOTE_LIFE = 2.6;
 const MOTE_RADIUS = 0.36;
-const MOTE_INTENSITY = 2.0;
 // PlayStation colour depth: levels per channel, in display (sRGB) space.
 const PS1_COLOR_LEVELS = 32;
-// Blob shadows: their darkness at the centre, under the Hunters and batteries and under the
-// hovering Creature.
-const BLOB_SHADOW_OPACITY = 0.45;
-const CREATURE_BLOB_SHADOW_OPACITY = 0.3;
 
 // Shared by the patched materials. Only one scene exists at a time, so these are module-level.
 export const VFX_UNIFORMS = {
   vfxLightDirection: { value: new Vector3(0, 1, 0) },
   vfxDitherShading: { value: 1 },
   vfxAspect: { value: 1 },
+  vfxShadowStrength: { value: SHADING.SHADOW_STRENGTH },
+  vfxDitherStart: { value: SHADING.DITHER_START },
+  vfxDitherWidth: { value: SHADING.DITHER_WIDTH },
 };
 
 // 4x4 ordered-dither threshold in [0, 1) for a pixel coordinate, built from the 2x2 Bayer matrix.
@@ -169,14 +203,20 @@ float vfxBayer4(vec2 a) { return vfxBayer2(0.5 * a) * 0.25 + vfxBayer2(a) + 1.0 
 function ditheredBodyShader(shader: WebGLProgramParametersWithUniforms): void {
   shader.uniforms.vfxLightDirection = VFX_UNIFORMS.vfxLightDirection;
   shader.uniforms.vfxDitherShading = VFX_UNIFORMS.vfxDitherShading;
+  shader.uniforms.vfxShadowStrength = VFX_UNIFORMS.vfxShadowStrength;
+  shader.uniforms.vfxDitherStart = VFX_UNIFORMS.vfxDitherStart;
+  shader.uniforms.vfxDitherWidth = VFX_UNIFORMS.vfxDitherWidth;
   shader.fragmentShader = /* glsl */ `
 uniform vec3 vfxLightDirection;
 uniform float vfxDitherShading;
+uniform float vfxShadowStrength;
+uniform float vfxDitherStart;
+uniform float vfxDitherWidth;
 ${BAYER_GLSL}
 ` + shader.fragmentShader.replace('#include <emissivemap_fragment>', /* glsl */ `#include <emissivemap_fragment>
 {
-  float vfxLight = clamp((dot(normal, vfxLightDirection) - ${DITHER_BAND.start.toFixed(3)}) / ${DITHER_BAND.width.toFixed(3)}, 0.0, 1.0);
-  float vfxShade = vfxLight > vfxBayer4(gl_FragCoord.xy) ? 1.0 : ${SHADOW_STRENGTH.toFixed(3)};
+  float vfxLight = clamp((dot(normal, vfxLightDirection) - vfxDitherStart) / vfxDitherWidth, 0.0, 1.0);
+  float vfxShade = vfxLight > vfxBayer4(gl_FragCoord.xy) ? 1.0 : vfxShadowStrength;
   totalEmissiveRadiance *= mix(1.0, vfxShade, vfxDitherShading);
 }`);
 }
@@ -193,7 +233,7 @@ export function createOutlineMaterial(): ShaderMaterial {
   return new ShaderMaterial({
     side: BackSide,
     uniforms: {
-      vfxOutlineWidth: { value: OUTLINE_WIDTH },
+      vfxOutlineWidth: { value: SHADING.OUTLINE_WIDTH },
       vfxOutlineColor: { value: new Color('#000000') },
       vfxAspect: VFX_UNIFORMS.vfxAspect,
     },
@@ -247,7 +287,7 @@ float vfxRoundLight(vec3 world, vec3 normal, vec3 center, float radius, sampler2
 // and `flashOn` is how bright each slot's light is: 0 when off, 1 when on, in between while the
 // viewer's own light stutters near the Creature (fear.ts). `flashReach[ray]` is how far each slot's ray
 // travels before a wall, across the pool's angle (the same wall test as the fan and the server).
-// The angles and heights are the same for every Hunter.
+// The angles and heights are the same for every Hunter; the rest is FLASHLIGHT's.
 export const POOL_UNIFORMS = {
   flashOrigin: { value: Array.from({ length: POOL_SLOTS }, () => new Vector4()) },
   flashOn: { value: new Vector4() },
@@ -256,7 +296,12 @@ export const POOL_UNIFORMS = {
   flashCoreHalfAngle: { value: 1 },
   flashLensY: { value: 0 },
   flashFloorY: { value: 0 },
-  flashColor: { value: new Color(LIGHT_COLOR) },
+  flashColor: { value: new Color(FLASHLIGHT.LIGHT_COLOR) },
+  flashIntensity: { value: FLASHLIGHT.POOL_INTENSITY },
+  flashFalloff: { value: FLASHLIGHT.POOL_FALLOFF },
+  flashSoftSides: { value: FLASHLIGHT.POOL_SOFT_SIDES },
+  flashCoreBoost: { value: FLASHLIGHT.POOL_CORE_BOOST },
+  flashPoolReach: { value: FLASHLIGHT.POOL_REACH },
 };
 
 // The battery lights' state, shared by every floor and wall material like POOL_UNIFORMS. Each
@@ -271,7 +316,9 @@ export const BATTERY_LIGHT_UNIFORMS = {
       MAX_BATTERY_LIGHTS, RedFormat, FloatType),
   },
   batteryLightY: { value: 0 },
-  batteryLightColor: { value: new Color(BATTERY_LIGHT_COLOR) },
+  batteryLightColor: { value: new Color(BATTERY_LIGHT.BATTERY_LIGHT_COLOR) },
+  batteryLightRadius: { value: BATTERY_LIGHT.BATTERY_LIGHT_RADIUS },
+  batteryLightIntensity: { value: BATTERY_LIGHT.BATTERY_LIGHT_INTENSITY },
 };
 
 // The candle lights' state, shared like BATTERY_LIGHT_UNIFORMS. Each slot of `candleLights` is
@@ -283,7 +330,10 @@ export const CANDLE_LIGHT_UNIFORMS = {
     value: new DataTexture(new Float32Array(CANDLE_LIGHT_RAYS * MAX_CANDLE_LIGHTS), CANDLE_LIGHT_RAYS,
       MAX_CANDLE_LIGHTS, RedFormat, FloatType),
   },
-  candleLightColor: { value: new Color(CANDLE_LIGHT_COLOR) },
+  candleLightColor: { value: new Color(CANDLE_LIGHT.CANDLE_LIGHT_COLOR) },
+  candleLightRadius: { value: CANDLE_LIGHT.CANDLE_LIGHT_RADIUS },
+  candleLightIntensity: { value: CANDLE_LIGHT.CANDLE_LIGHT_INTENSITY },
+  candleLightMax: { value: CANDLE_LIGHT.CANDLE_LIGHT_MAX },
 };
 
 // The flashlight lighting a floor or wall material (MeshLambertMaterial): every lit slot adds
@@ -312,13 +362,23 @@ uniform float flashCoreHalfAngle;
 uniform float flashLensY;
 uniform float flashFloorY;
 uniform vec3 flashColor;
+uniform float flashIntensity;
+uniform float flashFalloff;
+uniform float flashSoftSides;
+uniform float flashCoreBoost;
+uniform float flashPoolReach;
 uniform vec4 batteryLights[${MAX_BATTERY_LIGHTS}];
 uniform sampler2D batteryLightReach;
 uniform float batteryLightY;
 uniform vec3 batteryLightColor;
+uniform float batteryLightRadius;
+uniform float batteryLightIntensity;
 uniform vec4 candleLights[${MAX_CANDLE_LIGHTS}];
 uniform sampler2D candleLightReach;
 uniform vec3 candleLightColor;
+uniform float candleLightRadius;
+uniform float candleLightIntensity;
+uniform float candleLightMax;
 ${ANGLE_GLSL}
 #ifdef FLASHLIT_PROP
 #define FLASH_MARGIN ${PROP_LIGHT_MARGIN.toFixed(1)}
@@ -344,14 +404,14 @@ ${ROUND_LIGHT_GLSL}float vfxFlashlight(vec3 world, vec3 normal) {
     int first = int(min(floor(ray), float(${POOL_RAYS - 1})));
     float reach = mix(flashReach[first][slot], flashReach[first + 1][slot], ray - float(first));
     float wall = 1.0 - smoothstep(reach + FLASH_MARGIN, reach + FLASH_MARGIN + 2.0, distance);
-    float fade = pow(1.0 - smoothstep(0.0, 1.0, distance / origin.w), ${POOL_FALLOFF.toFixed(3)});
-    float sides = 1.0 - smoothstep(${POOL_SOFT_SIDES.toFixed(3)}, 1.0, abs(across));
+    float fade = pow(1.0 - smoothstep(0.0, 1.0, distance / origin.w), flashFalloff);
+    float sides = 1.0 - smoothstep(flashSoftSides, 1.0, abs(across));
     // The core: the hit cone, out to the battery stage's range.
     float core = (1.0 - smoothstep(flashCoreHalfAngle * 0.75, flashCoreHalfAngle, abs(angle)))
-      * (1.0 - smoothstep(0.8, 1.0, distance * ${POOL_REACH.toFixed(3)} / origin.w));
+      * (1.0 - smoothstep(0.8, 1.0, distance * flashPoolReach / origin.w));
     vec3 toLens = normalize(vec3(origin.x, flashLensY, origin.y) - world);
     float facing = smoothstep(-0.1, 0.3, dot(normal, toLens));
-    total += (${POOL_INTENSITY.toFixed(3)} * sides + ${POOL_CORE_BOOST.toFixed(3)} * core) * fade * wall * facing * flashOn[slot];
+    total += (flashIntensity * sides + flashCoreBoost * core) * fade * wall * facing * flashOn[slot];
   }
   return total;
 }
@@ -363,8 +423,8 @@ float vfxBatteryLight(vec3 world, vec3 normal) {
   for (int slot = 0; slot < ${MAX_BATTERY_LIGHTS}; slot++) {
     vec4 light = batteryLights[slot];
     if (light.z <= 0.0) continue;
-    total += ${BATTERY_LIGHT_INTENSITY.toFixed(3)} * light.z * vfxRoundLight(world, normal,
-      vec3(light.x, batteryLightY, light.y), ${BATTERY_LIGHT_RADIUS.toFixed(1)}, batteryLightReach, slot, ${BATTERY_LIGHT_RAYS});
+    total += batteryLightIntensity * light.z * vfxRoundLight(world, normal,
+      vec3(light.x, batteryLightY, light.y), batteryLightRadius, batteryLightReach, slot, ${BATTERY_LIGHT_RAYS});
   }
   return total;
 }
@@ -376,10 +436,10 @@ float vfxCandleLight(vec3 world, vec3 normal) {
   for (int slot = 0; slot < ${MAX_CANDLE_LIGHTS}; slot++) {
     vec4 light = candleLights[slot];
     if (light.w <= 0.0) continue;
-    total += ${CANDLE_LIGHT_INTENSITY.toFixed(3)} * light.w * vfxRoundLight(world, normal,
-      light.xyz, ${CANDLE_LIGHT_RADIUS.toFixed(1)}, candleLightReach, slot, ${CANDLE_LIGHT_RAYS});
+    total += candleLightIntensity * light.w * vfxRoundLight(world, normal,
+      light.xyz, candleLightRadius, candleLightReach, slot, ${CANDLE_LIGHT_RAYS});
   }
-  return min(total, ${CANDLE_LIGHT_MAX.toFixed(3)});
+  return min(total, candleLightMax);
 }`)
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
 reflectedLight.directDiffuse += diffuseColor.rgb * flashColor * vfxFlashlight(vFlashWorld, normalize(vFlashNormal));
@@ -398,12 +458,12 @@ export function flashlitPropShader(shader: WebGLProgramParametersWithUniforms): 
 }
 
 // A soft round shadow on the floor: black, fading out from the centre. Drawn on a unit circle
-// lying flat, scaled to the thing it sits under.
+// lying flat, scaled to the thing it sits under. Its opacity is set every frame (scene.ts).
 export function createBlobShadowMaterial(creature = false): ShaderMaterial {
   return new ShaderMaterial({
     transparent: true,
     depthWrite: false,
-    uniforms: { opacity: { value: creature ? CREATURE_BLOB_SHADOW_OPACITY : BLOB_SHADOW_OPACITY } },
+    uniforms: { opacity: { value: creature ? SHADING.CREATURE_BLOB_SHADOW_OPACITY : SHADING.BLOB_SHADOW_OPACITY } },
     vertexShader: /* glsl */ `
 varying vec2 vOffset;
 void main() {
@@ -419,6 +479,14 @@ void main() {
   });
 }
 
+// The beam's shape, shared by every Hunter's beam material.
+const BEAM_UNIFORMS = {
+  beamIntensity: { value: FLASHLIGHT.BEAM_INTENSITY },
+  beamFadeStart: { value: FLASHLIGHT.BEAM_FADE_START },
+  beamFloorSoft: { value: FLASHLIGHT.BEAM_FLOOR_SOFT },
+  glowIntensity: { value: FLASHLIGHT.GLOW_INTENSITY },
+};
+
 // The volumetric beam: an open cone from the lens, drawn additively on both sides. It is
 // densest where the view looks straight through it, fades toward its silhouette and over the
 // last part of its length (from BEAM_FADE_START) and into the floor, and is cut where the flashlight's rays meet a wall: `reaches` holds the distance
@@ -432,7 +500,8 @@ export function createBeamMaterial(rays: number): ShaderMaterial {
     blending: AdditiveBlending,
     defines: { BEAM_RAYS: rays },
     uniforms: {
-      lightColor: { value: new Color(LIGHT_COLOR) },
+      ...BEAM_UNIFORMS,
+      lightColor: { value: new Color(FLASHLIGHT.LIGHT_COLOR) },
       lightOrigin: { value: new Vector3() },
       lightApex: { value: new Vector3() },
       lightFacing: { value: 0 },
@@ -461,6 +530,9 @@ uniform float lightRange;
 uniform float lightHalfAngle;
 uniform float floorY;
 uniform float reaches[BEAM_RAYS + 1];
+uniform float beamIntensity;
+uniform float beamFadeStart;
+uniform float beamFloorSoft;
 varying vec3 vWorld;
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
@@ -477,10 +549,10 @@ void main() {
   if (distance > reach) discard;
   float wall = 1.0 - smoothstep(reach - 8.0, reach, distance);
   float along = clamp(length(vWorld - lightApex) / lightRange, 0.0, 1.0);
-  float fade = 1.0 - smoothstep(${BEAM_FADE_START.toFixed(3)}, 1.0, along);
+  float fade = 1.0 - smoothstep(beamFadeStart, 1.0, along);
   float facingView = abs(dot(normalize(vViewNormal), normalize(-vViewPosition)));
-  float floorFade = smoothstep(0.0, ${BEAM_FLOOR_SOFT.toFixed(1)}, vWorld.y - floorY);
-  float strength = ${BEAM_INTENSITY.toFixed(3)} * facingView * facingView * fade * wall * floorFade;
+  float floorFade = smoothstep(0.0, beamFloorSoft, vWorld.y - floorY);
+  float strength = beamIntensity * facingView * facingView * fade * wall * floorFade;
   gl_FragColor = vec4(lightColor * strength, 1.0);
 }`,
   });
@@ -493,7 +565,7 @@ export function createGlowMaterial(): ShaderMaterial {
     transparent: true,
     depthWrite: false,
     blending: AdditiveBlending,
-    uniforms: { lightColor: { value: new Color(LIGHT_COLOR) } },
+    uniforms: { lightColor: { value: new Color(FLASHLIGHT.LIGHT_COLOR) }, glowIntensity: BEAM_UNIFORMS.glowIntensity },
     vertexShader: /* glsl */ `
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
@@ -505,27 +577,29 @@ void main() {
 }`,
     fragmentShader: /* glsl */ `
 uniform vec3 lightColor;
+uniform float glowIntensity;
 varying vec3 vViewNormal;
 varying vec3 vViewPosition;
 void main() {
   float facingView = abs(dot(normalize(vViewNormal), normalize(-vViewPosition)));
-  gl_FragColor = vec4(lightColor * ${GLOW_INTENSITY.toFixed(3)} * pow(facingView, 3.0), 1.0);
+  gl_FragColor = vec4(lightColor * glowIntensity * pow(facingView, 3.0), 1.0);
 }`,
   });
 }
 
 // A battery's halo (or, in another `color`, a candle flame's): a flat disc facing the camera
-// through the battery's middle, drawn
-// additively and brightest at its centre, fading out to its rim. It is drawn before the battery
+// through the battery's middle, drawn additively and brightest at its centre, fading out to its
+// rim. Drawn on a unit circle, scaled to the halo's radius. It is drawn before the battery
 // (scene.ts orders them), which then covers its middle, so only the glow round the battery
 // shows; it still sits behind anything nearer the camera. Not `transparent`, so it is drawn in
-// that order with the opaque meshes.
-export function createHaloMaterial(color = BATTERY_LIGHT_COLOR): ShaderMaterial {
+// that order with the opaque meshes. Its colour and `haloIntensity` are set every frame.
+export function createHaloMaterial(color = BATTERY_LIGHT.BATTERY_LIGHT_COLOR, intensity = BATTERY_LIGHT.HALO_INTENSITY): ShaderMaterial {
   return new ShaderMaterial({
     depthWrite: false,
     blending: AdditiveBlending,
     uniforms: {
       haloColor: { value: new Color(color) },
+      haloIntensity: { value: intensity },
       haloPulse: { value: 1 },
     },
     vertexShader: /* glsl */ `
@@ -536,11 +610,12 @@ void main() {
 }`,
     fragmentShader: /* glsl */ `
 uniform vec3 haloColor;
+uniform float haloIntensity;
 uniform float haloPulse;
 varying vec2 vOffset;
 void main() {
   float fade = 1.0 - min(length(vOffset), 1.0);
-  gl_FragColor = vec4(haloColor * ${HALO_INTENSITY.toFixed(3)} * haloPulse * fade * fade, 1.0);
+  gl_FragColor = vec4(haloColor * haloIntensity * haloPulse * fade * fade, 1.0);
 }`,
   });
 }
@@ -556,9 +631,38 @@ export const BATTERY_BODY_UNIFORMS = {
   batteryMoonDirection: { value: new Vector3(0, 1, 0) },
   batteryGlowPulse: { value: 1 },
   batteryGlowOn: { value: 1 },
-  batteryGlowColor: { value: new Color(BATTERY_LIGHT_COLOR) },
+  batteryGlowColor: { value: new Color(BATTERY_LIGHT.BATTERY_LIGHT_COLOR) },
   batteryTime: { value: 0 },
 };
+
+// Pushes the look values above into the uniforms every material shares. Once a frame, from
+// scene.ts; the per-material ones (halos, motes, blob shadows, the Creature's outline) are set
+// where those materials are used.
+export function syncVfxUniforms(): void {
+  VFX_UNIFORMS.vfxShadowStrength.value = SHADING.SHADOW_STRENGTH;
+  VFX_UNIFORMS.vfxDitherStart.value = SHADING.DITHER_START;
+  VFX_UNIFORMS.vfxDitherWidth.value = SHADING.DITHER_WIDTH;
+  OUTLINE_MATERIAL.uniforms.vfxOutlineWidth.value = SHADING.OUTLINE_WIDTH;
+  POOL_UNIFORMS.flashColor.value.set(FLASHLIGHT.LIGHT_COLOR);
+  POOL_UNIFORMS.flashIntensity.value = FLASHLIGHT.POOL_INTENSITY;
+  POOL_UNIFORMS.flashFalloff.value = FLASHLIGHT.POOL_FALLOFF;
+  POOL_UNIFORMS.flashSoftSides.value = FLASHLIGHT.POOL_SOFT_SIDES;
+  POOL_UNIFORMS.flashCoreBoost.value = FLASHLIGHT.POOL_CORE_BOOST;
+  POOL_UNIFORMS.flashPoolReach.value = FLASHLIGHT.POOL_REACH;
+  BEAM_UNIFORMS.beamIntensity.value = FLASHLIGHT.BEAM_INTENSITY;
+  BEAM_UNIFORMS.beamFadeStart.value = FLASHLIGHT.BEAM_FADE_START;
+  BEAM_UNIFORMS.beamFloorSoft.value = FLASHLIGHT.BEAM_FLOOR_SOFT;
+  BEAM_UNIFORMS.glowIntensity.value = FLASHLIGHT.GLOW_INTENSITY;
+  BATTERY_LIGHT_UNIFORMS.batteryLightColor.value.set(BATTERY_LIGHT.BATTERY_LIGHT_COLOR);
+  // The reaches were measured out to BATTERY_LIGHT_REACH, so the light never goes past it.
+  BATTERY_LIGHT_UNIFORMS.batteryLightRadius.value = Math.min(BATTERY_LIGHT.BATTERY_LIGHT_RADIUS, BATTERY_LIGHT_REACH);
+  BATTERY_LIGHT_UNIFORMS.batteryLightIntensity.value = BATTERY_LIGHT.BATTERY_LIGHT_INTENSITY;
+  BATTERY_BODY_UNIFORMS.batteryGlowColor.value.set(BATTERY_LIGHT.BATTERY_LIGHT_COLOR);
+  CANDLE_LIGHT_UNIFORMS.candleLightColor.value.set(CANDLE_LIGHT.CANDLE_LIGHT_COLOR);
+  CANDLE_LIGHT_UNIFORMS.candleLightRadius.value = Math.min(CANDLE_LIGHT.CANDLE_LIGHT_RADIUS, CANDLE_LIGHT_REACH);
+  CANDLE_LIGHT_UNIFORMS.candleLightIntensity.value = CANDLE_LIGHT.CANDLE_LIGHT_INTENSITY;
+  CANDLE_LIGHT_UNIFORMS.candleLightMax.value = CANDLE_LIGHT.CANDLE_LIGHT_MAX;
+}
 
 // The flash as a charge reaches the cap: 1 that moment, fading to 0 by the next sweep.
 export function batteryChargeFlash(seconds: number): number {
@@ -647,14 +751,14 @@ void main() {
 // The motes rising round a battery (see MOTE_COUNT): `Points` at the battery's middle, each
 // point's `seed` its angle round the battery and its phase in the climb. Square, unsmoothed
 // points, the PlayStation way, drawn additively; `pointSize` is MOTE_PIXELS in device pixels.
-// `batteryHeight` scales the climb and the ring.
+// `batteryHeight` scales the climb and the ring. Its colour is set every frame (scene.ts).
 export function createMoteMaterial(pointSize: number, batteryHeight: number): ShaderMaterial {
   return new ShaderMaterial({
     depthWrite: false,
     blending: AdditiveBlending,
     uniforms: {
       batteryTime: BATTERY_BODY_UNIFORMS.batteryTime,
-      moteColor: { value: new Color(BATTERY_LIGHT_COLOR).multiplyScalar(MOTE_INTENSITY) },
+      moteColor: { value: new Color(BATTERY_LIGHT.BATTERY_LIGHT_COLOR).multiplyScalar(BATTERY_LIGHT.MOTE_INTENSITY) },
       moteSize: { value: pointSize },
     },
     vertexShader: /* glsl */ `
