@@ -66,9 +66,10 @@ export const GAMEPLAY = {
     burnSeconds: 3,
   },
   // Creature sprint (the GDD's Dash): held Space / left mouse button replaces speed.creature with
-  // sprint.speed and reveals the Creature. The cooldown runs after every sprint before the next.
-  // Keep speed / tickRate below arena.wallThickness so one step can never cross a wall.
-  sprint: { speed: 180, cooldownSeconds: 0.2 },
+  // sprint.speed (20 faster than its walk) and reveals the Creature. The cooldown runs after every
+  // sprint before the next. Keep speed / tickRate below arena.wallThickness so one step can never
+  // cross a wall.
+  sprint: { speed: 90, cooldownSeconds: 0.2 },
   // Total beam-seconds of teammate flashlight exposure that revives a downed Hunter. Beams
   // stack (two beams revive in half the time) and progress is kept when the light leaves.
   revive: { seconds: 6 },

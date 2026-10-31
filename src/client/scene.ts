@@ -64,10 +64,10 @@ const FAN_RAYS = 32;
 // pose, which is the idle.
 const HUNTER_HEIGHT = 1.8 * 2 * GAMEPLAY.playerRadius;
 const WALK_FADE_SECONDS = 0.15;
-// The Creature model is scaled to this height (3x the collision sphere's diameter, towering
+// The Creature model is scaled to this height (2.4x the collision sphere's diameter, towering
 // over a Hunter) and hovers with its lowest point CREATURE_HOVER above the floor.
 // Presentation only, like the Hunter's.
-const CREATURE_HEIGHT = 3 * 2 * GAMEPLAY.playerRadius;
+const CREATURE_HEIGHT = 2.4 * 2 * GAMEPLAY.playerRadius;
 const CREATURE_HOVER = 3;
 // How the players look and move, read every frame (the debug menu edits them live):
 // - Flat Hunter colours: SELF_COLOR for the viewer's own Hunter, TEAMMATE_COLOR for every other,
@@ -79,7 +79,7 @@ const CREATURE_HOVER = 3;
 //   moving, FLOAT_RATE_SPRINT while sprinting, easing between rates over FLOAT_RATE_EASE seconds.
 // - The server's Creature facing jumps straight to the held direction, so the model eases round
 //   to it at CREATURE_TURN_SPEED (radians per second), and leans CREATURE_LEAN radians into its
-//   travel while moving.
+//   travel while moving, CREATURE_SPRINT_LEAN while sprinting.
 // - The emissive multiplier (r, g, b) on the Creature's texture: CREATURE_TINT, its own colours,
 //   and CREATURE_BURNING_TINT, the ember glow it takes while burning (unable to tag). Components
 //   above 1 brighten it; the charcoal robe needs a strong red to glow.
@@ -87,18 +87,19 @@ const CREATURE_HOVER = 3;
 //   stretches along its body.
 // - LENS_GLOW_RADIUS: the soft glow drawn at the flashlight's lens.
 export const CHARACTERS = {
-  SELF_COLOR: '#e6e7e4',
+  SELF_COLOR: '#dddfdb',
   TEAMMATE_COLOR: '#8fa3b8',
-  DOWN_COLOR: '#8a3a4a',
+  DOWN_COLOR: '#563a3a',
   WALK_RATE_SPEED: 38.5,
   FLOAT_RATE_MOVING: 1.6,
   FLOAT_RATE_SPRINT: 2.4,
   FLOAT_RATE_EASE: 0.25,
-  CREATURE_TURN_SPEED: 3 * Math.PI,
+  CREATURE_TURN_SPEED: 7,
   CREATURE_LEAN: 0.15,
+  CREATURE_SPRINT_LEAN: 0.25,
   CREATURE_TINT: [1, 1, 1],
-  CREATURE_BURNING_TINT: [6, 2, 0.8],
-  HUNTER_SHADOW_RADIUS: 1.1 * GAMEPLAY.playerRadius,
+  CREATURE_BURNING_TINT: [7.3, 3.3, 1],
+  HUNTER_SHADOW_RADIUS: 14.5,
   CREATURE_SHADOW_RADIUS: 1.6 * GAMEPLAY.playerRadius,
   LENS_GLOW_RADIUS: 5,
 };
@@ -120,10 +121,10 @@ const BATTERY_KEY_UP = 0.35;
 // the cap (vfx.ts). BATTERY_SHADOW_RADIUS is the blob shadow under each battery.
 export const BATTERY_LOOK = {
   BATTERY_HALO_RADIUS: 1.1 * BATTERY_HEIGHT,
-  BATTERY_PULSE_DEPTH: 0.15,
-  BATTERY_PULSE_RATE: 0.6,
-  BATTERY_CHARGE_FLASH: 0.25,
-  BATTERY_SHADOW_RADIUS: 0.45 * BATTERY_HEIGHT,
+  BATTERY_PULSE_DEPTH: 0.12,
+  BATTERY_PULSE_RATE: 0.35,
+  BATTERY_CHARGE_FLASH: 0,
+  BATTERY_SHADOW_RADIUS: 11,
 };
 // Draw order among the opaque meshes: a battery's halo after everything else at the default
 // order 0, then the battery, so the battery covers the halo's middle, then its motes, which
@@ -138,10 +139,10 @@ const MOTE_RENDER_ORDER = 3;
 // the dark, though the moon's direction shades them (VFX.ditherShading); the batteries are lit by
 // their own glow. Read every frame.
 export const NIGHT = {
-  AMBIENT_SKY: '#8fa0c8',
-  AMBIENT_GROUND: '#2a2630',
-  AMBIENT_INTENSITY: 0.45,
-  MOONLIGHT_COLOR: '#c8d2ff',
+  AMBIENT_SKY: '#1437c5',
+  AMBIENT_GROUND: '#27244d',
+  AMBIENT_INTENSITY: 0.69,
+  MOONLIGHT_COLOR: '#b1c2fc',
   MOONLIGHT_INTENSITY: 0.45,
   MOON_X: -300,
   MOON_Y: 900,
@@ -792,12 +793,15 @@ export function createScene(
         creatureLastPosition = { ...position };
       }
       const turn = wrapAngle(creatureView.facing - creatureFacing);
-      const { CREATURE_LEAN, FLOAT_RATE_EASE } = CHARACTERS;
+      const { CREATURE_LEAN, CREATURE_SPRINT_LEAN, FLOAT_RATE_EASE } = CHARACTERS;
       creatureFacing = wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CHARACTERS.CREATURE_TURN_SPEED * deltaSeconds));
       mesh.group.rotation.y = -creatureFacing;
-      // Leaning forward is a negative turn about the pose's Z (its +X is the facing).
-      const leanStep = (CREATURE_LEAN * deltaSeconds) / FLOAT_RATE_EASE;
-      creatureLean += Math.max(-leanStep, Math.min(leanStep, (creatureMoving ? CREATURE_LEAN : 0) - creatureLean));
+      // Leaning forward is a negative turn about the pose's Z (its +X is the facing). It eases to
+      // the sprint lean, the moving lean or upright, at a rate that reaches the deepest one in
+      // FLOAT_RATE_EASE.
+      const leanTarget = creatureView.sprinting ? CREATURE_SPRINT_LEAN : creatureMoving ? CREATURE_LEAN : 0;
+      const leanStep = (Math.max(CREATURE_LEAN, CREATURE_SPRINT_LEAN) * deltaSeconds) / FLOAT_RATE_EASE;
+      creatureLean += Math.max(-leanStep, Math.min(leanStep, leanTarget - creatureLean));
       mesh.pose.rotation.z = -creatureLean;
       const rate = creatureView.sprinting ? CHARACTERS.FLOAT_RATE_SPRINT : creatureMoving ? CHARACTERS.FLOAT_RATE_MOVING : 1;
       mesh.float.timeScale += (rate - mesh.float.timeScale) * Math.min(1, deltaSeconds / FLOAT_RATE_EASE);

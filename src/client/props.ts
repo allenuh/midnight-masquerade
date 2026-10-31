@@ -23,7 +23,7 @@ const MODEL_URLS = import.meta.glob<string>('./assets/*.glb', { query: '?url', i
 // candle's halo is a camera-facing disc HALO_RADIUS across its flames' middle, drawn after the
 // opaque meshes like the battery halos (scene.ts).
 const FLICKER_RATES = [7.3, 17.9];
-export const CANDLE_FLAMES = { FLICKER_STRETCH: 0.12, LIGHT_FLICKER: 0.15, HALO_RADIUS: 6 };
+export const CANDLE_FLAMES = { FLICKER_STRETCH: 0, LIGHT_FLICKER: 0.06, HALO_RADIUS: 2 };
 const HALO_RENDER_ORDER = 1;
 // A candle's light is cast from no higher than this below the wall tops, so one standing high
 // (a candelabra on a table, or on crates) never shines over a wall.
@@ -103,6 +103,9 @@ export function buildProps(world: World, models: PropModels, facing: Quaternion)
   // The first MAX_CANDLE_LIGHTS flames light their surroundings (vfx.ts). They never move, so
   // their rays are measured once, against the walls and the props taller than their flames, out to
   // the largest radius the light may be given.
+  if (lights.length > MAX_CANDLE_LIGHTS) {
+    console.warn(`This map has ${lights.length} candle lights; only the first ${MAX_CANDLE_LIGHTS} light their surroundings (MAX_CANDLE_LIGHTS in vfx.ts).`);
+  }
   const slots = CANDLE_LIGHT_UNIFORMS.candleLights.value;
   for (const slot of slots) slot.set(0, 0, 0, 0);
   const reachData = CANDLE_LIGHT_UNIFORMS.candleLightReach.value.image.data as Float32Array;

@@ -58,7 +58,7 @@ export type VfxKey = keyof typeof VFX;
 export const SHADING = {
   OUTLINE_WIDTH: 1 / 600,
   STAGGER_OUTLINE_COLOR: '#ffffff',
-  STAGGER_OUTLINE_WIDTH: 3.5 / 600,
+  STAGGER_OUTLINE_WIDTH: 0.0012,
   SHADOW_STRENGTH: 0.55,
   DITHER_START: -0.15,
   DITHER_WIDTH: 0.5,
@@ -108,11 +108,11 @@ export const POOL_SLOTS = 4;
 // pulse (scene.ts) scales it; its motes are MOTE_INTENSITY times the glow colour (past the bloom
 // threshold).
 export const BATTERY_LIGHT = {
-  BATTERY_LIGHT_COLOR: '#fff4c4',
-  BATTERY_LIGHT_RADIUS: 60,
-  BATTERY_LIGHT_INTENSITY: 2.6,
-  HALO_INTENSITY: 2.6,
-  MOTE_INTENSITY: 2.0,
+  BATTERY_LIGHT_COLOR: '#fae9a3',
+  BATTERY_LIGHT_RADIUS: 99,
+  BATTERY_LIGHT_INTENSITY: 1.85,
+  HALO_INTENSITY: 0,
+  MOTE_INTENSITY: 1.2,
 };
 // BATTERY_LIGHT_RAYS rays around each battery measure where walls stop its light, so it never
 // shows on the far side of a wall; they are measured out to BATTERY_LIGHT_REACH, the largest radius
@@ -129,18 +129,20 @@ export const MAX_BATTERY_LIGHTS = 16;
 // right by a flame stays a warm colour rather than blowing out. Each flame's halo (props.ts) is
 // CANDLE_HALO_INTENSITY bright at its centre.
 export const CANDLE_LIGHT = {
-  CANDLE_LIGHT_COLOR: '#ffa04a',
-  CANDLE_LIGHT_RADIUS: 100,
-  CANDLE_LIGHT_INTENSITY: 2.2,
-  CANDLE_LIGHT_MAX: 1.3,
-  CANDLE_HALO_INTENSITY: 2.6,
+  CANDLE_LIGHT_COLOR: '#fdf2e3',
+  CANDLE_LIGHT_RADIUS: 105,
+  CANDLE_LIGHT_INTENSITY: 0.55,
+  CANDLE_LIGHT_MAX: 1.15,
+  CANDLE_HALO_INTENSITY: 3.85,
 };
 // CANDLE_LIGHT_RAYS rays round each light measure where walls and props taller than its flames stop
 // it, out to CANDLE_LIGHT_REACH, the largest radius it may be given. Up to MAX_CANDLE_LIGHTS flames
-// light their surroundings; any more only glow.
+// light their surroundings; any more only glow (props.ts warns, and tests/props.test.ts checks every
+// map in maps/ fits). Each is a vec4 in every surface shader: 96 keeps those shaders within the 224
+// fragment uniform vectors WebGL 2 guarantees.
 export const CANDLE_LIGHT_RAYS = 24;
 export const CANDLE_LIGHT_REACH = 300;
-export const MAX_CANDLE_LIGHTS = 48;
+export const MAX_CANDLE_LIGHTS = 96;
 
 // The battery's own body is lit, PlayStation style (createBatteryMaterial): by the night's
 // ambient and moonlight like the floors and, with the glow off, a key, BATTERY_KEY_COLOR at

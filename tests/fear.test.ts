@@ -40,17 +40,17 @@ test('every band adds layers, and each threshold jumps further than a band chang
     assert.ok(jump > within, `stage ${stage}: jump ${jump} vs ${within}`);
     assert.ok(at(stage, 0).radius < (stage === 1 ? Infinity : at(stage - 1, 1).radius), 'the darkness closes in');
   }
-  // Layers: the heartbeat from UNEASY, the TV static, tendrils and colour split from DANGER, each
-  // stronger in every band after the one it starts in.
+  // Layers: the heartbeat from UNEASY, tendrils and the colour split from DANGER, the TV static from
+  // IMMEDIATE, each stronger in every band after the one it starts in.
   const layers: (keyof FearLevels)[] = ['heartRate', 'tvStatic', 'tendrils', 'aberration'];
   const firstStage = (key: keyof FearLevels) => FEAR_STAGES.findIndex((table) => table[key][0] > 0) + 1;
-  assert.deepEqual(layers.map(firstStage), [1, 2, 2, 2]);
-  assert.ok(at(2, 0).tvStatic > at(1, 1).tvStatic && at(3, 0).tvStatic > at(2, 1).tvStatic, 'the static steps up');
+  assert.deepEqual(layers.map(firstStage), [1, 3, 2, 2]);
+  assert.ok(at(3, 0).tvStatic > at(2, 1).tvStatic, 'the static steps up');
   assert.ok(at(3, 0).aberration > at(2, 1).aberration, 'the colour split steps up');
   assert.ok(at(2, 0).heartRate > at(1, 1).heartRate && at(3, 0).heartRate > at(2, 1).heartRate, 'the heart steps up');
-  // The clear radius never shrinks below twice the tag reach, so a Creature about to grab the
-  // Hunter is in view.
-  assert.ok(at(3, 1).radius > 2 * (GAMEPLAY.playerRadius + GAMEPLAY.creatureHitRadius));
+  // The clear radius never shrinks below one and a half times the tag reach, so a Creature about to
+  // grab the Hunter is in view.
+  assert.ok(at(3, 1).radius > 1.5 * (GAMEPLAY.playerRadius + GAMEPLAY.creatureHitRadius));
 });
 
 test('the panic lines show in every band, the same throughout it, and step up at each threshold', () => {

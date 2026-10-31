@@ -17,7 +17,7 @@ import { VFX } from './vfx.js';
 // the shaders' uniforms carry the same names as the values.
 // Bloom: only light brighter than BLOOM_THRESHOLD (linear luminance) blooms, by BLOOM_STRENGTH,
 // spread by BLOOM_RADIUS (0..1).
-export const BLOOM = { BLOOM_STRENGTH: 0.35, BLOOM_RADIUS: 0.5, BLOOM_THRESHOLD: 0.85 };
+export const BLOOM = { BLOOM_STRENGTH: 0.09, BLOOM_RADIUS: 0.5, BLOOM_THRESHOLD: 0.85 };
 // Grade, in linear light. The vignette darkens from VIGNETTE_START to VIGNETTE_END (distance
 // from the centre, 1 at the middle of each edge) by up to VIGNETTE_STRENGTH. Shadows lose
 // SHADOW_DESATURATION of their colour, the way colour fades in the dark, and lit colours gain
@@ -26,12 +26,12 @@ export const BLOOM = { BLOOM_STRENGTH: 0.35, BLOOM_RADIUS: 0.5, BLOOM_THRESHOLD:
 // grey, so an exactly grey pixel stays grey: the browser tests find the Creature by its neutral
 // charcoal. The cool shadows and warm light come from the lights themselves (scene.ts).
 export const GRADE = {
-  VIGNETTE_START: 0.55,
-  VIGNETTE_END: 1.45,
-  VIGNETTE_STRENGTH: 0.55,
-  SHADOW_DESATURATION: 0.3,
-  HIGHLIGHT_SATURATION: 0.15,
-  GRADE_CONTRAST: 1.08,
+  VIGNETTE_START: 1.34,
+  VIGNETTE_END: 2.58,
+  VIGNETTE_STRENGTH: 0.29,
+  SHADOW_DESATURATION: 0.05,
+  HIGHLIGHT_SATURATION: 0.05,
+  GRADE_CONTRAST: 1,
   GRADE_PIVOT: 0.18,
 };
 

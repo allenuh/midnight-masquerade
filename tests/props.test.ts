@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
@@ -11,6 +11,7 @@ import {
 import { validateMap } from '../src/shared/map/validate.js';
 import { buildWorld, lightOccluders } from '../src/shared/map/world.js';
 import { segmentBlocked, wallDistance } from '../src/shared/raycast.js';
+import { MAX_CANDLE_LIGHTS } from '../src/client/vfx.js';
 
 // An 8 x 6 room: one Wall tile in the top-right corner, the spawns along the bottom row.
 function roomMap(): GameMap {
@@ -226,5 +227,19 @@ test('every prop in the catalogue has a model that fits its footprint and height
       assert.ok(nodes.some((name) => name.startsWith(`${spec.asset}_flame_`)), `${spec.asset} has its flames`);
       assert.ok(nodes.some((name) => name.startsWith(`${spec.asset}_light_`)), `${spec.asset} marks where its light goes`);
     }
+  }
+});
+
+// The client lights only the first MAX_CANDLE_LIGHTS candle lights (one per `_light_` point in a
+// model); any more keep their halo but light nothing round them.
+test('every map\'s candles fit in the candle light slots, so every candle lights its surroundings', () => {
+  const lightsIn = new Map(PROP_IDS.map((id) => [id, modelBounds(PROP_SPECS[id].asset).nodes.filter((name) => /_light_\d+$/.test(name)).length]));
+  const mapsFolder = new URL('../maps/', import.meta.url);
+  for (const file of readdirSync(mapsFolder).filter((name) => name.endsWith('.json'))) {
+    const result = validateMap(JSON.parse(readFileSync(new URL(file, mapsFolder), 'utf8')));
+    assert.ok(result.ok, `${file} is a valid map`);
+    const placements = [...propPlacements(result.map), ...wallPropPlacements(result.map)];
+    const lights = placements.reduce((total, { type }) => total + lightsIn.get(type)!, 0);
+    assert.ok(lights <= MAX_CANDLE_LIGHTS, `${file} has ${lights} candle lights; MAX_CANDLE_LIGHTS is ${MAX_CANDLE_LIGHTS}`);
   }
 });
