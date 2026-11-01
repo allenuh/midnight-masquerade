@@ -115,6 +115,38 @@ button:disabled {
   width: 6px;
 }
 
+/* The stop-motion jitter, as if each cut-out were nudged between shots: eight poses a second,
+   jumped to rather than eased, every letter changing on the same beat. --tile (ui.ts) starts each
+   letter three poses on from the one before. It moves by the independent translate and rotate,
+   so each letter keeps its own tilt (its inline transform). --jitter-move and --jitter-turn set
+   how far a pose strays at most. */
+:root {
+  --jitter-move: 0.4px;
+  --jitter-turn: 1deg;
+}
+
+:is(#game-title, .room-code, #overlay-title, #clock, #result-title, #gazette-title) .tile {
+  animation: tile-jitter 1s steps(1, end) infinite;
+  animation-delay: calc(var(--tile, 0) * -0.375s);
+}
+
+@keyframes tile-jitter {
+  0%, 100% { translate: calc(0.6 * var(--jitter-move)) calc(-0.4 * var(--jitter-move)); rotate: calc(-0.5 * var(--jitter-turn)); }
+  12.5% { translate: calc(-0.5 * var(--jitter-move)) calc(0.3 * var(--jitter-move)); rotate: calc(0.7 * var(--jitter-turn)); }
+  25% { translate: calc(0.2 * var(--jitter-move)) calc(0.7 * var(--jitter-move)); rotate: calc(-0.9 * var(--jitter-turn)); }
+  37.5% { translate: calc(-0.8 * var(--jitter-move)) calc(-0.2 * var(--jitter-move)); rotate: calc(0.3 * var(--jitter-turn)); }
+  50% { translate: calc(0.9 * var(--jitter-move)) calc(0.4 * var(--jitter-move)); rotate: calc(0.6 * var(--jitter-turn)); }
+  62.5% { translate: calc(-0.3 * var(--jitter-move)) calc(-0.8 * var(--jitter-move)); rotate: calc(-0.4 * var(--jitter-turn)); }
+  75% { translate: calc(0.4 * var(--jitter-move)) calc(-0.6 * var(--jitter-move)); rotate: var(--jitter-turn); }
+  87.5% { translate: calc(-0.7 * var(--jitter-move)) calc(0.6 * var(--jitter-move)); rotate: calc(-0.7 * var(--jitter-turn)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(#game-title, .room-code, #overlay-title, #clock, #result-title, #gazette-title) .tile {
+    animation: none;
+  }
+}
+
 /* The big titles need a gap to match their letters. */
 #overlay-title .tile-gap,
 #result-title .tile-gap,

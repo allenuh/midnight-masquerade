@@ -45,8 +45,9 @@ const CLIPS = [
 const ON_LIGHT: Partial<Record<Swatch, Swatch>> = { cream: 'ink', ink: 'cream', creamRed: 'wine', inkGold: 'gold' };
 
 // Cut-out letters for one line. The word gaps hold a real space, so the line's text still reads
-// as words (to screen readers, and to anything reading textContent).
-export function tiles(line: Tile[], { scale = 1, light = false } = {}): HTMLElement {
+// as words (to screen readers, and to anything reading textContent). `first` numbers the line's
+// first letter (--tile), which sets where each letter starts in the jitter (style.css).
+export function tiles(line: Tile[], { scale = 1, light = false } = {}, first = 0): HTMLElement {
   const row = document.createElement('span');
   row.className = 'tiles';
   line.forEach((tile, index) => {
@@ -60,16 +61,22 @@ export function tiles(line: Tile[], { scale = 1, light = false } = {}): HTMLElem
       cut.className = `tile f-${face}`;
       cut.textContent = text;
       cut.style.cssText = `background:${paper};color:${ink};font-size:${Math.round(size * scale)}px;` +
-        `transform:rotate(${turn}deg);clip-path:${CLIPS[index % CLIPS.length]}`;
+        `transform:rotate(${turn}deg);clip-path:${CLIPS[index % CLIPS.length]};--tile:${first + index}`;
     }
     row.append(cut);
   });
   return row;
 }
 
-// A title of several lines, replacing whatever the element held.
+// A title of several lines, replacing whatever the element held. Letters are numbered across the
+// lines, so a second line doesn't jitter in step with the first.
 export function setTiles(target: HTMLElement, lines: Tile[][], options: { scale?: number; light?: boolean } = {}): void {
-  target.replaceChildren(...lines.map((line) => tiles(line, options)));
+  let first = 0;
+  target.replaceChildren(...lines.map((line) => {
+    const row = tiles(line, options, first);
+    first += line.length;
+    return row;
+  }));
 }
 
 // Any text as cut-outs, for messages with no hand-set title: papers, faces, sizes and tilts are
