@@ -165,6 +165,64 @@ button:disabled {
   background-size: 64px 64px;
 }
 
+/* The wallpaper drifting diagonally inside a button, the code form or a guest row, tone on tone in
+   the element's own colour (--damask-dot, --damask-corner, --damask-size, set on each). The
+   pattern is a ::before one tile larger to the top left, translated a tile and back to loop. A
+   button's pauses where it is while hovered or focused (and a disabled one stays still); the form's
+   and the guest rows' always drift. */
+#create,
+#lobby #start,
+#copy-link,
+#join-form,
+#join,
+.guest {
+  --damask-speed: 1.6s;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+#create::before,
+#lobby #start::before,
+#copy-link::before,
+#join-form::before,
+#join::before,
+.guest::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: calc(-1 * var(--damask-size));
+  left: calc(-1 * var(--damask-size));
+  right: 0;
+  bottom: 0;
+  background-image:
+    radial-gradient(circle at 50% 50%, var(--damask-dot) 0 18%, transparent 19%),
+    radial-gradient(circle at 0 0, var(--damask-corner) 0 9%, transparent 10%),
+    radial-gradient(circle at 100% 100%, var(--damask-corner) 0 9%, transparent 10%);
+  background-size: var(--damask-size) var(--damask-size);
+  animation: damask-drift var(--damask-speed) linear infinite;
+  pointer-events: none;
+}
+
+:is(#create, #lobby #start, #copy-link, #join):is(:hover, :focus-visible, :disabled)::before {
+  animation-play-state: paused;
+}
+
+@keyframes damask-drift {
+  to { transform: translate(var(--damask-size), var(--damask-size)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #create::before,
+  #lobby #start::before,
+  #copy-link::before,
+  #join-form::before,
+  #join::before,
+  .guest::before {
+    animation: none;
+  }
+}
+
 /* Notices (a wrong code, a full room, a disconnect), under everything else on the stage. */
 #status {
   position: absolute;
@@ -245,10 +303,15 @@ button:disabled {
   font-size: 30px;
   transform: rotate(-1.5deg);
   clip-path: polygon(2% 0, 100% 6%, 98% 100%, 0 92%);
+  --damask-dot: #f2cc68;
+  --damask-corner: #edc35b;
+  --damask-size: 32px;
 }
 
-#create:hover:enabled {
+#create:is(:hover, :focus-visible):enabled {
   background: #f0c85e;
+  --damask-dot: #fbdc85;
+  --damask-corner: #f6d374;
 }
 
 #join-form {
@@ -263,6 +326,9 @@ button:disabled {
   color: var(--text);
   transform: rotate(1deg);
   clip-path: polygon(0 4%, 100% 0, 98% 100%, 2% 96%);
+  --damask-dot: #e4d8bf;
+  --damask-corner: #e8ddc7;
+  --damask-size: 32px;
 }
 
 #join-form label {
@@ -296,10 +362,15 @@ button:disabled {
   font-weight: 700;
   font-size: 18px;
   letter-spacing: 0.08em;
+  --damask-dot: #2d2535;
+  --damask-corner: #28202f;
+  --damask-size: 32px;
 }
 
-#join:hover:enabled {
+#join:is(:hover, :focus-visible):enabled {
   background: #2e2735;
+  --damask-dot: #3e3448;
+  --damask-corner: #382f41;
 }
 
 .controls-hint {
@@ -446,10 +517,15 @@ button:disabled {
   font-weight: 700;
   font-size: 16px;
   letter-spacing: 0.08em;
+  --damask-dot: #e4d8bf;
+  --damask-corner: #e8ddc7;
+  --damask-size: 32px;
 }
 
-#copy-link:hover {
+#copy-link:is(:hover, :focus-visible) {
   background: #e3d8c0;
+  --damask-dot: #d6c8aa;
+  --damask-corner: #dbcfb4;
 }
 
 #invite-link {
@@ -508,6 +584,9 @@ button:disabled {
   background: var(--ink);
   color: var(--cream);
   clip-path: polygon(1% 0, 100% 5%, 99% 100%, 0 95%);
+  --damask-dot: #2d2535;
+  --damask-corner: #28202f;
+  --damask-size: 32px;
 }
 
 .guest:nth-child(odd) { transform: rotate(-0.6deg); }
@@ -537,6 +616,8 @@ button:disabled {
   color: var(--text);
   border: 2px solid var(--gold);
   clip-path: polygon(0 4%, 99% 0, 100% 96%, 1% 100%);
+  --damask-dot: #e4d8bf;
+  --damask-corner: #e8ddc7;
 }
 
 .guest.you .icon {
@@ -549,11 +630,14 @@ button:disabled {
   color: var(--gold);
 }
 
+/* On the wallpaper's own ground, so the still wallpaper behind doesn't show through the drift. */
 .guest.empty {
-  background: transparent;
+  background: #17111c;
   color: var(--muted);
   border: 2px dashed #8a7d68;
   clip-path: none;
+  --damask-dot: #241a2b;
+  --damask-corner: #211827;
 }
 
 .guest.empty .icon {
@@ -628,12 +712,23 @@ button:disabled {
   font-size: 24px;
   transform: rotate(-1deg);
   clip-path: polygon(2% 0, 100% 6%, 98% 100%, 0 92%);
+  --damask-dot: #f2cc68;
+  --damask-corner: #edc35b;
+  --damask-size: 32px;
+}
+
+#lobby #start:is(:hover, :focus-visible):enabled {
+  background: #f0c85e;
+  --damask-dot: #fbdc85;
+  --damask-corner: #f6d374;
 }
 
 #lobby #start:disabled {
   background: #5c4720;
   color: var(--muted);
   cursor: not-allowed;
+  --damask-dot: #67512a;
+  --damask-corner: #624d27;
 }
 
 #waiting {
