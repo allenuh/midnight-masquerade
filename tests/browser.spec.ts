@@ -264,7 +264,10 @@ function assertHunterWire(network: Network) {
   const problems: string[] = [];
   const sameKeys = (value: object, expected: string[]) => Object.keys(value).sort().join() === expected.join();
   for (const message of snapshots) {
-    if (Object.keys(message).filter((key) => key !== 'creature').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
+    if (Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
+    if (message.catch && (!sameKeys(message.catch, ['elapsed', 'hunter']) || typeof message.catch.elapsed !== 'number')) {
+      problems.push(`catch ${JSON.stringify(message.catch)}`);
+    }
     if (message.hunters.length !== GAMEPLAY.players.hunters) problems.push(`hunter count ${message.hunters.length}`);
     for (const hunter of message.hunters) {
       if (!sameKeys(hunter, HUNTER_VIEW_KEYS)) problems.push(`hunter view keys: ${Object.keys(hunter).join()}`);
@@ -278,7 +281,7 @@ function assertHunterWire(network: Network) {
       problems.push(`pickups ${JSON.stringify(message.pickups)}`);
     }
     if (message.creature) {
-      if (!sameKeys(message.creature, ['burning', 'facing', 'position', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
+      if (!sameKeys(message.creature, ['burning', 'facing', 'position', 'revealRemaining', 'sprinting', 'staggered'])) problems.push(`creature keys: ${Object.keys(message.creature).join()}`);
       if (!sameKeys(message.creature.position, ['x', 'y', 'z']) || message.creature.position.y !== groundedY) problems.push(`creature position ${JSON.stringify(message.creature.position)}`);
     }
   }
@@ -709,6 +712,11 @@ test('the Creature wins by downing all four Hunters, and the room can start agai
     while (creature.network.creature().roundState === 'running' && Date.now() < deadline) {
       const snapshot = creature.network.creature();
       const targets = snapshot.hunters.filter((hunter) => !hunter.down);
+      // The last catch's cutscene: every Hunter is down and the round ends when it does.
+      if (targets.length === 0) {
+        await creature.page.waitForTimeout(50);
+        continue;
+      }
       const position = creaturePosition();
       const nearest = targets.reduce((best, hunter) => (distance(hunter.position, position) < distance(best.position, position) ? hunter : best));
       await applyKeys(creature.page, held, keysToward(position, nearest.position));
@@ -727,10 +735,19 @@ test('the Creature wins by downing all four Hunters, and the room can start agai
       await expect(player.page.locator('#status')).toContainText('Every Hunter is down. Creature wins.');
       await expect(player.page.locator('#team')).toHaveText(/H1\*? DOWN \d+% · H2\*? DOWN \d+% · H3\*? DOWN \d+% · H4\*? DOWN \d+%/);
     }
-    // A hidden Creature stays hidden after winning: no Hunter page ever received it.
+    // A hidden Creature stays hidden: a Hunter page received it only for each catch, during the
+    // cutscene every player watches and the reveal linger after it (a few spare snapshots for
+    // timing), never while it hunted unseen.
+    const lingerSnapshots = Math.ceil(GAMEPLAY.creature.visibilityLingerSeconds * GAMEPLAY.tickRate) + 3;
     for (const hunter of hunters) {
       expect(hunter.network.hunter().result).toBe('caught');
-      expect(hunter.network.messages.some((message) => message.type === 'snapshot' && 'creature' in message)).toBe(false);
+      let sinceCatch = Infinity;
+      for (const message of hunter.network.messages) {
+        if (message.type !== 'snapshot') continue;
+        sinceCatch = 'catch' in message ? 0 : sinceCatch + 1;
+        if ('creature' in message) expect(sinceCatch, 'the Creature appears only around a catch').toBeLessThanOrEqual(lingerSnapshots);
+      }
+      expect(hunter.network.messages.some((message) => message.type === 'snapshot' && 'catch' in message), 'every Hunter watched the catches').toBe(true);
       assertHunterWire(hunter.network);
     }
     await hunters[0].page.screenshot({ path: testInfo.outputPath('creature-victory.png') });

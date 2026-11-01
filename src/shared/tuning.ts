@@ -11,6 +11,7 @@ export type TunableKey =
   | 'hunterSpeed' | 'hunterTurnSpeed'
   | 'creatureSpeed' | 'sprintSpeed' | 'sprintCooldownSeconds' | 'creatureMaxHp'
   | 'staggerSeconds' | 'staggerCooldownSeconds' | 'visibilityLingerSeconds' | 'attackCooldownSeconds' | 'burnSeconds'
+  | 'catchSeconds'
   | 'flashlightDamagePerSecond' | 'flashlightRange' | 'flashlightConeAngle' | 'lightEffectDelaySeconds'
   | 'batteryMax' | 'batteryDrainPerSecond' | 'batteryRestores' | 'firstBatterySeconds' | 'batteryRespawnSeconds'
   | 'fullBatteryFraction' | 'halfBatteryFraction' | 'halfRangeMultiplier' | 'lowRangeMultiplier'
@@ -36,6 +37,7 @@ export const TUNABLES: readonly Tunable[] = [
   { key: 'visibilityLingerSeconds', label: 'Reveal linger (s)', group: 'Creature', min: 0, max: 10, step: 0.1, default: creature.visibilityLingerSeconds },
   { key: 'attackCooldownSeconds', label: 'Attack cooldown (s)', group: 'Creature', min: 0, max: 10, step: 0.1, default: creature.attackCooldownSeconds },
   { key: 'burnSeconds', label: 'Burn (s)', group: 'Creature', min: 0, max: 60, step: 0.5, default: creature.burnSeconds },
+  { key: 'catchSeconds', label: 'Catch cutscene (s)', group: 'Creature', min: 0, max: 10, step: 0.1, default: creature.catchSeconds },
   { key: 'flashlightDamagePerSecond', label: 'Flashlight damage (HP/s)', group: 'Flashlight', min: 0, max: 200, step: 0.5, default: flashlight.damagePerSecond },
   { key: 'flashlightRange', label: 'Flashlight range', group: 'Flashlight', min: 10, max: 800, step: 5, default: flashlight.range },
   { key: 'flashlightConeAngle', label: 'Flashlight cone (deg)', group: 'Flashlight', min: 5, max: 180, step: 5, default: flashlight.coneAngle },

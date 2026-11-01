@@ -94,6 +94,10 @@ type RoundSnapshot = {
   // Indices into the map's Battery Spawn markers (file order) that currently hold a pickup. The points
   // themselves are public map data both roles already have, so no coordinates are sent.
   pickups: number[];
+  // Present only while a catch cutscene plays, for every player: the Hunter caught and the
+  // seconds since the catch (the room's tuning has the cutscene's length). The round is paused
+  // meanwhile. The Creature is revealed for it like any reveal, through `creature`.
+  catch?: { hunter: HunterId; elapsed: number };
 };
 
 // Separate shapes make accidental hidden-state serialization harder to introduce.
@@ -110,7 +114,12 @@ export type HunterSnapshot = RoundSnapshot & {
   // Present only while the Creature is revealed (lit or sprinting, or inside the visibility
   // linger). The key is absent otherwise: the Hunter never holds a hidden Creature transform.
   // `facing` is the Creature's last held movement direction, in the same angle as a Hunter's.
-  creature?: { position: Position; facing: number; staggered: boolean; sprinting: boolean; burning: boolean };
+  // `revealRemaining` is how many seconds the reveal has left: the full linger while the Creature
+  // is lit, sprinting or burning, counting down only through the linger after (clients fade it
+  // out over that countdown).
+  creature?: {
+    position: Position; facing: number; staggered: boolean; sprinting: boolean; burning: boolean; revealRemaining: number;
+  };
 };
 export type CreatureSnapshot = RoundSnapshot & {
   role: 'creature';

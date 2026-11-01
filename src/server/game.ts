@@ -18,9 +18,11 @@ export type PlayerId = string;
 //   cooldown  (staggerCooldownTicks > 0) a flashlight hit damages and reveals but cannot stagger
 //   sprint cooldown (sprintCooldownTicks > 0) the held sprint button does nothing
 //   attack cooldown (attackCooldownTicks > 0) contact cannot incapacitate another Hunter
-//   burning   (burnTicks > 0)            a flashlight hit was recent: contact cannot incapacitate
+//   burning   (burnTicks > 0)            a flashlight hit was recent: contact cannot incapacitate,
+//                                        the Creature stays revealed and moves at sprint speed
 // litTicks is the current run of consecutive lit steps (0 while unlit): a beam has effects
-// beyond the reveal only once that run exceeds the tunable effect delay.
+// beyond the reveal only once that run exceeds the tunable effect delay, or at once while the
+// Creature is burning.
 export type CreatureState = {
   hp: number;
   lit: boolean; // at least one flashlight reached the Creature during the last step
@@ -63,6 +65,11 @@ export type RoundStats = {
   lightTicks: Record<HunterId, number>;
 };
 
+// The catch cutscene after a tag: `hunter` is the one caught, `ticks` how many steps of the
+// cutscene are left out of `total`, and `endsRound` whether that catch downed the last Hunter
+// (the round ends as 'caught' when the cutscene does). The whole round pauses meanwhile.
+export type CatchState = { hunter: HunterId; ticks: number; total: number; endsRound: boolean };
+
 export type Game = {
   // The map this room plays on: walls, spawn markers, battery points. Shared, read-only.
   world: World;
@@ -80,6 +87,7 @@ export type Game = {
   timeTicks: number; // match clock; counts down only while roundState is 'running'
   result: RoundResult | null;
   stats: RoundStats;
+  catch: CatchState | null; // set only while a catch cutscene plays
 };
 
 export const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
@@ -107,6 +115,8 @@ export const PICKUP_RESPAWN_TICKS = secondsToTicks(DEFAULT_TUNING.batteryRespawn
 // The same counts for a given room's tuning.
 export const reviveTicks = (tuning: Tuning): number => secondsToTicks(tuning.reviveSeconds);
 export const matchTicks = (tuning: Tuning): number => secondsToTicks(tuning.matchSeconds);
+// The catch cutscene's length in steps for a room's tuning (0: no cutscene).
+export const catchTicks = (tuning: Tuning): number => secondsToTicks(tuning.catchSeconds);
 // Center-to-center distance at which an active Hunter picks a battery up. Not tunable:
 // it is the geometry of two blockout shapes touching.
 export const PICKUP_REACH = GAMEPLAY.playerRadius + GAMEPLAY.batteryPickup.radius;
@@ -159,6 +169,7 @@ export function createGame(world: World, tuning: Tuning = defaultTuning()): Game
     timeTicks: matchTicks(tuning),
     result: null,
     stats: freshStats(),
+    catch: null,
   };
 }
 
@@ -219,6 +230,7 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
   game.timeTicks = matchTicks(game.tuning);
   game.result = null;
   game.stats = freshStats();
+  game.catch = null;
 }
 
 // Disconnect policy: a round cannot continue without all five players, so it is
@@ -233,6 +245,7 @@ export function abandonRound(game: Game): void {
   game.timeTicks = matchTicks(game.tuning);
   game.result = null;
   game.stats = freshStats();
+  game.catch = null;
 }
 
 function clearInputs(game: Game): void {
@@ -262,7 +275,9 @@ export function setInput(game: Game, player: PlayerId, raw: unknown): boolean {
 
   // A message only replaces held keys. It never advances time or trusts a position.
   // The same `light` flag is the Hunter's flashlight and the Creature's sprint button.
-  // An incapacitated Hunter has no input at all until it is revived.
+  // An incapacitated Hunter has no input at all until it is revived. During a catch cutscene
+  // every input is accepted and dropped: nothing is held until the next message after it.
+  if (game.catch) return true;
   const input: InputState = {
     up: message.up, down: message.down, left: message.left, right: message.right, light: message.light,
   };
@@ -361,9 +376,9 @@ function endRound(game: Game, result: RoundResult): void {
 
 // Step order: the role reveal counts down; the match clock and every countdown expire;
 // the battery spawn countdown runs; active Hunters turn and move; the Creature moves (at sprint speed while
-// sprinting); one tag is resolved; batteries are collected; the flashlights and the sprint
+// sprinting or burning); one tag is resolved; batteries are collected; the flashlights and the sprint
 // reveal are applied (a beam damages, staggers and burns only once it has stayed on the
-// Creature for the effect delay); revival exposure accumulates; batteries drain; the round result is
+// Creature for the effect delay, or at once while it burns); revival exposure accumulates; batteries drain; the round result is
 // evaluated. A tag that occurs this step therefore still downs the Hunter even when the
 // same step would have revealed the Creature or set it burning, and that Hunter's beam is
 // void from this step on.
@@ -377,6 +392,18 @@ export function stepGame(game: Game): void {
   if (game.roundState !== 'running' || !creature) return;
   const state = game.creatureState;
   const { tuning } = game;
+
+  // A catch cutscene pauses the whole round, like the role reveal: no clock, no countdowns, no
+  // battery spawn, no movement, beams, drain or revival. When it is over, play resumes from the
+  // next step, or the round ends if that catch downed the last Hunter.
+  if (game.catch) {
+    game.catch.ticks -= 1;
+    if (game.catch.ticks > 0) return;
+    const { endsRound } = game.catch;
+    game.catch = null;
+    if (endsRound) endRound(game, 'caught');
+    return;
+  }
 
   // The match clock only runs here, so it starts when gameplay starts and stops the
   // moment a round ends: an ended round never reaches this line again.
@@ -407,18 +434,20 @@ export function stepGame(game: Game): void {
   }
 
   // The sprint is re-evaluated every step from the held button: it cannot run while
-  // staggered or during the cooldown that follows every sprint, and a button held
+  // staggered or burning, or during the cooldown that follows every sprint, and a button held
   // through that cooldown resumes sprinting on the step the cooldown expires.
-  const sprinting = creature.input.light && !isStaggered(state) && state.sprintCooldownTicks === 0;
+  const sprinting = creature.input.light && !isStaggered(state) && !isBurning(state) && state.sprintCooldownTicks === 0;
   if (state.sprinting && !sprinting) state.sprintCooldownTicks = secondsToTicks(tuning.sprintCooldownSeconds);
   state.sprinting = sprinting;
   const creatureBefore = creature.position;
   // The Creature faces the held direction at once (the clients ease the model round), even
-  // into a wall that stops it. A staggered Creature is frozen: it neither turns nor moves.
+  // into a wall that stops it. A staggered Creature is frozen: it neither turns nor moves. A
+  // burning one moves at sprint speed without sprinting (no ring, no cooldown, button or not).
   if (!isStaggered(state)) creature.facing = heldDirection(creature.input) ?? creature.facing;
   creature.position = isStaggered(state)
     ? constrainToWalls(game.world, creature.position)
-    : move(game.world, creature.position, creature.input, sprinting ? tuning.sprintSpeed : tuning.creatureSpeed);
+    : move(game.world, creature.position, creature.input,
+      sprinting || isBurning(state) ? tuning.sprintSpeed : tuning.creatureSpeed);
 
   // Tag: a staggered or burning Creature cannot attack, and every tag starts the attack
   // cooldown, so at most one Hunter goes down per cooldown. With two active Hunters in
@@ -433,6 +462,22 @@ export function stepGame(game: Game): void {
       target.input = emptyInput();
       state.attackCooldownTicks = secondsToTicks(tuning.attackCooldownSeconds);
       game.stats.incapacitations += 1;
+      const cutscene = catchTicks(tuning);
+      if (cutscene > 0) {
+        // The catch cutscene: the two turn to face each other (so the Hunter later lies with its
+        // head away from the Creature), the Creature is revealed for the whole of it and the
+        // linger after, a sprint in progress ends, every held key is dropped, and the round
+        // pauses from the next step until the cutscene is over (see the top of stepGame). The
+        // rest of this step does not run.
+        target.facing = Math.atan2(creature.position.z - target.position.z, creature.position.x - target.position.x);
+        creature.facing = Math.atan2(target.position.z - creature.position.z, target.position.x - creature.position.x);
+        state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
+        if (state.sprinting) state.sprintCooldownTicks = secondsToTicks(tuning.sprintCooldownSeconds);
+        state.sprinting = false;
+        clearInputs(game);
+        game.catch = { hunter: target.id, ticks: cutscene, total: cutscene, endsRound: allHuntersDown(game) };
+        return;
+      }
       if (allHuntersDown(game)) {
         endRound(game, 'caught');
         return;
@@ -472,12 +517,13 @@ export function stepGame(game: Game): void {
   // Exposure is the run of consecutive lit steps; one unlit step ends it. Every lit step
   // refreshes the linger, but the beam has effects only once the run has outlasted the
   // effect delay (a delay of 0 means the first lit step), so a Hunter must hold the light
-  // on the Creature, not merely sweep across it.
+  // on the Creature, not merely sweep across it. A burning Creature has already been
+  // exposed: until the burn (counted down above) wears off, every lit step is a hit.
   state.litTicks = state.lit ? state.litTicks + 1 : 0;
   if (state.lit) {
     state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
   }
-  if (state.lit && state.litTicks > secondsToTicks(tuning.lightEffectDelaySeconds)) {
+  if (state.lit && (isBurning(state) || state.litTicks > secondsToTicks(tuning.lightEffectDelaySeconds))) {
     state.hp = Math.max(0, state.hp - tuning.flashlightDamagePerSecond * STEP_SECONDS);
     // Only a hit outside the cooldown staggers, and that hit also starts the cooldown,
     // so continuous light never re-staggers until the cooldown has fully expired.
@@ -489,10 +535,11 @@ export function stepGame(game: Game): void {
     // down only from the last lit step, and there is no cooldown gating it.
     state.burnTicks = secondsToTicks(tuning.burnSeconds);
   }
-  // A sprinting Creature is revealed exactly like a lit one and shares its linger, so
-  // tapping the button cannot flicker it in and out of the Hunters' view. Sprinting
-  // itself never damages or staggers.
-  if (state.sprinting) state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
+  // A sprinting or burning Creature is revealed exactly like a lit one and shares its linger,
+  // so tapping the button cannot flicker it in and out of the Hunters' view, and a burning one
+  // stays in view for the whole burn and the linger after it. Sprinting itself never damages
+  // or staggers.
+  if (state.sprinting || isBurning(state)) state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
 
   // Revival: every active teammate whose beam reaches a downed Hunter adds one tick of
   // work per step (beams stack). Progress is kept while no beam reaches the Hunter.
@@ -553,6 +600,9 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     // tick quotient would put a long float on the wire thirty times a second.
     timeRemaining: Math.round(game.timeTicks * STEP_SECONDS * 100) / 100,
     pickups: activePickups(game),
+    // Every player watches a catch: which Hunter, and how far into the cutscene. The key is
+    // present only while one plays.
+    ...(game.catch ? { catch: { hunter: game.catch.hunter, elapsed: (game.catch.total - game.catch.ticks) * STEP_SECONDS } } : {}),
   };
 
   // SECURITY: construct an allowlist for each role. Never serialize game.creature,
@@ -574,6 +624,7 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
       snapshot.creature = {
         position: copyPosition(game.creature.position), facing: game.creature.facing,
         staggered: isStaggered(state), sprinting: state.sprinting, burning: isBurning(state),
+        revealRemaining: state.revealTicks * STEP_SECONDS,
       };
     }
     return snapshot;

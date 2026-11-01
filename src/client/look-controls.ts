@@ -5,7 +5,7 @@
 import { FEAR_STAGES, FEAR_TIMING, type FearLevels } from './fear.js';
 import { BLOOM, FEAR_LINE_COLOR, FEAR_PASS, GRADE } from './post.js';
 import { CANDLE_FLAMES } from './props.js';
-import { BATTERY_LOOK, CHARACTERS, NIGHT, VIEW } from './scene.js';
+import { BATTERY_LOOK, CATCH, CHARACTERS, NIGHT, VIEW } from './scene.js';
 import {
   BATTERY_LIGHT, BATTERY_LIGHT_REACH, CANDLE_LIGHT, CANDLE_LIGHT_REACH, FLASHLIGHT, SHADING,
 } from './vfx.js';
@@ -127,6 +127,7 @@ add('Characters', 'scene.ts', 'CHARACTERS', CHARACTERS, {
   WALK_RATE_SPEED: [5, 150, 0.5], FLOAT_RATE_MOVING: [0, 5, 0.05], FLOAT_RATE_SPRINT: [0, 5, 0.05],
   FLOAT_RATE_EASE: [0.01, 2, 0.01], CREATURE_TURN_SPEED: [0.5, 30, 0.1], CREATURE_LEAN: [0, 0.8, 0.01], CREATURE_SPRINT_LEAN: [0, 0.8, 0.01],
   HUNTER_SHADOW_RADIUS: [0, 40, 0.5], CREATURE_SHADOW_RADIUS: [0, 60, 0.5],
+  CREATURE_FADE_IN_SECONDS: [0, 1, 0.01], CREATURE_FADE_OUT_SECONDS: [0, 2, 0.01],
 });
 addRgb('Characters', 'scene.ts', 'CHARACTERS.CREATURE_TINT', CHARACTERS.CREATURE_TINT, [0, 3, 0.01]);
 addRgb('Characters', 'scene.ts', 'CHARACTERS.CREATURE_BURNING_TINT', CHARACTERS.CREATURE_BURNING_TINT, [0, 10, 0.05]);
@@ -134,6 +135,12 @@ add('Characters', 'vfx.ts', 'SHADING', SHADING, {
   OUTLINE_WIDTH: [0, 0.01, 0.0001], STAGGER_OUTLINE_COLOR: 'color', STAGGER_OUTLINE_WIDTH: [0, 0.02, 0.0001],
   SHADOW_STRENGTH: unit, DITHER_START: [-1, 1, 0.01], DITHER_WIDTH: [0.01, 2, 0.01],
   BLOB_SHADOW_OPACITY: unit, CREATURE_BLOB_SHADOW_OPACITY: unit,
+});
+
+add('Catch cutscene', 'scene.ts', 'CATCH', CATCH, {
+  ZOOM: [0.1, 1, 0.01], ZOOM_IN_SECONDS: [0, 1.5, 0.01], ZOOM_OUT_SECONDS: [0, 1.5, 0.01],
+  LUNGE_FROM: unit, LUNGE_TO: unit, RELEASE_FROM: unit, GRAB_DISTANCE: [10, 40, 0.5], STRUGGLE: [0, 4, 0.05],
+  FALL_SECONDS: [0, 1.5, 0.01],
 });
 
 add('View', 'scene.ts', 'VIEW', VIEW, { RENDER_SCALE: [0.25, 2, 0.05], SHOW_PROPS: 'boolean', SHOW_SURFACES: 'boolean' });

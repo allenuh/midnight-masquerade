@@ -41,7 +41,9 @@ const LANE_HUNTER = groundPosition(100, 60);
 const STAGE_CREATURE = groundPosition(190, 60);
 // 60 units ahead: inside FULL and HALF, outside LOW (60 - radius > 31.5).
 const LANE_CREATURE = groundPosition(160, 60);
-const FAR_CORNER = groundPosition(900, 500);
+// Well clear of every battery point (point 4, at (870, 490), is the nearest), so a parked Creature
+// never tags a Hunter standing on one.
+const FAR_CORNER = groundPosition(930, 560);
 
 const batteryOf = (game: Game, slot = 0): number => game.hunters[slot].battery;
 const pickupAt = (index: number): Position => TEST_WORLD.batterySpawns[index];

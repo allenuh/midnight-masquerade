@@ -86,6 +86,10 @@ const CREATURE_HOVER = 3;
 // - Blob shadow radii: under a Hunter and under the hovering Creature. A downed Hunter's
 //   stretches along its body.
 // - LENS_GLOW_RADIUS: the soft glow drawn at the flashlight's lens.
+// - On a Hunter's screen the Creature dissolves in (an ordered dither, vfx.ts) over
+//   CREATURE_FADE_IN_SECONDS when it is revealed, and out over the last CREATURE_FADE_OUT_SECONDS
+//   of the server's reveal linger, still following it, so it is gone the moment the server stops
+//   sending it. The fade-out can be no longer than the room's linger (visibilityLingerSeconds).
 export const CHARACTERS = {
   SELF_COLOR: '#dddfdb',
   TEAMMATE_COLOR: '#8fa3b8',
@@ -95,13 +99,15 @@ export const CHARACTERS = {
   FLOAT_RATE_SPRINT: 2.4,
   FLOAT_RATE_EASE: 0.25,
   CREATURE_TURN_SPEED: 7,
-  CREATURE_LEAN: 0.15,
-  CREATURE_SPRINT_LEAN: 0.25,
+  CREATURE_LEAN: 0.08,
+  CREATURE_SPRINT_LEAN: 0.14,
   CREATURE_TINT: [1, 1, 1],
   CREATURE_BURNING_TINT: [7.3, 3.3, 1],
   HUNTER_SHADOW_RADIUS: 14.5,
   CREATURE_SHADOW_RADIUS: 1.6 * GAMEPLAY.playerRadius,
   LENS_GLOW_RADIUS: 5,
+  CREATURE_FADE_IN_SECONDS: 0.2,
+  CREATURE_FADE_OUT_SECONDS: 0.5,
 };
 // Battery pickup: battery.glb scaled to BATTERY_HEIGHT and posed for the fixed camera. It is
 // tipped back until its face (the label) looks at the camera, short of square-on by
@@ -153,6 +159,26 @@ export const NIGHT = {
 // renders fewer pixels, stretched up); SHOW_PROPS and SHOW_SURFACES hide the furniture and the
 // floors and walls.
 export const VIEW = { RENDER_SCALE: 1, SHOW_PROPS: true, SHOW_SURFACES: true };
+// The catch cutscene (snapshot.catch; the round is paused for the room's catchSeconds), read
+// every frame. The fixed camera dollies in on the pair, keeping its angle (the halos are posed
+// to it), to ZOOM times its usual distance, over ZOOM_IN_SECONDS, and back out over the last
+// ZOOM_OUT_SECONDS. The Creature plays Grab, stretched over the cutscene; LUNGE_FROM..LUNGE_TO
+// and RELEASE_FROM are where its lunge and release fall in that clip (as shares of it, from
+// art/animate_creature_grab.py), and it slides in over the lunge until its centre is
+// GRAB_DISTANCE from the Hunter's, and back over the release. The caught Hunter stands while it
+// is held, struggling by up to STRUGGLE units, and falls onto its back over the last
+// FALL_SECONDS. Fear effects ease out while it plays.
+export const CATCH = {
+  ZOOM: 0.4,
+  ZOOM_IN_SECONDS: 0.35,
+  ZOOM_OUT_SECONDS: 0.4,
+  LUNGE_FROM: 0.19,
+  LUNGE_TO: 0.29,
+  RELEASE_FROM: 0.79,
+  GRAB_DISTANCE: 25,
+  STRUGGLE: 0.8,
+  FALL_SECONDS: 0.35,
+};
 // Blob shadows sit this far above the floor, under the flat flashlight fan.
 const SHADOW_LIFT = 0.5;
 
@@ -190,18 +216,21 @@ export async function loadHunterModel(): Promise<HunterModel> {
   return { scene: gltf.scene, walk, bodyMaterial, scale, backDepth: -bounds.min.z * scale, lens };
 }
 
-// The Creature model and its Float clip, loaded once per page and cloned each time the Creature
-// appears. `material` is its one textured emissive material ('Creature' in the file), tinted
+// The Creature model and its clips, loaded once per page and cloned each time the Creature
+// appears: Float, always playing, and Grab, the catch cutscene (art/animate_creature_grab.py).
+// `material` is its one textured emissive material ('Creature' in the file), tinted
 // while burning. `scale` fits it to CREATURE_HEIGHT; `lift` raises it so its lowest point
 // hovers CREATURE_HOVER above the floor. Like the Hunter, it faces +Z in the file.
 export type CreatureModel = {
-  scene: Object3D; float: AnimationClip; material: MeshStandardMaterial; scale: number; lift: number;
+  scene: Object3D; float: AnimationClip; grab: AnimationClip; material: MeshStandardMaterial; scale: number; lift: number;
 };
 
 export async function loadCreatureModel(): Promise<CreatureModel> {
   const gltf = await new GLTFLoader().loadAsync(creatureModelUrl);
   const float = AnimationClip.findByName(gltf.animations, 'Float');
   if (!float) throw new Error('creature.glb has no Float animation');
+  const grab = AnimationClip.findByName(gltf.animations, 'Grab');
+  if (!grab) throw new Error('creature.glb has no Grab animation');
   const meshes: Mesh[] = [];
   gltf.scene.traverse((object) => {
     if (object instanceof Mesh) meshes.push(object);
@@ -212,7 +241,7 @@ export async function loadCreatureModel(): Promise<CreatureModel> {
   const bounds = new Box3().setFromObject(gltf.scene);
   const scale = CREATURE_HEIGHT / (bounds.max.y - bounds.min.y);
   addOutlineHulls(meshes);
-  return { scene: gltf.scene, float, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
+  return { scene: gltf.scene, float, grab, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
 }
 
 // The battery pickup model, loaded once per page and cloned per spawn point. `map` is its
@@ -294,8 +323,11 @@ export function createScene(
   const CAMERA = cameraFor(world);
   const camera = new PerspectiveCamera(CAMERA.fieldOfView, CAMERA.aspect, CAMERA.near, CAMERA.far);
   camera.position.set(CAMERA.position.x, CAMERA.position.y, CAMERA.position.z);
-  // Target determines the fixed rotation; no client movement or input controls this camera.
+  // Target determines the fixed rotation; no client movement or input controls this camera. Only
+  // the catch cutscene moves it, along its own view (see CATCH), from and back to this place.
   camera.lookAt(CAMERA.target.x, CAMERA.target.y, CAMERA.target.z);
+  const cameraHome = camera.position.clone();
+  const cameraAim = new Vector3(CAMERA.target.x, CAMERA.target.y, CAMERA.target.z);
 
   // Bloom, the night grade and a Hunter's fear effects (post.ts) between the rendered scene and
   // the canvas. The fear animator (fear.ts) eases the effects and keeps the heartbeat.
@@ -572,9 +604,13 @@ export function createScene(
   // material (for the burn tint) and of the outline material (for the stagger), and its own
   // Float mixer. Like a Hunter's, the group sits at the server's position and turns to the
   // facing along local +X; `pose`, at the floor, carries the model and leans it into its travel.
+  // `fade` (0..1) is how much of it is drawn while it dissolves in or out; its body and outline
+  // share `fadeUniform`. `grab` is the catch cutscene's clip, posed by hand from the cutscene's
+  // progress rather than played, and `grabWeight` how much of it shows over Float.
   type CreatureMesh = {
-    group: Group; pose: Group; material: MeshStandardMaterial; outline: ShaderMaterial; ring: Mesh; shadow: Mesh;
-    mixer: AnimationMixer; float: AnimationAction;
+    group: Group; pose: Group; material: MeshStandardMaterial; outline: ShaderMaterial; ring: Mesh;
+    ringMaterial: MeshBasicMaterial; shadow: Mesh; mixer: AnimationMixer; float: AnimationAction;
+    grab: AnimationAction; grabWeight: number; fade: number; fadeUniform: { value: number };
   };
   let creature: CreatureMesh | null = null;
   // Movement and the eased facing outlive the mesh, so a Creature revealed again keeps the way
@@ -596,8 +632,10 @@ export function createScene(
     model.scale.setScalar(creatureModel.scale);
     model.position.y = creatureModel.lift;
     pose.add(model);
-    const material = ditheredBody(creatureModel.material.clone());
-    const outline = createOutlineMaterial();
+    // Each appearance starts fully dissolved and fades in (render).
+    const fadeUniform = { value: 0 };
+    const material = ditheredBody(creatureModel.material.clone(), fadeUniform);
+    const outline = createOutlineMaterial(fadeUniform);
     model.traverse((object) => {
       if (!(object instanceof Mesh)) return;
       if (object.material === creatureModel.material) object.material = material;
@@ -605,11 +643,13 @@ export function createScene(
     });
     const mixer = new AnimationMixer(model);
     const float = mixer.clipAction(creatureModel.float).play();
-    // Sprint feedback: a flat ring on the floor under the Creature.
-    const ring = new Mesh(
-      new RingGeometry(GAMEPLAY.playerRadius + 2, GAMEPLAY.playerRadius + 6, 24),
-      new MeshBasicMaterial({ color: '#e46448' }),
-    );
+    // Grab runs but never advances on its own: render sets its time from the cutscene.
+    const grab = mixer.clipAction(creatureModel.grab).play();
+    grab.paused = true;
+    grab.setEffectiveWeight(0);
+    // Sprint feedback: a flat ring on the floor under the Creature, fading with it.
+    const ringMaterial = new MeshBasicMaterial({ color: '#e46448', transparent: true });
+    const ring = new Mesh(new RingGeometry(GAMEPLAY.playerRadius + 2, GAMEPLAY.playerRadius + 6, 24), ringMaterial);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = -(GAMEPLAY.playerRadius - 2);
     ring.visible = false;
@@ -621,7 +661,7 @@ export function createScene(
     scene.add(group);
     // The first snapshot after a reveal has nothing to compare with: no movement yet.
     creatureLastPosition = null;
-    creature = { group, pose, material, outline, ring, shadow, mixer, float };
+    creature = { group, pose, material, outline, ring, ringMaterial, shadow, mixer, float, grab, grabWeight: 0, fade: 0, fadeUniform };
     return creature;
   }
 
@@ -633,7 +673,7 @@ export function createScene(
     creature.material.dispose();
     creature.outline.dispose();
     creature.ring.geometry.dispose();
-    (creature.ring.material as MeshBasicMaterial).dispose();
+    creature.ringMaterial.dispose();
     creature = null;
   }
 
@@ -661,6 +701,18 @@ export function createScene(
   // The last size the canvas was given, so a change of VIEW.RENDER_SCALE can re-apply it.
   let lastWidth = 1;
   let lastHeight = 1;
+
+  // The catch cutscene's clock in seconds (null while none plays), the camera's aim on the pair
+  // (CATCH_FOCUS_HEIGHT above the floor, about mid-body) and its place there.
+  let catchClock: number | null = null;
+  const CATCH_FOCUS_HEIGHT = 25;
+  const GRAB_BLEND_SECONDS = 0.1;
+  const catchFocus = new Vector3();
+  const catchCamera = new Vector3();
+  const smooth = (x: number) => {
+    const t = Math.min(1, Math.max(0, x));
+    return t * t * (3 - 2 * t);
+  };
 
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
   // `fearPreview` (the debug menu's fear preview) replaces a Hunter's band and dread.
@@ -698,12 +750,36 @@ export function createScene(
     POOL_UNIFORMS.flashCoreHalfAngle.value = (tuning.flashlightConeAngle / 2) * (Math.PI / 180);
     POOL_UNIFORMS.flashFloorY.value = world.floorY;
     const self = snapshot?.role === 'hunter' ? snapshot.self : null;
-    // Fear: only a Hunter feels it, only while the round runs, from its own band and dread.
-    const feeling = snapshot?.role !== 'hunter' ? null
-      : fearPreview !== null ? previewInput(fearPreview)
-        : snapshot.roundState === 'running' ? fearInput(snapshot.proximity, snapshot.dread, tuning) : null;
-    const fearFrame = fear.update(feeling ?? { stage: 0, t: 0 }, deltaSeconds);
+
+    // The catch cutscene: how far into it this frame is, from the server's count at each snapshot
+    // and the frame clock between them, and where the pair stand.
+    const caught = snapshot?.catch ?? null;
+    if (!caught) catchClock = null;
+    else catchClock = newSnapshot || catchClock === null ? caught.elapsed : catchClock + deltaSeconds;
+    const catchSeconds = Math.max(tuning.catchSeconds, 1e-3);
+    const catchProgress = catchClock === null ? 0 : Math.min(1, catchClock / catchSeconds);
+    const caughtHunter = caught ? snapshot?.hunters.find((view) => view.id === caught.hunter) : undefined;
+    const caughtCreature = snapshot?.role === 'creature' ? snapshot.creature : snapshot?.creature?.position;
+    // The camera dollies in on the pair along its own view, so its angle never changes.
+    camera.position.copy(cameraHome);
+    if (catchClock !== null && caughtHunter && caughtCreature) {
+      const zoom = smooth(Math.min(1, catchClock / CATCH.ZOOM_IN_SECONDS, (catchSeconds - catchClock) / CATCH.ZOOM_OUT_SECONDS));
+      const focus = catchFocus.set(
+        (caughtHunter.position.x + caughtCreature.x) / 2, world.floorY + CATCH_FOCUS_HEIGHT, (caughtHunter.position.z + caughtCreature.z) / 2,
+      );
+      camera.position.lerp(catchCamera.subVectors(cameraHome, cameraAim).multiplyScalar(CATCH.ZOOM).add(focus), zoom);
+    }
+    camera.updateMatrixWorld();
+
+    // Fear: only an active Hunter feels it, only while the round runs, from its own band and
+    // dread. It eases out while a catch plays, so a Hunter's darkness never hides the cutscene,
+    // and once a Hunter is down: an incapacitated Hunter feels nothing until it is revived. (The
+    // debug menu's fear preview still shows, for tuning.)
     const selfView = snapshot?.hunters.find((view) => view.id === self);
+    const feeling = snapshot?.role !== 'hunter' || caught ? null
+      : fearPreview !== null ? previewInput(fearPreview)
+        : snapshot.roundState === 'running' && !selfView?.down ? fearInput(snapshot.proximity, snapshot.dread, tuning) : null;
+    const fearFrame = fear.update(feeling ?? { stage: 0, t: 0 }, deltaSeconds);
     if (selfView) post.setFear(fearFrame, fearFocus(selfView.position, selfView.down), (now - startTime) / 1000);
     else post.setFear({ ...fearFrame, active: false }, { x: 0.5, y: 0.5, scale: 1, lineX: 0.5, lineY: 0.5 }, 0);
     for (const view of snapshot?.hunters ?? []) {
@@ -712,17 +788,25 @@ export function createScene(
       mesh.group.position.set(view.position.x, view.position.y, view.position.z);
       // A positive rotation about Y turns local +X toward -Z; the facing angle runs +X toward +Z.
       mesh.group.rotation.y = -view.facing;
-      mesh.material.emissive.set(view.down ? CHARACTERS.DOWN_COLOR : view.id === self ? CHARACTERS.SELF_COLOR : CHARACTERS.TEAMMATE_COLOR);
+      // How far down it lies, 0 standing to 1 on its back. The Hunter being caught is held up by
+      // the Creature, struggling, and falls over the last CATCH.FALL_SECONDS of the cutscene.
+      const held = catchClock !== null && caught?.hunter === view.id;
+      const downAmount = held ? smooth((catchClock! - (catchSeconds - CATCH.FALL_SECONDS)) / Math.max(CATCH.FALL_SECONDS, 1e-3))
+        : view.down ? 1 : 0;
+      const struggling = held && catchProgress > CATCH.LUNGE_TO && catchProgress < CATCH.RELEASE_FROM;
+      mesh.pose.position.x = struggling ? CATCH.STRUGGLE * Math.sin(now * 0.047) : 0;
+      mesh.pose.position.z = struggling ? CATCH.STRUGGLE * Math.sin(now * 0.061 + 1.3) : 0;
+      mesh.material.emissive.set(downAmount >= 0.5 ? CHARACTERS.DOWN_COLOR : view.id === self ? CHARACTERS.SELF_COLOR : CHARACTERS.TEAMMATE_COLOR);
       // The shadow follows the body: round under a standing Hunter, stretched along a downed one,
       // whose head points away from its facing.
       mesh.shadow.visible = VFX.blobShadows;
-      mesh.shadow.position.x = view.down ? -HUNTER_HEIGHT / 2 : 0;
-      mesh.shadow.scale.x = view.down ? HUNTER_HEIGHT * 0.6 : CHARACTERS.HUNTER_SHADOW_RADIUS;
+      mesh.shadow.position.x = (-HUNTER_HEIGHT / 2) * downAmount;
+      mesh.shadow.scale.x = CHARACTERS.HUNTER_SHADOW_RADIUS + (HUNTER_HEIGHT * 0.6 - CHARACTERS.HUNTER_SHADOW_RADIUS) * downAmount;
       mesh.shadow.scale.z = CHARACTERS.HUNTER_SHADOW_RADIUS;
       // Down: tipped onto its back (face up, head away from its facing), lifted so the back
       // rests on the floor. It cannot move, turn, or shine.
-      mesh.pose.rotation.z = view.down ? Math.PI / 2 : 0;
-      mesh.pose.position.y = -GAMEPLAY.playerRadius + (view.down ? hunterModel.backDepth : 0);
+      mesh.pose.rotation.z = (Math.PI / 2) * downAmount;
+      mesh.pose.position.y = -GAMEPLAY.playerRadius + hunterModel.backDepth * downAmount;
       // Walk plays while the Hunter moves and fades back to the rest pose when it stops.
       if (newSnapshot) {
         const last = mesh.lastPosition;
@@ -785,6 +869,17 @@ export function createScene(
       const mesh = ensureCreature();
       const { position } = creatureView;
       mesh.group.position.set(position.x, position.y, position.z);
+      // In a catch it slides in over its lunge until it is CATCH.GRAB_DISTANCE from the Hunter
+      // (its arms reach the Hunter's sides from there), and back over the release.
+      if (catchClock !== null && caughtHunter) {
+        const dx = caughtHunter.position.x - position.x;
+        const dz = caughtHunter.position.z - position.z;
+        const apart = Math.hypot(dx, dz);
+        const reach = smooth((catchProgress - CATCH.LUNGE_FROM) / Math.max(CATCH.LUNGE_TO - CATCH.LUNGE_FROM, 1e-3))
+          * (1 - smooth((catchProgress - CATCH.RELEASE_FROM) / Math.max(1 - CATCH.RELEASE_FROM, 1e-3)));
+        const slide = Math.max(0, apart - CATCH.GRAB_DISTANCE) * reach;
+        if (apart > 1e-6) mesh.group.position.add(catchFocus.set((dx / apart) * slide, 0, (dz / apart) * slide));
+      }
       // Moving: did the position change between two snapshots. The facing comes from the
       // server, so it turns even while a wall stops the Creature, eased at a fixed rate.
       if (newSnapshot) {
@@ -794,17 +889,26 @@ export function createScene(
       }
       const turn = wrapAngle(creatureView.facing - creatureFacing);
       const { CREATURE_LEAN, CREATURE_SPRINT_LEAN, FLOAT_RATE_EASE } = CHARACTERS;
-      creatureFacing = wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CHARACTERS.CREATURE_TURN_SPEED * deltaSeconds));
+      // In a catch it faces the Hunter at once (the server turned it there).
+      creatureFacing = catchClock !== null ? creatureView.facing
+        : wrapAngle(creatureFacing + Math.sign(turn) * Math.min(Math.abs(turn), CHARACTERS.CREATURE_TURN_SPEED * deltaSeconds));
       mesh.group.rotation.y = -creatureFacing;
       // Leaning forward is a negative turn about the pose's Z (its +X is the facing). It eases to
       // the sprint lean, the moving lean or upright, at a rate that reaches the deepest one in
-      // FLOAT_RATE_EASE.
-      const leanTarget = creatureView.sprinting ? CREATURE_SPRINT_LEAN : creatureMoving ? CREATURE_LEAN : 0;
+      // FLOAT_RATE_EASE. Grab does its own leaning.
+      const leanTarget = catchClock !== null ? 0 : creatureView.sprinting ? CREATURE_SPRINT_LEAN : creatureMoving ? CREATURE_LEAN : 0;
       const leanStep = (Math.max(CREATURE_LEAN, CREATURE_SPRINT_LEAN) * deltaSeconds) / FLOAT_RATE_EASE;
       creatureLean += Math.max(-leanStep, Math.min(leanStep, leanTarget - creatureLean));
       mesh.pose.rotation.z = -creatureLean;
       const rate = creatureView.sprinting ? CHARACTERS.FLOAT_RATE_SPRINT : creatureMoving ? CHARACTERS.FLOAT_RATE_MOVING : 1;
       mesh.float.timeScale += (rate - mesh.float.timeScale) * Math.min(1, deltaSeconds / FLOAT_RATE_EASE);
+      // Grab follows the cutscene's progress, taking over from Float within GRAB_BLEND_SECONDS
+      // and handing back as quickly once it is over (Grab ends in Float's rest pose).
+      const grabStep = deltaSeconds / GRAB_BLEND_SECONDS;
+      mesh.grabWeight = Math.min(1, Math.max(0, mesh.grabWeight + (catchClock !== null ? grabStep : -grabStep)));
+      if (catchClock !== null) mesh.grab.time = catchProgress * creatureModel.grab.duration;
+      mesh.grab.setEffectiveWeight(mesh.grabWeight);
+      mesh.float.setEffectiveWeight(1 - mesh.grabWeight);
       mesh.mixer.update(deltaSeconds);
       // Burning feedback: the whole model glows ember red while the Creature cannot tag.
       const [red, green, blue] = creatureView.burning ? CHARACTERS.CREATURE_BURNING_TINT : CHARACTERS.CREATURE_TINT;
@@ -816,6 +920,16 @@ export function createScene(
       mesh.ring.visible = creatureView.sprinting;
       mesh.shadow.visible = VFX.blobShadows;
       mesh.shadow.scale.set(CHARACTERS.CREATURE_SHADOW_RADIUS, 1, CHARACTERS.CREATURE_SHADOW_RADIUS);
+      // The fade, on a Hunter's screen only: it dissolves in over CREATURE_FADE_IN_SECONDS, and out
+      // with the server's reveal countdown over its last CREATURE_FADE_OUT_SECONDS, so it is all but
+      // gone by the step the server stops sending it. The Creature always sees itself whole.
+      const fadeTarget = snapshot?.role === 'creature' ? 1
+        : Math.min(1, (snapshot?.creature?.revealRemaining ?? 0) / Math.max(CHARACTERS.CREATURE_FADE_OUT_SECONDS, 1e-3));
+      mesh.fade = snapshot?.role === 'creature' ? 1
+        : Math.min(fadeTarget, mesh.fade + deltaSeconds / Math.max(CHARACTERS.CREATURE_FADE_IN_SECONDS, 1e-3));
+      mesh.fadeUniform.value = mesh.fade;
+      mesh.ringMaterial.opacity = mesh.fade;
+      creatureShadowMaterial.uniforms.opacity.value = SHADING.CREATURE_BLOB_SHADOW_OPACITY * mesh.fade;
     } else {
       removeCreature();
     }

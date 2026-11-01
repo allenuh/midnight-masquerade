@@ -400,7 +400,10 @@ function start(
         statusText.textContent = 'Roles are assigned. The round starts in a moment.';
         break;
       case 'running':
-        if (own?.down) {
+        // While a catch cutscene plays, the game itself is the message: no overlay.
+        if (snapshot.catch) {
+          statusText.textContent = '';
+        } else if (own?.down) {
           showOverlay('INCAPACITATED', `REVIVE ${Math.floor(own.revive * 100)}%`);
           statusText.textContent = 'You are down. A teammate revives you by holding a flashlight on you.';
         } else if (snapshot.role === 'hunter') {

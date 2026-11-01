@@ -201,7 +201,8 @@ float vfxBayer4(vec2 a) { return vfxBayer2(0.5 * a) * 0.25 + vfxBayer2(a) + 1.0 
 
 // The Hunter and Creature bodies: emissive (unlit) in their model files. This shades them from
 // the scene's light, light or shadow per screen pixel, with the edge between them broken up by
-// an ordered dither.
+// an ordered dither. `vfxFade` (0..1) dissolves the body in the same ordered dither: below 1, that
+// share of its pixels is drawn and the rest discarded (the Creature fading in and out, scene.ts).
 function ditheredBodyShader(shader: WebGLProgramParametersWithUniforms): void {
   shader.uniforms.vfxLightDirection = VFX_UNIFORMS.vfxLightDirection;
   shader.uniforms.vfxDitherShading = VFX_UNIFORMS.vfxDitherShading;
@@ -214,30 +215,38 @@ uniform float vfxDitherShading;
 uniform float vfxShadowStrength;
 uniform float vfxDitherStart;
 uniform float vfxDitherWidth;
+uniform float vfxFade;
 ${BAYER_GLSL}
 ` + shader.fragmentShader.replace('#include <emissivemap_fragment>', /* glsl */ `#include <emissivemap_fragment>
 {
+  if (vfxFade < 1.0 && vfxFade <= vfxBayer4(gl_FragCoord.xy)) discard;
   float vfxLight = clamp((dot(normal, vfxLightDirection) - vfxDitherStart) / vfxDitherWidth, 0.0, 1.0);
   float vfxShade = vfxLight > vfxBayer4(gl_FragCoord.xy) ? 1.0 : vfxShadowStrength;
   totalEmissiveRadiance *= mix(1.0, vfxShade, vfxDitherShading);
 }`);
 }
 
-export function ditheredBody<T extends Material>(material: T): T {
-  material.onBeforeCompile = ditheredBodyShader;
+// `fade` is the body's own dissolve uniform; without one it is always fully drawn.
+export function ditheredBody<T extends Material>(material: T, fade: { value: number } = { value: 1 }): T {
+  material.onBeforeCompile = (shader) => {
+    ditheredBodyShader(shader);
+    shader.uniforms.vfxFade = fade;
+  };
   return material;
 }
 
 // Inverted-hull outline: the model drawn again, back faces only, each vertex pushed out along
 // its normal in screen space so the line has the same width everywhere on screen. Black at
-// OUTLINE_WIDTH; each material has its own colour and width so the Creature's can change.
-export function createOutlineMaterial(): ShaderMaterial {
+// OUTLINE_WIDTH; each material has its own colour and width so the Creature's can change. `fade`
+// dissolves it in the same dither as its body (ditheredBody).
+export function createOutlineMaterial(fade: { value: number } = { value: 1 }): ShaderMaterial {
   return new ShaderMaterial({
     side: BackSide,
     uniforms: {
       vfxOutlineWidth: { value: SHADING.OUTLINE_WIDTH },
       vfxOutlineColor: { value: new Color('#000000') },
       vfxAspect: VFX_UNIFORMS.vfxAspect,
+      vfxFade: fade,
     },
     vertexShader: /* glsl */ `
 uniform float vfxOutlineWidth;
@@ -250,7 +259,10 @@ void main() {
 }`,
     fragmentShader: /* glsl */ `
 uniform vec3 vfxOutlineColor;
+uniform float vfxFade;
+${BAYER_GLSL}
 void main() {
+  if (vfxFade < 1.0 && vfxFade <= vfxBayer4(gl_FragCoord.xy)) discard;
   gl_FragColor = vec4(vfxOutlineColor, 1.0);
 }`,
   });

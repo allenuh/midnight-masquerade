@@ -436,7 +436,9 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
   const seenAt = { ...game.creature!.position };
   for (let slot = 0; slot < 4; slot++) {
     const view = hunterView(game, slot);
-    assert.deepEqual(view.creature, { position: seenAt, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: true, burning: false });
+    const { revealRemaining, ...seen } = view.creature!;
+    assert.deepEqual(seen, { position: seenAt, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: true, burning: false });
+    closeTo(revealRemaining, lingerTicks / GAMEPLAY.tickRate, 1e-9);
     assert.equal(view.creatureHp, GAMEPLAY.creature.maxHp);
     assertHunterPayload(view);
   }
@@ -444,7 +446,9 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
   for (let tick = 1; tick < lingerTicks; tick++) {
     step(game, 1);
     for (let slot = 0; slot < 4; slot++) {
-      assert.deepEqual(hunterView(game, slot).creature, { position: seenAt, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: false, burning: false });
+      const { revealRemaining, ...seen } = hunterView(game, slot).creature!;
+      assert.deepEqual(seen, { position: seenAt, facing: CREATURE_SPAWN_FACING, staggered: false, sprinting: false, burning: false });
+      closeTo(revealRemaining, (lingerTicks - tick) / GAMEPLAY.tickRate, 1e-9);
     }
   }
   step(game, 1);
@@ -460,12 +464,23 @@ test('a sprinting Creature is sent to all four Hunters, and leaves all four payl
 });
 
 test('a flashlight reveal reaches every Hunter and ends for every Hunter together', () => {
+  // A beam that only reveals (a long effect delay): a hit would set it burning, which keeps it
+  // revealed for the whole burn (tested below).
   const game = stageGame(LANE_WEST, LANE_MIDDLE, EAST);
+  game.tuning = { ...game.tuning, lightEffectDelaySeconds: 10 };
   step(game, 1, { light: true });
   const seenAt = { ...game.creature!.position };
   for (let slot = 0; slot < 4; slot++) assert.deepEqual(hunterView(game, slot).creature?.position, seenAt);
   step(game, lingerTicks);
   for (let slot = 0; slot < 4; slot++) assert.equal('creature' in hunterView(game, slot), false);
+
+  // A hit: every Hunter keeps the burning Creature for the burn and the linger after it.
+  const hit = stageGame(LANE_WEST, LANE_MIDDLE, EAST);
+  step(hit, 1, { light: true });
+  step(hit, secondsToTicks(GAMEPLAY.creature.burnSeconds) + lingerTicks - 2);
+  for (let slot = 0; slot < 4; slot++) assert.ok(hunterView(hit, slot).creature, `slot ${slot} still sees it`);
+  step(hit, 1);
+  for (let slot = 0; slot < 4; slot++) assert.equal('creature' in hunterView(hit, slot), false);
 });
 
 test('abandoning a round mid-fight forgets every role and state; the next start is fresh', () => {

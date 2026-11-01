@@ -29,12 +29,12 @@ export const groundPosition = (x: number, z: number): Position => ({ x, y: groun
 // stage, so idle Hunters never touch, light, or block anything.
 export const PARKED: readonly Position[] = [groundPosition(700, 560), groundPosition(760, 560), groundPosition(820, 560)];
 
-// The rule tests run on the shipped defaults with one exception: no flashlight effect
-// delay. They stage single-step encounters to test the individual rules (one lit step
-// damages, staggers, burns), and the delay that gates those effects has its own tests
-// in tests/tuning.test.ts. Every other value is exactly gameplay-config.ts, so
-// expectations derived from GAMEPLAY stay valid.
-export const TEST_TUNING: Readonly<Tuning> = Object.freeze({ ...defaultTuning(), lightEffectDelaySeconds: 0 });
+// The rule tests run on the shipped defaults with two exceptions: no flashlight effect
+// delay and no catch cutscene. They stage single-step encounters to test the individual
+// rules (one lit step damages, staggers, burns; a tag downs at once), and the delay and the
+// cutscene have their own tests (tests/tuning.test.ts, tests/catch.test.ts). Every other
+// value is exactly gameplay-config.ts, so expectations derived from GAMEPLAY stay valid.
+export const TEST_TUNING: Readonly<Tuning> = Object.freeze({ ...defaultTuning(), lightEffectDelaySeconds: 0, catchSeconds: 0 });
 
 // A round for the five test players, stepped through the role reveal so it is running.
 export function startedGame(): Game {
@@ -118,12 +118,23 @@ export const CREATURE_PAYLOAD_KEYS = [
 ].sort();
 export const HUNTER_VIEW_KEYS = ['id', 'position', 'facing', 'light', 'battery', 'down', 'revive'].sort();
 
+// The optional `catch` key, in either role's payload, present only while a catch cutscene plays:
+// which Hunter, and the seconds since the catch.
+export function assertCatchPayload(payload: { catch?: unknown }): void {
+  if (!('catch' in payload)) return;
+  const seen = payload.catch as { hunter: unknown; elapsed: unknown };
+  assert.deepEqual(Object.keys(seen).sort(), ['elapsed', 'hunter']);
+  assert.ok(['H1', 'H2', 'H3', 'H4'].includes(seen.hunter as string));
+  assert.equal(typeof seen.elapsed, 'number');
+}
+
 // Strict allowlist over the serialized Hunter payload, including every teammate entry.
-// `creature` is optional: present only while the Creature is revealed.
+// `creature` is optional: present only while the Creature is revealed. So is `catch`.
 export function assertHunterPayload(value: unknown): void {
   const payload = JSON.parse(JSON.stringify(value));
-  const keys = Object.keys(payload).filter((key) => key !== 'creature').sort();
+  const keys = Object.keys(payload).filter((key) => key !== 'creature' && key !== 'catch').sort();
   assert.deepEqual(keys, HUNTER_PAYLOAD_KEYS);
+  assertCatchPayload(payload);
   assert.equal(payload.type, 'snapshot');
   assert.equal(payload.role, 'hunter');
   assert.equal(typeof payload.roundId, 'number');
@@ -163,11 +174,13 @@ export function assertHunterPayload(value: unknown): void {
     if (!hunter.down) assert.equal(hunter.revive, 0);
   }
   if ('creature' in payload) {
-    assert.deepEqual(Object.keys(payload.creature).sort(), ['burning', 'facing', 'position', 'sprinting', 'staggered']);
+    assert.deepEqual(Object.keys(payload.creature).sort(), ['burning', 'facing', 'position', 'revealRemaining', 'sprinting', 'staggered']);
     assert.deepEqual(Object.keys(payload.creature.position).sort(), ['x', 'y', 'z']);
     assert.equal(typeof payload.creature.facing, 'number');
     assert.equal(typeof payload.creature.staggered, 'boolean');
     assert.equal(typeof payload.creature.sprinting, 'boolean');
     assert.equal(typeof payload.creature.burning, 'boolean');
+    assert.equal(typeof payload.creature.revealRemaining, 'number');
+    assert.ok(payload.creature.revealRemaining > 0, 'a revealed Creature has reveal time left');
   }
 }

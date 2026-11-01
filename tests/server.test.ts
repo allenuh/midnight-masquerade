@@ -102,10 +102,12 @@ class Peer {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function assertHunterMessage(message: Message) {
-  // `creature` may appear only while revealed; these tests never use the light or the sprint.
-  assert.equal('creature' in message, false, 'hidden Creature never appears on the wire');
-  assert.deepEqual(Object.keys(message).sort(), HUNTER_PAYLOAD_KEYS);
+// `catchReveal`: this message is inside a catch cutscene or the reveal linger after one.
+function assertHunterMessage(message: Message, catchReveal = false) {
+  // `creature` may appear only while revealed. These tests never use the light or the sprint,
+  // so the only reveal is a catch: the cutscene shows the Creature to everyone, then it lingers.
+  if (!catchReveal) assert.equal('creature' in message, false, 'hidden Creature never appears on the wire');
+  assert.deepEqual(Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch').sort(), HUNTER_PAYLOAD_KEYS);
   assert.equal(message.type, 'snapshot');
   assert.equal(message.role, 'hunter');
   assert.equal(typeof message.roundId, 'number');
@@ -325,9 +327,17 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   assert.equal(restarted.filter((message) => message.role === 'creature').length, 1);
   assert.equal(restarted.every((message) => message.hunters!.every((hunter) => !hunter.down)), true);
 
-  // Every Hunter payload seen so far, in every round state, matched the allowlist.
+  // Every Hunter payload seen so far, in every round state, matched the allowlist. The Creature
+  // appears only during the catch cutscene and for the reveal linger after it (a few spare
+  // snapshots for timing).
+  const lingerSnapshots = Math.ceil(GAMEPLAY.creature.visibilityLingerSeconds * GAMEPLAY.tickRate) + 3;
   for (const peer of [...hunters, replacement]) {
-    for (const message of peer.messages) if (message.type === 'snapshot' && message.role === 'hunter') assertHunterMessage(message);
+    let sinceCatch = Infinity;
+    for (const message of peer.messages) {
+      if (message.type !== 'snapshot' || message.role !== 'hunter') continue;
+      sinceCatch = 'catch' in message ? 0 : sinceCatch + 1;
+      assertHunterMessage(message, sinceCatch <= lingerSnapshots);
+    }
   }
 
   // Host disconnect: the room closes and everyone else is told, then dropped.

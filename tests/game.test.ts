@@ -193,7 +193,8 @@ test('touching downs the Hunter, a small gap does not, the last Hunter down ends
   assert.equal(game.roundState, 'running');
   // The attack cooldown from the first tag must have expired; wait it out, then touch.
   while (game.creatureState.attackCooldownTicks > 0) stepGame(game);
-  game.creature!.position = groundPosition(last.position.x - contact, last.position.z);
+  // Touching (a hair inside contact: x - contact and back does not always round to exactly contact).
+  game.creature!.position = groundPosition(last.position.x - contact + 1e-9, last.position.z);
   stepGame(game);
   assert.equal(last.down, true);
   assert.equal(game.roundState, 'ended');
@@ -317,14 +318,22 @@ test('Hunter payload contains only permitted data in every round state', () => {
   assert.deepEqual(Object.keys(creaturePayload).sort(), CREATURE_PAYLOAD_KEYS);
   assert.deepEqual(creaturePayload.creature, game.creature!.position);
   assert.deepEqual(creaturePayload.hunters.map((hunter) => hunter.position), game.hunters.map((hunter) => hunter.position));
-  // Down every Hunter by contact, one per attack cooldown, checking the payload throughout.
+  // Down every Hunter by contact, one per attack cooldown, checking the payload throughout,
+  // including through every catch cutscene (the shipped tuning plays one per tag).
   for (const hunter of game.hunters) {
-    while (game.creatureState.attackCooldownTicks > 0) stepGame(game);
+    while (game.catch || game.creatureState.attackCooldownTicks > 0) {
+      stepGame(game);
+      for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+    }
     game.creature!.position = { ...hunter.position };
     stepGame(game);
     assert.equal(hunter.down, true);
+    assert.ok(game.catch, 'every tag plays the catch cutscene');
     for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
   }
+  // The last catch ends the round when its cutscene does.
+  assert.equal(game.roundState, 'running');
+  while (game.catch) stepGame(game);
   assert.equal(game.roundState, 'ended');
   assert.equal(game.result, 'caught');
   startRound(game, PLAYERS);

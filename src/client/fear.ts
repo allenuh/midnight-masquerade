@@ -47,7 +47,7 @@ export const NO_FEAR: FearLevels = {
 export const FEAR_STAGES: StageTable[] = [
   // UNEASY
   {
-    radius: [246, 180], softness: [224, 196], darkness: [0.48, 0.62], desaturation: [0.49, 0.61],
+    radius: [456, 324], softness: [224, 196], darkness: [0.48, 0.62], desaturation: [0.25, 0.42],
     heartRate: [55, 65], heartStrength: [0.3, 0.4], tendrils: [0, 0], aberration: [0, 0], tvStatic: [0, 0], flicker: [0, 0],
     lines: [8, 8], lineLength: [9.75, 9.75], lineWidth: [2.4, 2.4], lineWave: [0.9, 0.9], lineWaves: [1.5, 1.5], lineSpeed: [1.4, 1.4],
   },
@@ -58,10 +58,10 @@ export const FEAR_STAGES: StageTable[] = [
     lines: [12, 12], lineLength: [11.9, 11.9], lineWidth: [2.95, 2.95], lineWave: [1.4, 1.4], lineWaves: [2, 2], lineSpeed: [2.6, 2.6],
   },
   // IMMEDIATE: dark beyond a tight clear area (0.98 is the most the pass ever darkens). The clear
-  // radius stays above one and a half times the tag reach (29.4 by default, so 44.1), so the
+  // radius stays above one and a half times the tag reach (31.71 by default, so 47.6), so the
   // Creature about to reach the Hunter is in view.
   {
-    radius: [95, 45], softness: [100, 85], darkness: [0.85, 0.88], desaturation: [0.87, 0.87],
+    radius: [95, 48], softness: [100, 85], darkness: [0.85, 0.88], desaturation: [0.87, 0.87],
     heartRate: [120, 150], heartStrength: [1.12, 1.36], tendrils: [0.94, 0.94], aberration: [0.1, 0.39], tvStatic: [0.42, 1.05], flicker: [0.45, 0.7],
     lines: [16, 16], lineLength: [17, 17], lineWidth: [3.45, 3.45], lineWave: [2.05, 2.05], lineWaves: [2.5, 2.5], lineSpeed: [4.4, 4.4],
   },

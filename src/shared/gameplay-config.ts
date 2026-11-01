@@ -14,11 +14,11 @@ export const GAMEPLAY = {
   // depth are not here: they are map.width/height x TILE_SIZE, read from the room's World.
   arena: { floorY: 0, wallThickness: 26, wallHeight: 56 },
   // Shared collision radius for both roles: walls, the grounded height, and a Hunter's own
-  // sphere. The Creature is hit as a larger sphere of creatureHitRadius (1.1x playerRadius):
+  // sphere. The Creature is hit as a larger sphere of creatureHitRadius (about 1.27x playerRadius):
   // a tag is contact at distance <= playerRadius + creatureHitRadius, and a beam lights it when
   // the cone overlaps that sphere. Walls still stop it at playerRadius.
   playerRadius: 14,
-  creatureHitRadius: 15.4,
+  creatureHitRadius: 17.71,
   speed: { hunter: 60, creature: 70 },
   // Degrees per second. The flashlight follows this facing; movement itself is not delayed.
   hunterTurnSpeed: 360,
@@ -26,8 +26,10 @@ export const GAMEPLAY = {
   // and is the FULL-battery reach; the stages below scale it. damagePerSecond applies once
   // per step while any beam reaches the Creature; beams do not stack. A beam reveals the
   // Creature the step it lands, but must stay on it for effectDelaySeconds before it
-  // damages, staggers, or burns; the moment no beam reaches it that exposure resets.
-  flashlight: { range: 90, coneAngle: 45, damagePerSecond: 9, effectDelaySeconds: 0.3 },
+  // damages, staggers, or burns; the moment no beam reaches it that exposure resets. Once a
+  // hit has set the Creature burning, every lit step is a hit with no delay, until the burn
+  // wears off and the delay applies again.
+  flashlight: { range: 90, coneAngle: 45, damagePerSecond: 9, effectDelaySeconds: 0.5 },
   // Finite flashlight energy. The battery drains only while the button is held, in
   // simulation seconds, and never regenerates: battery pickups are the only refill.
   // Stages are read in order; the first one whose fraction of `max` the battery still
@@ -60,16 +62,17 @@ export const GAMEPLAY = {
   // Every flashlight hit sets the burn to burnSeconds, and a burning Creature cannot tag.
   // Light held on it keeps the timer at full, so this is how long after the beam leaves
   // before the Creature is dangerous again. Burning has no cooldown and is independent of
-  // the stagger and the reveal.
+  // the stagger and the reveal. Every tag plays the catch cutscene for catchSeconds: the whole
+  // round pauses while every screen watches the Creature grab the Hunter (0 skips it).
   creature: {
     maxHp: 100, staggerSeconds: 1, staggerCooldownSeconds: 6, visibilityLingerSeconds: 0.5, attackCooldownSeconds: 1,
-    burnSeconds: 3,
+    burnSeconds: 3, catchSeconds: 2,
   },
   // Creature sprint (the GDD's Dash): held Space / left mouse button replaces speed.creature with
-  // sprint.speed (20 faster than its walk) and reveals the Creature. The cooldown runs after every
+  // sprint.speed and reveals the Creature. The cooldown runs after every
   // sprint before the next. Keep speed / tickRate below arena.wallThickness so one step can never
   // cross a wall.
-  sprint: { speed: 90, cooldownSeconds: 0.2 },
+  sprint: { speed: 100, cooldownSeconds: 0.2 },
   // Total beam-seconds of teammate flashlight exposure that revives a downed Hunter. Beams
   // stack (two beams revive in half the time) and progress is kept when the light leaves.
   revive: { seconds: 6 },
