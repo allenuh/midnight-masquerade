@@ -798,9 +798,12 @@ test('the Creature wins by downing all four Hunters, and the room can start agai
     for (const player of players) await expect(player.page.locator('#result-title')).toHaveAccessibleName('The Creature wins');
 
     // Back to the lobby: everyone returns to the room screen, then the host begins again from it.
+    // The diamond wipe covers the change of screen and is gone once the room shows.
     await host.page.locator('#to-lobby').click();
+    await expect(host.page.locator('#transition')).toBeVisible();
     for (const player of players) {
       await expect(player.page.locator('#room-screen')).toBeVisible();
+      await expect(player.page.locator('#transition')).toBeHidden();
       await expect(player.page.locator('#arena-container')).toBeHidden();
       await expect(player.page.locator('#players')).toHaveText(`${PLAYER_COUNT} / ${PLAYER_COUNT}`);
     }

@@ -13,6 +13,7 @@ import { loadSurfaceTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
   GUEST_LIST, TITLE, clockText, createHud, createResult, ransom, renderGuests, setRoomCode, setTiles,
 } from './ui.js';
+import { createTransition } from './transition.js';
 import { debugRoom } from './debug-room.js'; // DEBUG-ROOM
 import { mountDebugMenu } from './debug-menu.js'; // DEBUG-MENU
 import './style.css';
@@ -71,6 +72,13 @@ const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 // through DANGER (see fear.ts).
 const fearParameter = new URLSearchParams(location.search).get('fear');
 const FEAR_PREVIEW = DEBUG && fearParameter !== null && Number.isFinite(Number(fearParameter)) ? Number(fearParameter) : null;
+
+// The screen wipe. The page opens covered and is revealed once the ransom faces have loaded (or
+// after 1.5 s without them), so the title never shows in fallback fonts. Each wipe ends by
+// redrawing the page (`settle`, set once the page is running), in case it changed screens again.
+let settle = () => {};
+const transition = createTransition(element<HTMLCanvasElement>('#transition'), () => settle());
+Promise.race([document.fonts.ready, new Promise((resolve) => window.setTimeout(resolve, 1500))]).then(() => transition.reveal());
 
 function start(
   hunterModel: HunterModel, creatureModel: CreatureModel, batteryModel: BatteryModel, surfaceTextures: SurfaceTextures,
@@ -133,6 +141,10 @@ function start(
   const result = createResult();
   // The result overlay comes first; the Gazette only once a player asks for it.
   let gazetteOpen = false;
+  // The screen on show and the snapshot it is drawn from. When the state calls for another screen
+  // these hold still while the wipe covers the window, and change behind it.
+  let shownScreen: string | null = null;
+  let shownSnapshot: Snapshot | null = null;
   setTiles(element('#game-title'), TITLE);
   setTiles(element('#guests-title'), [GUEST_LIST]);
 
@@ -296,8 +308,25 @@ function start(
     return lines.join('\n');
   }
 
+  // Which screen the state calls for. A new round is a new screen, so Play again wipes too.
+  function screenOf(): string {
+    if (snapshot) return `${gazetteOpen ? 'gazette' : 'game'}:${snapshot.roundId}`;
+    return room ? 'room' : 'title';
+  }
+
   // The whole page is derived from the connection, the room, and the latest snapshot.
   function updateUi(): void {
+    if (snapshot?.roundState !== 'ended') gazetteOpen = false;
+    const screen = screenOf();
+    shownScreen ??= screen;
+    if (screen !== shownScreen) {
+      transition.run(() => {
+        shownScreen = screenOf();
+        updateUi();
+      });
+      return;
+    }
+    shownSnapshot = snapshot;
     const connected = socket.readyState === WebSocket.OPEN;
     const inRound = snapshot !== null;
     // During a round (the reveal, the play and the result) the page is only the game, filling
@@ -358,7 +387,6 @@ function start(
     debugPanel.hidden = !inRound;
     debugMenu.update({ host: room?.host ?? false, running: snapshot?.roundState === 'running' }); // DEBUG-MENU
     overlay.hidden = true;
-    if (snapshot?.roundState !== 'ended') gazetteOpen = false;
     result.update(snapshot, room, gazetteOpen);
 
     // The status line carries only what the screens do not already say.
@@ -665,13 +693,14 @@ function start(
   let animationFrame = 0;
   let letterbox = '';
   function draw(): void {
-    scene?.render(snapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview); // DEBUG-MENU: was FEAR_PREVIEW
+    scene?.render(shownSnapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview); // DEBUG-MENU: was FEAR_PREVIEW
     if (scene) debugMenu.frame(scene.renderer); // DEBUG-MENU
     // The letterbox round the game matches the night beyond the map.
     if (letterbox !== NIGHT.BACKGROUND_COLOR) container.style.background = letterbox = NIGHT.BACKGROUND_COLOR;
     animationFrame = window.requestAnimationFrame(draw);
   }
 
+  settle = updateUi;
   const resizeObserver = new ResizeObserver(resizeArena);
   resizeObserver.observe(container);
   resizeArena();
