@@ -10,6 +10,9 @@ import {
 import { VFX, type VfxKey } from './vfx.js';
 import { loadPropModels, type PropModels } from './props.js';
 import { loadSurfaceTextures, type SurfaceTextures } from './surface-meshes.js';
+import {
+  GUEST_LIST, TITLE, clockText, createHud, createResult, ransom, renderGuests, setRoomCode, setTiles,
+} from './ui.js';
 import { debugRoom } from './debug-room.js'; // DEBUG-ROOM
 import { mountDebugMenu } from './debug-menu.js'; // DEBUG-MENU
 import './style.css';
@@ -19,6 +22,13 @@ const canvas = element<HTMLCanvasElement>('#arena');
 const container = element('#arena-container');
 const arenaView = element('#arena-view');
 const lobby = element('#lobby');
+const titleScreen = element('#title-screen');
+const roomScreen = element('#room-screen');
+const guestList = element('#guest-list');
+const copyLinkButton = element<HTMLButtonElement>('#copy-link');
+const leaveButton = element<HTMLButtonElement>('#leave-room');
+const inviteLink = element<HTMLInputElement>('#invite-link');
+const hudLayer = element('#hud-layer');
 const menu = element('#menu');
 const createButton = element<HTMLButtonElement>('#create');
 const joinForm = element<HTMLFormElement>('#join-form');
@@ -40,7 +50,7 @@ const overlay = element('#overlay');
 const overlayTitle = element('#overlay-title');
 const overlayDetail = element('#overlay-detail');
 const debugPanel = element('#debug');
-const roomControls = element('#room-controls');
+const startControls = element('#start-controls');
 const menuRoom = element('#menu-room');
 const mapSelect = element<HTMLSelectElement>('#map');
 const vfxToggles = document.querySelectorAll<HTMLInputElement>('#vfx input');
@@ -52,6 +62,9 @@ const tuningBody = element<HTMLTableSectionElement>('#tuning-table tbody');
 const tuningReset = element<HTMLButtonElement>('#tuning-reset');
 
 const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
+// The designed sizes the screens and the HUD are laid out at (style.css), before scaling.
+const STAGE = { width: 1440, height: 900 };
+const HUD_WIDTH = 1440;
 const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 // ?debug=1&fear=x opens a page with the debug menu's fear preview on at x: a Hunter's fear effects
 // without a Creature, x from 0 (SAFE) to 3 (as close as IMMEDIATE gets), e.g. 1.5 for halfway
@@ -94,6 +107,9 @@ function start(
   let snapshot: Snapshot | null = null;
   let menuNotice: string | null = null;
   let closedReason: string | null = null;
+  // Set by Leave until the next create or join: room messages the server sent before it saw the
+  // leave are still on their way and must not put this page back in the room.
+  let left = false;
   const input: InputState = { up: false, down: false, left: false, right: false, light: false };
   // Movement keys also steer the Hunter's facing. Space (or the left mouse button
   // on the arena) is the held action button: the Hunter's flashlight, the Creature's sprint.
@@ -108,24 +124,26 @@ function start(
   const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`);
 
   function send(message: ClientMessage): void {
+    if (message.type === 'create' || message.type === 'join' || message.type === 'debugCreate') left = false;
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
   }
 
   const debugMenu = mountDebugMenu(send, FEAR_PREVIEW); // DEBUG-MENU
+  const hud = createHud();
+  const result = createResult();
+  // The result overlay comes first; the Gazette only once a player asks for it.
+  let gazetteOpen = false;
+  setTiles(element('#game-title'), TITLE);
+  setTiles(element('#guests-title'), [GUEST_LIST]);
 
-  // In the lobby the room's controls sit in the header and the tuning table below it; during a
-  // round the page shows only the game, so they move into the debug menu's Room section. Each
-  // keeps its id and listeners wherever it is.
-  const lobbyHomes = [roomControls, tuningPanel].map((control) => ({
-    control, parent: control.parentElement!, next: control.nextSibling,
-  }));
+  // In the lobby the host's start sits under the guest list; during a round the page shows only
+  // the game, so it moves into the debug menu's Room section, keeping its id and listeners.
+  const startHome = { parent: startControls.parentElement!, next: startControls.nextSibling };
   function placeRoomControls(inRound: boolean): void {
-    for (const { control, parent, next } of lobbyHomes) {
-      const home = inRound ? menuRoom : parent;
-      if (control.parentElement === home) continue;
-      if (inRound) home.append(control);
-      else parent.insertBefore(control, next);
-    }
+    const home = inRound ? menuRoom : startHome.parent;
+    if (startControls.parentElement === home) return;
+    if (inRound) home.append(startControls);
+    else startHome.parent.insertBefore(startControls, startHome.next);
   }
 
   function sendInput(): void {
@@ -231,9 +249,14 @@ function start(
     tuningReset.hidden = !editable;
   }
 
-  function showOverlay(title: string, detail = ''): void {
+  // The title in cut-out letters, redrawn only when it changes. `dim` darkens the game behind it.
+  function showOverlay(title: string, detail = '', dim = false): void {
     overlay.hidden = false;
-    overlayTitle.textContent = title;
+    overlay.classList.toggle('reveal', dim);
+    if (overlayTitle.dataset.text !== title) {
+      overlayTitle.dataset.text = title;
+      setTiles(overlayTitle, [ransom(title, 60)]);
+    }
     overlayDetail.textContent = detail;
   }
 
@@ -242,12 +265,6 @@ function start(
     if (result === 'expired') return 'Time expired. Creature wins.';
     return 'Every Hunter is down. Creature wins.';
   }
-
-  // Whole seconds, rounded up so the clock only reads 0 when the round is actually over.
-  const clockText = (seconds: number): string => {
-    const total = Math.ceil(seconds);
-    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-  };
 
   // One compact line per player, built from that client's own snapshot.
   function debugText(snapshot: Snapshot): string {
@@ -284,28 +301,38 @@ function start(
     const connected = socket.readyState === WebSocket.OPEN;
     const inRound = snapshot !== null;
     // During a round (the reveal, the play and the result) the page is only the game, filling
-    // the window; everything else is in the debug menu.
+    // the window; the host's start and the round's numbers are in the debug menu.
     document.body.classList.toggle('in-round', inRound);
     placeRoomControls(inRound);
     lobby.hidden = inRound;
     container.hidden = !inRound;
+    // Outside a room: the title screen. In one: the invitation and the guest list.
+    titleScreen.hidden = room !== null;
+    roomScreen.hidden = room === null;
     menu.hidden = !connected || room !== null || closedReason !== null;
     createButton.disabled = joinButton.disabled = !connected;
-    roomText.hidden = room === null;
-    if (room) roomText.textContent = `Room: ${room.code}`;
+    if (room) {
+      setRoomCode(roomText, room.code);
+      inviteLink.value = `${location.origin}${location.pathname}?room=${room.code}`;
+      const guests = `${room.players}:${room.seat}`;
+      if (guestList.dataset.guests !== guests) {
+        guestList.dataset.guests = guests;
+        renderGuests(guestList, room, PLAYER_COUNT);
+      }
+    }
     playersText.hidden = waitingText.hidden = room === null || inRound;
     if (room && !inRound) {
-      playersText.textContent = `Players: ${room.players} / ${PLAYER_COUNT}`;
+      playersText.textContent = `${room.players} / ${PLAYER_COUNT}`;
       waitingText.textContent = room.players < PLAYER_COUNT
-        ? 'Waiting for players…'
-        : room.host ? 'Everyone is here. Start the match.' : 'Everyone is here. Waiting for the host to start.';
+        ? 'The evening begins when all five guests arrive.'
+        : room.host ? 'Everyone has arrived. Begin the evening.' : 'Everyone has arrived. Waiting for the host to begin.';
       // DEBUG-ROOM
       if (debugRoom.active) waitingText.textContent = 'Debug room: start any time. Empty slots are dummies that stand still.';
     }
     startButton.hidden = !room?.host;
     startButton.disabled = !connected || !room || (room.players < PLAYER_COUNT && !debugRoom.active); // DEBUG-ROOM: the debugRoom check
     debugRoom.update(createButton.disabled, startButton.hidden); // DEBUG-ROOM
-    startButton.textContent = snapshot && snapshot.roundState !== 'ended' ? 'Restart match' : 'Start match';
+    startButton.textContent = !snapshot ? 'Begin the evening' : snapshot.roundState === 'ended' ? 'Play again' : 'Restart match';
 
     // Map choice: a picker for the host between rounds, a label for everyone else. The
     // list and the current choice come from the room message; the map itself arrives
@@ -318,10 +345,10 @@ function start(
         mapSelect.replaceChildren(...room.maps.map((map) => new Option(map.name, map.id)));
       }
       mapSelect.value = room.mapId;
-      mapText.textContent = `Map: ${room.maps.find((map) => map.id === room!.mapId)?.name ?? room.mapId}`;
+      mapText.textContent = room.maps.find((map) => map.id === room!.mapId)?.name ?? room.mapId;
     }
-    // The tuning table follows the map picker's rule: between rounds only (the lobby and
-    // the result screen), editable by the host, readable by everyone.
+    // The tuning table (in the debug menu) follows the map picker's rule: between rounds only
+    // (the lobby and the result), editable by the host, readable by everyone.
     tuningPanel.hidden = room === null || !betweenRounds;
     if (room) renderTuning(room.tuning, room.host);
 
@@ -331,19 +358,23 @@ function start(
     debugPanel.hidden = !inRound;
     debugMenu.update({ host: room?.host ?? false, running: snapshot?.roundState === 'running' }); // DEBUG-MENU
     overlay.hidden = true;
+    if (snapshot?.roundState !== 'ended') gazetteOpen = false;
+    result.update(snapshot, room, gazetteOpen);
 
+    // The status line carries only what the screens do not already say.
     if (closedReason) {
       statusText.textContent = closedReason;
     } else if (!snapshot) {
       statusText.textContent = !connected
         ? 'Connecting…'
         : !room
-          ? (menuNotice ?? 'Create a room, or enter a room code to join one.')
+          ? (menuNotice ?? '')
           : room.notice === 'disconnected'
             ? 'A player disconnected, so the round was ended. Waiting for players…'
-            : 'Share the room code. The host can start once five players are connected.';
+            : '';
     }
     if (!snapshot) return;
+    hud.update(snapshot, room?.tuning ?? DEFAULT_TUNING);
 
     // Compact team state, shared by both roles; the Hunter's own slot is marked.
     const self = snapshot.role === 'hunter' ? snapshot.self : null;
@@ -395,8 +426,8 @@ function start(
     const own = self === null ? undefined : snapshot.hunters.find((hunter) => hunter.id === self);
     switch (snapshot.roundState) {
       case 'reveal':
-        if (snapshot.role === 'creature') showOverlay('YOU ARE THE CREATURE');
-        else showOverlay('YOU ARE A HUNTER', snapshot.self);
+        if (snapshot.role === 'creature') showOverlay('YOU ARE THE CREATURE', '', true);
+        else showOverlay('YOU ARE A HUNTER', snapshot.self, true);
         statusText.textContent = 'Roles are assigned. The round starts in a moment.';
         break;
       case 'running':
@@ -417,10 +448,9 @@ function start(
         }
         break;
       case 'ended': {
-        const next = room?.host ? 'Start the match to play again.' : 'Waiting for the host to start the next round.';
+        // The result view (ui.ts) is over the game; the status line keeps the same words.
+        const next = room?.host ? 'Play again to start the next round.' : 'Waiting for the host to start the next round.';
         statusText.textContent = `${resultText(snapshot.result)} ${next}`;
-        // The page is only the game now, so the result is shown over it.
-        showOverlay(resultText(snapshot.result), room?.host ? 'Start match is in the debug menu (`).' : next);
         break;
       }
     }
@@ -440,7 +470,7 @@ function start(
     const message = JSON.parse(event.data) as ServerMessage;
     if (message.type === 'error') {
       if (message.reason === 'host-left') {
-        closedReason = 'The host disconnected, so the room was closed. Reload this page to create or join a room.';
+        closedReason = 'The host left, so the room was closed. Reload this page to create or join a room.';
         room = null;
         snapshot = null;
         clearInput();
@@ -450,6 +480,7 @@ function start(
       updateUi();
       return;
     }
+    if (left) return;
     if (message.type === 'map') {
       loadMap(message.map);
       updateUi();
@@ -549,12 +580,61 @@ function start(
     send({ type: 'selectMap', id: mapSelect.value });
   });
 
-  startButton.addEventListener('click', () => {
+  // The host's start: Begin the evening in the room, Play again on the result, and the debug
+  // menu's restart. Each drops focus so a later Space press works the action button instead.
+  function startRound(button: HTMLButtonElement): void {
+    button.blur();
     if (startButton.disabled) return;
-    // Drop focus so a later Space press works the action button instead of this button.
-    startButton.blur();
     releaseInput();
     send(debugRoom.active ? debugRoom.startMessage() : { type: 'start' }); // DEBUG-ROOM: was send({ type: 'start' })
+  }
+  startButton.addEventListener('click', () => startRound(startButton));
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.play-again')) {
+    button.addEventListener('click', () => startRound(button));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.to-lobby')) {
+    button.addEventListener('click', () => {
+      button.blur();
+      if (room?.host) send({ type: 'lobby' });
+    });
+  }
+  for (const [selector, open] of [['#read-gazette', true], ['#close-gazette', false]] as const) {
+    element<HTMLButtonElement>(selector).addEventListener('click', (event) => {
+      (event.currentTarget as HTMLButtonElement).blur();
+      gazetteOpen = open;
+      updateUi();
+    });
+  }
+  // The clipboard needs a secure page (https, or this machine's own address); elsewhere the link
+  // is shown to copy by hand.
+  copyLinkButton.addEventListener('click', () => {
+    copyLinkButton.blur();
+    const shown = () => {
+      inviteLink.hidden = false;
+      inviteLink.select();
+    };
+    if (!navigator.clipboard) return shown();
+    navigator.clipboard.writeText(inviteLink.value).then(() => {
+      copyLinkButton.textContent = 'Copied';
+      window.setTimeout(() => { copyLinkButton.textContent = 'Copy invitation link'; }, 1500);
+    }, shown);
+  });
+  // Leave: back to the title screen on the same connection. The room code comes off the URL so a
+  // reload doesn't join again.
+  leaveButton.addEventListener('click', () => {
+    leaveButton.blur();
+    if (!room) return;
+    send({ type: 'leave' });
+    left = true;
+    room = null;
+    snapshot = null;
+    debugRoom.active = false; // DEBUG-ROOM
+    inviteLink.hidden = true;
+    clearInput();
+    const url = new URL(location.href);
+    url.searchParams.delete('room');
+    history.replaceState(null, '', url);
+    updateUi();
   });
   debugRoom.mount(send, updateUi); // DEBUG-ROOM
 
@@ -567,8 +647,19 @@ function start(
     const height = width / scene.aspect;
     arenaView.style.width = `${width}px`;
     arenaView.style.height = `${height}px`;
+    // The HUD is laid out 1440 wide, as tall as the arena's shape, and scaled onto it.
+    hudLayer.style.setProperty('--hud-scale', String(width / HUD_WIDTH));
+    hudLayer.style.setProperty('--hud-height', `${HUD_WIDTH / scene.aspect}px`);
     scene.resize(width, height);
   }
+
+  // The full screens (title, room, Gazette) are a 1440 × 900 stage fitted to the window.
+  function fitStage(): void {
+    const scale = Math.min(window.innerWidth / STAGE.width, window.innerHeight / STAGE.height);
+    document.documentElement.style.setProperty('--stage-scale', String(scale));
+  }
+  window.addEventListener('resize', fitStage);
+  fitStage();
 
   // Render the latest authoritative state; the client does not simulate movement or hits.
   let animationFrame = 0;

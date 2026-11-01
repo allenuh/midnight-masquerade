@@ -34,7 +34,7 @@ export const debugRoom = {
     roleSelect.addEventListener('change', () => roleSelect.blur());
   },
 
-  // Called from the page's updateUi: the Debug room button follows Create room, and the role
+  // Called from the page's updateUi: the Debug room button follows Host a masquerade, and the role
   // picker shows wherever the host's Start button does.
   update(createDisabled: boolean, startHidden: boolean): void {
     createButton.disabled = createDisabled;

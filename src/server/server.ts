@@ -75,9 +75,9 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
   }
 
   function broadcastRoom(room: Room, notice: RoomMessage['notice'] = null): void {
-    for (const player of room.players) {
+    for (const [seat, player] of room.players.entries()) {
       send(player, {
-        type: 'room', code: room.code, players: room.players.length, host: room.host === player, notice,
+        type: 'room', code: room.code, players: room.players.length, host: room.host === player, seat, notice,
         maps: catalog.summaries, mapId: room.map.id, tuning: room.game.tuning,
       });
     }
@@ -106,7 +106,7 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       `[round] room=${room.code} id=${game.roundId} result=${game.result}` +
       ` duration=${(game.tuning.matchSeconds - game.timeTicks * STEP_SECONDS).toFixed(1)}s` +
       ` creatureHp=${game.creatureState.hp.toFixed(1)} downs=${stats.incapacitations} revives=${stats.revives}` +
-      ` batteries=${stats.pickupsCollected} light=[${lightSeconds}]` +
+      ` batteries=${stats.pickupsCollected} exposure=${(stats.exposureTicks * STEP_SECONDS).toFixed(1)}s light=[${lightSeconds}]` +
       ` tuning=[${tuningDifferences(game.tuning)}]`,
     );
   }
@@ -205,7 +205,8 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
     broadcastRoom(room);
   }
 
-  // Disconnect policy. Host gone: the room closes and everyone else is told why (no
+  // Disconnect policy, also used when a player leaves with the room's Leave button (the
+  // connection then stays open for the title screen). Host gone: the room closes and everyone else is told why (no
   // host migration). Anyone else gone: the round (running or finished) is dropped and
   // the rest wait in the lobby for a fifth player, with a notice if play was cut short.
   // No grace period, reconnect, or takeover.
@@ -262,6 +263,15 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       room.lastStart = now;
       startRound(room.game, room.players.map((player) => player.id));
       broadcastSnapshots(room);
+    } else if (fields.type === 'lobby' && keys.length === 1 && room && room.host === client && room.game.roundState === 'ended') {
+      // The result screen's "Back to the lobby": the finished round is dropped (roles forgotten)
+      // and everyone returns to the room screen. Only once a round has ended, so it never cuts
+      // one short.
+      abandonRound(room.game);
+      logRoom(room, 'back to the lobby');
+      broadcastRoom(room);
+    } else if (fields.type === 'leave' && keys.length === 1 && room) {
+      leaveRoom(client);
     // DEBUG-ROOM: create a debug room, and start one with any number of players.
     } else if (fields.type === 'debugCreate' && keys.length === 1 && !room) {
       createRoom(client, true);

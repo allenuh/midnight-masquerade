@@ -7,6 +7,7 @@ import { DEFAULT_TUNING, defaultTuning, type Tuning } from '../shared/tuning.js'
 import { constrainToWalls, distance3D, sphereInCone, spheresTouchDuringStep } from './spatial.js';
 import type {
   CreatureSnapshot, HunterId, HunterSnapshot, HunterView, InputState, Position, ProximityState, RoundResult, RoundState,
+  RoundSummary,
 } from '../shared/protocol.js';
 
 // Server-side connection identity. Never sent to clients; roles are looked up from it.
@@ -57,11 +58,14 @@ export type Creature = { player: PlayerId; position: Position; facing: number; i
 // is out, in which case `spawnTicks` counts down to the next one.
 export type PickupState = { at: number | null; spawnTicks: number };
 
-// Round-end playtest data. Counters only: no storage, no identifiers, no analytics.
+// Round-end playtest data, logged by the server and shown on the result screen (see
+// roundSummary). Counters only: no storage, no identifiers, no analytics. exposureTicks counts the
+// steps a flashlight was on the Creature.
 export type RoundStats = {
   incapacitations: number;
   revives: number;
   pickupsCollected: number;
+  exposureTicks: number;
   lightTicks: Record<HunterId, number>;
 };
 
@@ -152,6 +156,7 @@ const freshStats = (): RoundStats => ({
   incapacitations: 0,
   revives: 0,
   pickupsCollected: 0,
+  exposureTicks: 0,
   lightTicks: { H1: 0, H2: 0, H3: 0, H4: 0 },
 });
 
@@ -522,6 +527,7 @@ export function stepGame(game: Game): void {
   state.litTicks = state.lit ? state.litTicks + 1 : 0;
   if (state.lit) {
     state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
+    game.stats.exposureTicks += 1;
   }
   if (state.lit && (isBurning(state) || state.litTicks > secondsToTicks(tuning.lightEffectDelaySeconds))) {
     state.hp = Math.max(0, state.hp - tuning.flashlightDamagePerSecond * STEP_SECONDS);
@@ -572,6 +578,25 @@ export function stepGame(game: Game): void {
 
 const copyPosition = (position: Position): Position => ({ x: position.x, y: position.y, z: position.z });
 
+// Steps as seconds, to a tenth: the result screen shows no finer, and the wire carries no long float.
+const tenths = (ticks: number): number => Math.round(ticks * STEP_SECONDS * 10) / 10;
+
+// The round's tallies for the result screen. Sent only once the round has ended, so nothing in it
+// can tell a Hunter where the Creature was while it played.
+export function roundSummary(game: Game): RoundSummary {
+  const { stats } = game;
+  return {
+    caught: stats.incapacitations,
+    revived: stats.revives,
+    batteries: stats.pickupsCollected,
+    lit: tenths(stats.exposureTicks),
+    flashlight: {
+      H1: tenths(stats.lightTicks.H1), H2: tenths(stats.lightTicks.H2),
+      H3: tenths(stats.lightTicks.H3), H4: tenths(stats.lightTicks.H4),
+    },
+  };
+}
+
 export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | CreatureSnapshot {
   const role = roleOf(game, player);
   const roundState = game.roundState;
@@ -603,6 +628,8 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     // Every player watches a catch: which Hunter, and how far into the cutscene. The key is
     // present only while one plays.
     ...(game.catch ? { catch: { hunter: game.catch.hunter, elapsed: (game.catch.total - game.catch.ticks) * STEP_SECONDS } } : {}),
+    // The result screen's tallies, present only once the round has ended.
+    ...(roundState === 'ended' ? { stats: roundSummary(game) } : {}),
   };
 
   // SECURITY: construct an allowlist for each role. Never serialize game.creature,

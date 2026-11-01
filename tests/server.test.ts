@@ -23,6 +23,7 @@ type Message = {
   code?: string;
   players?: number;
   host?: boolean;
+  seat?: number;
   notice?: string | null;
   maps?: { id: string; name: string }[];
   mapId?: string;
@@ -40,6 +41,7 @@ type Message = {
   attackCooldown?: number;
   timeRemaining?: number;
   tuning?: Tuning;
+  stats?: { caught: number; revived: number; batteries: number; lit: number; flashlight: Record<string, number> };
 };
 
 const idle = { up: false, down: false, left: false, right: false, light: false };
@@ -179,7 +181,7 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
     const { maps: _maps, tuning: _tuning, ...rest } = message;
     return rest;
   };
-  assert.deepEqual(roomOf(created), { type: 'room', code: created.code, players: 1, host: true, notice: null, mapId: 'test-arena' });
+  assert.deepEqual(roomOf(created), { type: 'room', code: created.code, players: 1, host: true, seat: 0, notice: null, mapId: 'test-arena' });
   // The full map arrived before the room message: the client builds its scene from it.
   const mapMessage = host.messages.find((message) => message.type === 'map');
   assert.ok(mapMessage && typeof mapMessage.map === 'object', 'the room map is sent on create');
@@ -192,8 +194,9 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   second.send({ type: 'join', code: '0000' });
   assert.deepEqual(await second.waitFor((message) => message.type === 'error'), { type: 'error', reason: 'not-found' });
   second.send({ type: 'join', code: code.toLowerCase() });
-  assert.deepEqual(roomOf(await second.waitFor((message) => message.type === 'room')), { type: 'room', code, players: 2, host: false, notice: null, mapId: 'test-arena' });
-  assert.deepEqual(roomOf(await host.waitFor((message) => message.type === 'room' && message.players === 2)), { type: 'room', code, players: 2, host: true, notice: null, mapId: 'test-arena' });
+  // `seat` is each member's own place in the join order.
+  assert.deepEqual(roomOf(await second.waitFor((message) => message.type === 'room')), { type: 'room', code, players: 2, host: false, seat: 1, notice: null, mapId: 'test-arena' });
+  assert.deepEqual(roomOf(await host.waitFor((message) => message.type === 'room' && message.players === 2)), { type: 'room', code, players: 2, host: true, seat: 0, notice: null, mapId: 'test-arena' });
 
   // Starting needs a full room: nothing happens with two players.
   const earlyStart = host.messages.length;
@@ -303,9 +306,10 @@ test('real sockets run the room flow: codes, joins, private roles, hidden payloa
   const leaveStart = remaining.map((peer) => peer.messages.length);
   await leaver.close();
   await Promise.all(remaining.map((peer, index) => peer.waitFor((message) => message.type === 'room', leaveStart[index])));
-  for (const peer of remaining) {
+  // The seats close up behind the one who left.
+  for (const [seat, peer] of remaining.entries()) {
     const notice = peer.latest()!;
-    assert.deepEqual(roomOf(notice), { type: 'room', code, players: PLAYER_COUNT - 1, host: peer === host, notice: 'disconnected', mapId: 'test-arena' });
+    assert.deepEqual(roomOf(notice), { type: 'room', code, players: PLAYER_COUNT - 1, host: peer === host, seat, notice: 'disconnected', mapId: 'test-arena' });
   }
   await sleep(200);
   for (const peer of remaining) assert.equal(peer.latest()!.type, 'room', 'no snapshots without a round');
@@ -541,4 +545,80 @@ test('the host tunes the room between rounds: broadcast to all, refused from gue
   host.send({ type: 'tune', tuning: defaultTuning() });
   const reset = await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'room' && message.tuning?.creatureSpeed === GAMEPLAY.speed.creature)));
   for (const message of reset) assert.deepEqual(message.tuning, defaultTuning());
+});
+
+test('the host takes the room back to the lobby once a round has ended, and only then', { timeout: 30_000 }, async (t) => {
+  const { connect } = await startServer(t);
+  const { host, guests, players } = await fillRoom(connect);
+  host.send({ type: 'tune', tuning: { ...defaultTuning(), matchSeconds: 10 } });
+  await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'room' && message.tuning?.matchSeconds === 10)));
+  host.send({ type: 'start' });
+  await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'running', 0, 10_000)));
+
+  // Mid-round it does nothing: the round keeps running.
+  const before = players.map((peer) => peer.messages.length);
+  host.send({ type: 'lobby' });
+  await sleep(300);
+  for (const [index, peer] of players.entries()) {
+    assert.ok(peer.messages.slice(before[index]).every((message) => message.type === 'snapshot' && message.roundState === 'running'));
+  }
+
+  // Once the clock runs out every player gets the result with its tallies.
+  const ended = await Promise.all(players.map((peer) => peer.waitFor((message) => message.roundState === 'ended', 0, 15_000)));
+  for (const message of ended) {
+    assert.equal(message.result, 'expired');
+    assert.deepEqual(message.stats, { caught: 0, revived: 0, batteries: 0, lit: 0, flashlight: { H1: 0, H2: 0, H3: 0, H4: 0 } });
+  }
+
+  // A guest cannot end it; the host can.
+  const afterGuest = host.messages.length;
+  guests[0].send({ type: 'lobby' });
+  await sleep(300);
+  assert.ok(host.messages.slice(afterGuest).every((message) => message.type === 'snapshot'));
+  const backStart = players.map((peer) => peer.messages.length);
+  host.send({ type: 'lobby' });
+  const back = await Promise.all(players.map((peer, index) => peer.waitFor((message) => message.type === 'room', backStart[index])));
+  for (const [seat, message] of back.entries()) {
+    assert.equal(message.notice, null);
+    assert.equal(message.seat, seat);
+    assert.equal(message.players, PLAYER_COUNT);
+  }
+  await sleep(200);
+  for (const peer of players) assert.equal(peer.latest()!.type, 'room', 'no snapshots in the lobby');
+});
+
+test('leave takes a player out of the room on the same connection; the host leaving closes it', { timeout: 30_000 }, async (t) => {
+  const { connect } = await startServer(t);
+  const { host, guests, code, players } = await fillRoom(connect);
+  const [leaver, ...stayers] = guests;
+
+  // A guest leaves: the seats close up behind it, it hears nothing more, and it can join again.
+  await Promise.all(players.map((peer) => peer.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT)));
+  const leaveStart = [host, ...stayers].map((peer) => peer.messages.length);
+  const leaverStart = leaver.messages.length;
+  leaver.send({ type: 'leave' });
+  const after = await Promise.all([host, ...stayers].map((peer, index) => peer.waitFor((message) => message.type === 'room' && message.players === PLAYER_COUNT - 1, leaveStart[index])));
+  for (const [seat, message] of after.entries()) {
+    assert.deepEqual([message.players, message.host, message.seat, message.notice], [PLAYER_COUNT - 1, seat === 0, seat, null]);
+  }
+  await sleep(200);
+  assert.equal(leaver.messages.length, leaverStart, 'nothing is sent back to the one who left');
+  assert.equal(leaver.socket.readyState, WebSocket.OPEN);
+  leaver.send({ type: 'join', code });
+  const rejoined = await leaver.waitFor((message) => message.type === 'room', leaverStart);
+  assert.equal(rejoined.seat, PLAYER_COUNT - 1);
+  assert.equal(rejoined.players, PLAYER_COUNT);
+
+  // The host leaves: everyone else is told the room closed, and the host can create a new one.
+  const others = players.filter((peer) => peer !== host);
+  const closeStart = others.map((peer) => peer.messages.length);
+  host.send({ type: 'leave' });
+  await Promise.all(others.map((peer, index) => peer.waitFor((message) => message.type === 'error', closeStart[index])));
+  for (const peer of others) assert.deepEqual(peer.latest(), { type: 'error', reason: 'host-left' });
+  assert.equal(host.socket.readyState, WebSocket.OPEN);
+  const createStart = host.messages.length;
+  host.send({ type: 'create' });
+  const created = await host.waitFor((message) => message.type === 'room', createStart);
+  assert.notEqual(created.code, code);
+  assert.equal(created.players, 1);
 });

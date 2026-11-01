@@ -1,9 +1,34 @@
+/* The debug menu's plain monospace look is the page default; the designed screens set their own. */
 :root {
   color-scheme: dark;
   font-family: monospace;
   font-size: 13px;
   color: #e6e7e4;
-  background: #161918;
+  background: #17111c;
+
+  /* The masquerade palette and its ransom-note faces (ui.ts). */
+  --cream: #efe6d2;
+  --paper: #fbf6ea;
+  --ink: #1d1822;
+  --text: #1b1720;
+  --wine: #8a1f2e;
+  --wine-dark: #4a0f19;
+  --gold: #e5b84a;
+  --gilt: #b8923a;
+  --teal: #1f6f73;
+  --pink: #e0568f;
+  --powder: #93b6d6;
+  --orange: #d9662e;
+  --muted: #c9bba3;
+  --faded: #5a4e3e;
+  --typewriter: 'Courier Prime', 'Courier New', monospace;
+  --abril: 'Abril Fatface', 'Didot', 'Bodoni MT', serif;
+  --alfa: 'Alfa Slab One', 'Rockwell', 'Courier New', serif;
+  --bodoni: 'Bodoni Moda', 'Bodoni MT', 'Didot', serif;
+  --playfair: 'Playfair Display', 'Georgia', serif;
+  --rye: 'Rye', 'Georgia', serif;
+  --bungee: 'Bungee', 'Impact', sans-serif;
+  --fraktur: 'UnifrakturMaguntia', 'Old English Text MT', serif;
 }
 
 * {
@@ -17,19 +42,9 @@
 
 body {
   margin: 0;
-  padding: 12px;
   height: 100vh;
   height: 100dvh;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-header {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 24px;
+  overflow: hidden;
 }
 
 button,
@@ -47,23 +62,14 @@ button {
   cursor: pointer;
 }
 
-/* The room's controls sit at the right of the header in the lobby (main.ts moves them into the
-   debug menu during a round). */
-#room-controls {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 24px;
-  margin-left: auto;
-}
-
 button:hover:enabled {
   background: #3b413d;
 }
 
 button:focus-visible,
-input:focus-visible {
-  outline: 2px solid #e6e7e4;
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--gold);
   outline-offset: 3px;
 }
 
@@ -73,108 +79,577 @@ button:disabled {
   cursor: default;
 }
 
-input {
-  width: 7ch;
+.symbols {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* Icons take the colour of their text. */
+.icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  flex-shrink: 0;
+}
+
+/* ---------- Ransom-note lettering (ui.ts) ---------- */
+
+.tiles {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.06em;
+}
+
+.tile {
+  display: inline-block;
+  line-height: 1;
+  padding: calc(2px + 0.08em) calc(3px + 0.09em) calc(1px + 0.02em);
+}
+
+.tile-gap {
+  display: inline-block;
+  width: 6px;
+}
+
+/* The big titles need a gap to match their letters. */
+#overlay-title .tile-gap,
+#result-title .tile-gap,
+#gazette-title .tile-gap {
+  width: 26px;
+}
+
+.f-abril { font-family: var(--abril); font-weight: 400; }
+.f-alfa { font-family: var(--alfa); font-weight: 400; }
+.f-bodoni { font-family: var(--bodoni); font-weight: 900; }
+.f-playfair { font-family: var(--playfair); font-style: italic; font-weight: 900; }
+.f-rye { font-family: var(--rye); font-weight: 400; }
+.f-bungee { font-family: var(--bungee); font-weight: 400; }
+.f-fraktur { font-family: var(--fraktur); font-weight: 400; }
+
+/* ---------- The stage: a 1440 × 900 layout scaled to the window (main.ts sets the scale) ---------- */
+
+.stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1440px;
+  height: 900px;
+  transform: translate(-50%, -50%) scale(var(--stage-scale, 1));
+  font-family: var(--typewriter);
+  color: var(--cream);
+}
+
+/* The gilt frame round every full screen. */
+.gilt {
+  position: absolute;
+  inset: 36px;
+  border: 3px solid var(--gilt);
+  outline: 1px solid #5c4720;
+  outline-offset: 8px;
+  pointer-events: none;
+}
+
+/* Damask wallpaper, behind the title screen and the room. */
+#lobby {
+  position: fixed;
+  inset: 0;
+  background-color: #17111c;
+  background-image:
+    radial-gradient(circle at 50% 50%, #241a2b 0 18%, transparent 19%),
+    radial-gradient(circle at 0 0, #211827 0 9%, transparent 10%),
+    radial-gradient(circle at 100% 100%, #211827 0 9%, transparent 10%);
+  background-size: 64px 64px;
+}
+
+/* Notices (a wrong code, a full room, a disconnect), under everything else on the stage. */
+#status {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%) rotate(-0.5deg);
+  margin: 0;
+  max-width: 1000px;
+  padding: 5px 14px;
+  background: var(--wine);
+  color: #f4ead6;
+  font-size: 17px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+#status:empty {
+  display: none;
+}
+
+/* ---------- Title screen ---------- */
+
+#title-screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 30px;
+}
+
+.title-mask {
+  width: 132px;
+  height: 70px;
+  color: var(--gold);
+  stroke-width: 1.6;
+}
+
+#game-title {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  font-weight: normal;
+}
+
+#game-title .tiles {
+  gap: 6px;
+}
+
+.tagline {
+  margin: 0;
+  padding: 4px 14px;
+  background: var(--ink);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  transform: rotate(-0.5deg);
+}
+
+#menu {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 28px;
+  margin-top: 10px;
+}
+
+#create {
+  min-height: 64px;
+  padding: 12px 34px;
+  border: 0;
+  background: var(--gold);
+  color: var(--text);
+  font-family: var(--abril);
+  font-size: 30px;
+  transform: rotate(-1.5deg);
+  clip-path: polygon(2% 0, 100% 6%, 98% 100%, 0 92%);
+}
+
+#create:hover:enabled {
+  background: #f0c85e;
+}
+
+#join-form {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  row-gap: 4px;
+  align-items: end;
+  padding: 12px 16px;
+  background: var(--cream);
+  color: var(--text);
+  transform: rotate(1deg);
+  clip-path: polygon(0 4%, 100% 0, 98% 100%, 2% 96%);
+}
+
+#join-form label {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--faded);
+}
+
+#code {
+  width: 150px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 2px solid var(--text);
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--alfa);
+  font-size: 24px;
+  letter-spacing: 0.3em;
   text-transform: uppercase;
 }
 
-/* VFX toggles (in the debug menu): plain native checkboxes, not the room-code input style above. */
-#vfx {
+#join {
+  min-height: 44px;
+  padding: 6px 20px;
+  border: 0;
+  background: var(--ink);
+  color: var(--cream);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+
+#join:hover:enabled {
+  background: #2e2735;
+}
+
+.controls-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 58px;
+  margin: 0;
+  text-align: center;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* Anything else the title screen or the room gains (the debug room's controls): a quiet button. */
+#menu > button:not(#create),
+#start-controls select {
+  align-self: center;
+  min-height: 44px;
+  padding: 6px 14px;
+  border: 2px solid var(--muted);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+/* ---------- The room: the invitation and the guest list ---------- */
+
+#room-screen {
+  position: absolute;
+  inset: 0;
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
 }
 
-#vfx label {
-  cursor: pointer;
+/* Leave the room: a torn paper scrap pinned inside the frame's top right corner. */
+#leave-room {
+  position: absolute;
+  right: 66px;
+  top: 64px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 18px 8px 14px;
+  border: 0;
+  background: var(--cream);
+  color: var(--wine);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.2em;
+  transform: rotate(2deg);
+  clip-path: polygon(0 6%, 97% 0, 100% 90%, 3% 100%);
 }
 
-#vfx input {
-  width: auto;
+#leave-room .icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 3.2;
+}
+
+#leave-room:hover {
+  background: var(--wine);
+  color: var(--cream);
+}
+
+/* The torn edge clips the usual outline, so focus shows as a gold scrap instead. */
+#leave-room:focus-visible {
+  background: var(--gold);
+  color: var(--ink);
+}
+
+.invitation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  width: 560px;
+  padding: 44px 40px 40px;
+  background: var(--cream);
+  color: var(--text);
+  border: 2px solid var(--gilt);
+  outline: 6px solid var(--cream);
+  box-shadow: 0 0 0 9px var(--gilt);
+  transform: rotate(-1.5deg);
+}
+
+.invitation-mask {
+  width: 88px;
+  height: 46px;
+  color: var(--wine);
+  stroke-width: 1.8;
+}
+
+.invitation h2 {
+  margin: 0;
+  font-family: var(--fraktur);
+  font-weight: normal;
+  font-size: 46px;
+  line-height: 1;
+  color: var(--wine);
+}
+
+.invitation-sub {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  color: var(--faded);
+}
+
+.room-code {
+  margin: 8px 0;
+}
+
+.room-code .tiles {
+  gap: 10px;
+  align-items: center;
+}
+
+.room-code .tile {
+  padding: 12px 16px 4px;
+}
+
+.invitation-note {
+  margin: 0;
+  font-size: 16px;
+  text-align: center;
+  line-height: 1.5;
+  color: #3a3128;
+}
+
+#copy-link {
+  min-height: 44px;
+  padding: 8px 22px;
+  border: 2px solid var(--text);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.08em;
+}
+
+#copy-link:hover {
+  background: #e3d8c0;
+}
+
+#invite-link {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--faded);
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--typewriter);
+  font-size: 14px;
+}
+
+.guests {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 480px;
+}
+
+.guests-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.guests-head h2 {
+  margin: 0;
+  font-weight: normal;
+}
+
+.guests-head .tiles {
+  gap: 3px;
+}
+
+#players {
+  font-family: var(--alfa);
+  font-size: 26px;
+  color: var(--gold);
+}
+
+#guest-list {
   margin: 0;
   padding: 0;
-  vertical-align: middle;
-}
-
-#status {
-  margin: 0;
-  min-height: 1.2em;
-}
-
-/* Room screen: a few lines of text and the two controls needed to enter a room. */
-#lobby {
+  list-style: none;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-#lobby p {
-  margin: 0;
+.guest {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 50px;
+  padding: 12px 16px;
+  background: var(--ink);
+  color: var(--cream);
+  clip-path: polygon(1% 0, 100% 5%, 99% 100%, 0 95%);
 }
 
-#menu {
+.guest:nth-child(odd) { transform: rotate(-0.6deg); }
+.guest:nth-child(even) { transform: rotate(0.8deg); }
+
+.guest .icon {
+  width: 40px;
+  height: 22px;
+  color: var(--powder);
+}
+
+.guest-name {
+  flex-grow: 1;
+  font-family: var(--alfa);
+  font-size: 20px;
+}
+
+.guest-state {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #c9d9e8;
+}
+
+.guest.you {
+  background: var(--cream);
+  color: var(--text);
+  border: 2px solid var(--gold);
+  clip-path: polygon(0 4%, 99% 0, 100% 96%, 1% 100%);
+}
+
+.guest.you .icon {
+  color: var(--text);
+}
+
+.guest.you .guest-state {
+  padding: 3px 8px;
+  background: var(--ink);
+  color: var(--gold);
+}
+
+.guest.empty {
+  background: transparent;
+  color: var(--muted);
+  border: 2px dashed #8a7d68;
+  clip-path: none;
+}
+
+.guest.empty .icon {
+  color: #8a7d68;
+}
+
+.guest.empty .guest-name {
+  font-family: var(--typewriter);
+  font-size: 17px;
+  font-style: italic;
+}
+
+.guest.empty .guest-state {
+  color: var(--muted);
+}
+
+/* The house and the start share a row; anything more (the debug room's role) wraps below. */
+.house-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 10px;
 }
 
-#join-form {
+.house {
   display: flex;
+  flex-direction: column;
   gap: 6px;
+  flex: 1 1 180px;
 }
 
-/* Between-round tuning: a plain table of the room's gameplay values. The host gets
-   number inputs, everyone else the same numbers as text. Changed rows are marked. */
-#tuning summary {
-  cursor: pointer;
-  width: fit-content;
+.house label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--muted);
 }
 
-#tuning-summary {
-  color: #a5a9a6;
+#map,
+#map-name {
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 2px solid var(--gilt);
+  background: var(--ink);
+  color: var(--cream);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 17px;
 }
 
-#tuning-note {
-  margin: 6px 0;
-  color: #a5a9a6;
+#map-name {
+  display: flex;
+  align-items: center;
 }
 
-#tuning-table {
-  border-collapse: collapse;
+#start-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
 }
 
-#tuning-table th {
-  padding: 8px 12px 2px 0;
-  text-align: left;
-  font-weight: normal;
-  color: #a5a9a6;
+#lobby #start {
+  white-space: nowrap;
+  min-height: 52px;
+  padding: 10px 24px;
+  border: 0;
+  background: var(--gold);
+  color: var(--text);
+  font-family: var(--abril);
+  font-size: 24px;
+  transform: rotate(-1deg);
+  clip-path: polygon(2% 0, 100% 6%, 98% 100%, 0 92%);
 }
 
-#tuning-table td {
-  padding: 1px 12px 1px 0;
+#lobby #start:disabled {
+  background: #5c4720;
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
-#tuning-table input {
-  width: 7em;
-  padding: 2px 5px;
+#waiting {
+  margin: 0;
+  font-size: 15px;
+  color: var(--muted);
+  text-align: center;
 }
 
-#tuning-table .default {
-  color: #a5a9a6;
-}
+/* ---------- The game ---------- */
 
-#tuning-table tr[data-changed] td:first-child::after {
-  content: ' *';
-  color: #f2e8a8;
-}
-
-#tuning-reset {
-  margin-top: 8px;
-}
-
+/* During a round the page is only the game: it fills the window, letterboxed in the night's
+   background colour (main.ts). */
 #arena-container {
-  flex: 1;
-  min-height: 0;
+  position: fixed;
+  inset: 0;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -188,88 +663,725 @@ canvas {
 
 #arena-view {
   position: relative;
+  overflow: hidden;
 }
 
-/* Role reveal and incapacitation: plain centred text over the arena, nothing else. */
-#overlay {
+/* Laid out 1440 wide and as tall as the arena's shape needs, then scaled onto it (main.ts). */
+#hud-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1440px;
+  height: var(--hud-height, 900px);
+  transform: scale(var(--hud-scale, 1));
+  transform-origin: 0 0;
+  pointer-events: none;
+  font-family: var(--typewriter);
+  color: var(--cream);
+}
+
+#game-hud > section {
+  position: absolute;
+}
+
+.hud-title {
+  margin: 0 0 4px;
+  font-weight: normal;
+}
+
+.hud-title .tiles {
+  gap: 3px;
+}
+
+/* Team status: top left. */
+#hud-team {
+  left: 32px;
+  top: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#team-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.team-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 133px;
+  padding: 6px 9px;
+  background: var(--ink);
+  color: var(--cream);
+  clip-path: polygon(1% 0, 100% 5%, 99% 100%, 0 95%);
+}
+
+.team-card:nth-child(1) { transform: rotate(-1deg); }
+.team-card:nth-child(2) { transform: rotate(1deg); }
+.team-card:nth-child(3) { transform: rotate(-2deg); }
+.team-card:nth-child(4) { transform: rotate(1.5deg); }
+
+.team-card .icon {
+  width: 30px;
+  height: 17px;
+  color: var(--powder);
+}
+
+.team-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-grow: 1;
+  min-width: 0;
+}
+
+.team-name {
+  font-family: var(--alfa);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.team-state {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #c9d9e8;
+  white-space: nowrap;
+}
+
+.revive-bar {
+  height: 5px;
+  background: var(--wine-dark);
+}
+
+.revive-bar > div {
+  height: 100%;
+  background: var(--gold);
+}
+
+.team-card.you {
+  background: var(--cream);
+  color: var(--text);
+  border: 2px solid var(--gold);
+  clip-path: polygon(0 4%, 99% 0, 100% 96%, 1% 100%);
+}
+
+.team-card.you .icon,
+.team-card.you .team-state {
+  color: var(--text);
+}
+
+.team-card.down {
+  background: var(--wine);
+  color: #f4ead6;
+  border: 0;
+  clip-path: polygon(0 0, 100% 6%, 98% 100%, 2% 94%);
+}
+
+.team-card.down .icon,
+.team-card.down .team-state {
+  color: #f4ead6;
+  letter-spacing: 0.02em;
+}
+
+/* Round timer: top centre. */
+#hud-clock {
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.clock-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#clock .tiles {
+  gap: 4px;
+  align-items: center;
+}
+
+#clock .tile {
+  padding: 6px 12px 2px;
+}
+
+#clock-watch {
+  display: inline-block;
+  line-height: 0;
+  margin-right: 6px;
+  padding: 8px 10px 6px;
+  background: var(--ink);
+  color: var(--gold);
+  transform: rotate(-6deg);
+  clip-path: polygon(4% 2%, 100% 0, 96% 100%, 0 96%);
+}
+
+#clock-watch .icon {
+  width: 46px;
+  height: 54px;
+}
+
+#clock-watch.final {
+  background: var(--wine);
+  color: #f4ead6;
+}
+
+#clock-warning {
+  padding: 3px 10px;
+  background: var(--wine);
+  color: #f4ead6;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  transform: rotate(1deg);
+}
+
+/* Creature health: top right. */
+#hud-creature {
+  right: 32px;
+  top: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.hp-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  background: var(--ink);
+  transform: rotate(0.6deg);
+  clip-path: polygon(0 3%, 100% 0, 99% 100%, 1% 96%);
+}
+
+#hp-bar {
+  position: relative;
+  width: 109px;
+  height: 13px;
+  background: #3a1018;
+}
+
+#hp-fill {
+  height: 100%;
+  background: #c2283f;
+}
+
+.hp-ticks {
   position: absolute;
   inset: 0;
   display: grid;
-  place-content: center;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+}
+
+.hp-ticks span {
+  border-right: 2px solid var(--ink);
+}
+
+.hp-ticks span:last-child {
+  border-right: 0;
+}
+
+#hp-number {
+  min-width: 35px;
+  font-family: var(--alfa);
+  font-size: 18px;
+  line-height: 1;
+  text-align: right;
+}
+
+#creature-tag,
+#creature-note {
+  display: inline-block;
+  padding: 4px 10px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  transform: rotate(-2deg);
+  clip-path: polygon(2% 0, 100% 6%, 98% 100%, 0 94%);
+}
+
+#creature-tag[data-tone='quiet'] { background: var(--ink); color: var(--muted); }
+#creature-tag[data-tone='gold'] { background: var(--gold); }
+#creature-tag[data-tone='orange'] { background: var(--orange); }
+#creature-tag[data-tone='pink'] { background: var(--pink); }
+#creature-tag[data-tone='powder'] { background: var(--powder); }
+
+#creature-note {
+  margin-top: -4px;
+  background: var(--ink);
+  color: var(--cream);
+  font-size: 12px;
+  transform: rotate(1deg);
+}
+
+/* Battery: bottom left. The stage colours the fill and the tag. */
+#hud-battery {
+  left: 32px;
+  bottom: 30px;
+  display: flex;
+  align-items: flex-end;
+  gap: 11px;
+  --charge: var(--gold);
+}
+
+#hud-battery[data-stage='HALF'] { --charge: var(--cream); }
+#hud-battery[data-stage='LOW'],
+#hud-battery[data-stage='OFF'] { --charge: var(--pink); }
+
+.battery-case {
+  padding: 8px;
+  background: var(--ink);
+  transform: rotate(-1.5deg);
+  clip-path: polygon(0 4%, 100% 0, 98% 100%, 2% 95%);
+}
+
+#battery-icon {
+  display: flex;
+  align-items: center;
+}
+
+.battery-body {
+  position: relative;
+  width: 120px;
+  height: 44px;
+  border: 2px solid var(--cream);
+  padding: 4px;
+}
+
+#battery-fill {
+  height: 100%;
+  background: var(--charge);
+}
+
+#battery-marks {
+  position: absolute;
+  inset: 4px;
+}
+
+#battery-marks span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 2px dashed var(--ink);
+}
+
+.battery-nub {
+  width: 6px;
+  height: 18px;
+  background: var(--cream);
+}
+
+.battery-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+#battery-number {
+  display: inline-block;
+  line-height: 1;
+  padding: 6px 10px 1px;
+  background: var(--cream);
+  color: var(--text);
+  font-family: var(--abril);
+  font-size: 38px;
+  transform: rotate(2deg);
+  clip-path: polygon(3% 0, 100% 5%, 96% 100%, 0 94%);
+}
+
+#battery-stage {
+  display: inline-block;
+  padding: 2px 10px;
+  background: var(--charge);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  transform: rotate(-2deg);
+}
+
+/* Role reveal and incapacitation: a cut-out title in the middle of the arena. The reveal also
+   dims the game behind it. */
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
   text-align: center;
-  pointer-events: none;
+}
+
+#overlay.reveal {
+  background: rgba(11, 10, 14, 0.6);
 }
 
 #overlay p {
   margin: 0;
-  padding: 4px 10px;
-  background: #161918;
 }
 
-#overlay-title {
+#overlay-title .tiles {
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+#overlay-detail {
+  padding: 4px 14px;
+  background: var(--ink);
+  color: var(--gold);
   font-size: 20px;
-  letter-spacing: 0.12em;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  transform: rotate(-1deg);
 }
 
 #overlay-detail:empty {
   display: none;
 }
 
-footer {
-  color: #aeb5ae;
+/* ---------- Results ---------- */
+
+.kicker {
+  display: inline-block;
+  padding: 4px 14px;
+  background: var(--ink);
+  color: var(--gold);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  transform: rotate(-1deg);
 }
 
-/* Creature condition label: plain text, colored only when it changes what a player may do. */
-#creature-state[data-state='STAGGERED'],
-#creature-state[data-state='BURNING'] {
-  color: #e46448;
+.result-actions {
+  display: flex;
+  gap: 18px;
 }
 
-#creature-state[data-state='REVEALED'],
-#creature-state[data-state='LIT'],
-#creature-state[data-state='SPRINTING'] {
-  color: #e8d27a;
+.play-again {
+  min-height: 52px;
+  padding: 10px 28px;
+  border: 0;
+  background: var(--gold);
+  color: var(--text);
+  font-family: var(--abril);
+  font-size: 24px;
+  transform: rotate(-1.5deg);
+  clip-path: polygon(2% 0, 100% 6%, 98% 100%, 0 92%);
 }
 
-/* Battery and clock: colour only where it changes what a player can do or how long
-   they have. HALF is still a working flashlight, so only LOW and OFF are marked. */
-#battery[data-state='LOW'] {
-  color: #e8d27a;
+.play-again:hover:enabled {
+  background: #f0c85e;
 }
 
-#battery[data-state='OFF'] {
-  color: #e46448;
+.to-lobby {
+  min-height: 52px;
+  padding: 10px 28px;
+  border: 2px solid var(--cream);
+  background: var(--ink);
+  color: var(--cream);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  transform: rotate(1deg);
 }
 
-#timer[data-state='final'] {
-  color: #e46448;
+.result-wait {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0.06em;
 }
 
-/* During a round the page is only the game: it fills the window, letterboxed in the night's
-   background colour (main.ts), and everything else is hidden or moved into the debug menu. */
-body.in-round {
-  padding: 0;
+#read-gazette,
+#close-gazette {
+  padding: 4px 2px;
+  border: 0;
+  border-bottom: 2px solid currentColor;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--typewriter);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.08em;
 }
 
-body.in-round > header,
-body.in-round > #status,
-body.in-round > #lobby,
-body.in-round > #tuning,
-body.in-round > footer {
-  display: none;
+#read-gazette:hover,
+#close-gazette:hover {
+  background: transparent;
+  color: var(--gold);
 }
 
-body.in-round #arena-container {
+/* The overlay: the stilled game dimmed behind the winner. */
+#result {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(11, 10, 14, 0.72);
+  pointer-events: auto;
+}
+
+.result-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+
+#result-title {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  font-weight: normal;
+}
+
+#result-title .tiles {
+  gap: 5px;
+}
+
+#result-reason {
+  margin: -6px 0 0;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+}
+
+#result-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  width: 760px;
+  margin: 0;
+  padding: 14px 8px;
+  background: var(--cream);
+  color: var(--text);
+  transform: rotate(-0.6deg);
+  clip-path: polygon(0 4%, 100% 0, 99% 100%, 1% 95%);
+}
+
+#result-stats > div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-right: 1px dashed #8a7d68;
+}
+
+#result-stats > div:last-child {
+  border-right: 0;
+}
+
+#result-stats dt,
+#gazette-stats dt {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--faded);
+}
+
+#result-stats dd {
+  margin: 0;
+  font-family: var(--alfa);
+  font-size: 24px;
+}
+
+/* The Gazette: the whole window, in the winner's colours. */
+#gazette {
   position: fixed;
   inset: 0;
+  z-index: 1;
+  background-size: 64px 64px;
 }
 
-/* Debug menu (debug-menu.ts): a translucent panel down the right of the game, toggled with `. */
-#debug-menu {
+#gazette[data-winner='creature'] {
+  background-color: #1a0b12;
+  background-image:
+    radial-gradient(circle at 50% 50%, #2a1119 0 18%, transparent 19%),
+    radial-gradient(circle at 0 0, #250f17 0 9%, transparent 10%),
+    radial-gradient(circle at 100% 100%, #250f17 0 9%, transparent 10%);
+}
+
+#gazette[data-winner='creature'] .gilt {
+  border-color: var(--wine);
+  outline-color: var(--wine-dark);
+}
+
+#gazette[data-winner='creature'] .kicker {
+  background: var(--cream);
+  color: var(--wine);
+}
+
+#gazette[data-winner='hunters'] {
+  background-color: #e9dfc8;
+  background-image:
+    radial-gradient(circle at 50% 50%, #ded1b5 0 18%, transparent 19%),
+    radial-gradient(circle at 0 0, #e2d6bc 0 9%, transparent 10%),
+    radial-gradient(circle at 100% 100%, #e2d6bc 0 9%, transparent 10%);
+}
+
+#gazette[data-winner='hunters'] .stage {
+  color: var(--text);
+}
+
+#gazette[data-winner='hunters'] .gilt {
+  outline-color: #8a6a26;
+}
+
+#gazette[data-winner='hunters'] .play-again {
+  background: var(--ink);
+  color: var(--gold);
+}
+
+#gazette[data-winner='hunters'] .to-lobby {
+  border-color: var(--text);
+  background: transparent;
+  color: var(--text);
+}
+
+#gazette[data-winner='hunters'] #close-gazette {
+  color: var(--faded);
+}
+
+#gazette[data-winner='hunters'] #close-gazette:hover {
+  color: var(--wine);
+}
+
+.gazette-layout {
   position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 72px;
+  padding: 0 96px;
+}
+
+.gazette-headline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+#gazette-title {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  font-weight: normal;
+}
+
+#gazette-title .tiles {
+  gap: 5px;
+}
+
+#gazette-reason {
+  margin: 6px 0 0;
+  font-size: 22px;
+}
+
+.gazette-headline .result-actions {
+  margin-top: 18px;
+}
+
+/* The clipping: a torn page of newsprint. */
+.clipping {
+  flex-shrink: 0;
+  width: 420px;
+  padding: 26px 28px 30px;
+  background: #ece2cc;
+  color: var(--text);
+  transform: rotate(2.5deg);
+  clip-path: polygon(0 1%, 4% 0, 9% 1%, 15% 0, 22% 1%, 30% 0, 38% 1%, 46% 0, 55% 1%, 63% 0, 72% 1%, 80% 0, 88% 1%, 95% 0, 100% 1%, 99% 50%, 100% 99%, 94% 100%, 86% 99%, 77% 100%, 68% 99%, 58% 100%, 49% 99%, 40% 100%, 31% 99%, 22% 100%, 13% 99%, 5% 100%, 0 99%, 1% 50%);
+}
+
+#gazette[data-winner='hunters'] .clipping {
+  background: var(--paper);
+  transform: rotate(-2.5deg);
+}
+
+.masthead {
+  margin: 0;
+  padding-bottom: 8px;
+  border-bottom: 3px double var(--text);
+  font-family: var(--fraktur);
+  font-size: 30px;
+  text-align: center;
+}
+
+#gazette-headline {
+  margin: 14px 0 6px;
+  font-family: var(--bodoni);
+  font-weight: 900;
+  font-size: 30px;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+
+.byline {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: #4a4036;
+  letter-spacing: 0.06em;
+}
+
+#gazette-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  margin: 0;
+}
+
+#gazette-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid #8a7d68;
+  padding-top: 6px;
+}
+
+#gazette-stats dt {
+  color: #4a4036;
+}
+
+#gazette-stats dd {
+  margin: 0;
+  font-family: var(--alfa);
+  font-size: 26px;
+}
+
+#gazette-flashlight {
+  margin: 18px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4a4036;
+}
+
+/* ---------- Debug menu (debug-menu.ts): a translucent panel down the right, toggled with ` ---------- */
+
+#debug-menu {
+  position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
+  z-index: 2;
   width: min(420px, 100%);
   overflow-y: auto;
   padding: 8px 12px 16px;
@@ -339,8 +1451,72 @@ body.in-round #arena-container {
   white-space: pre-wrap;
 }
 
-#menu-room #room-controls {
-  margin-left: 0;
+/* The host's start, here during a round. */
+#menu-room #start-controls {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* VFX toggles: plain native checkboxes. */
+#vfx {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+
+#vfx label {
+  cursor: pointer;
+}
+
+#vfx input {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  vertical-align: middle;
+}
+
+/* Between-round tuning: a plain table of the room's gameplay values. The host gets
+   number inputs, everyone else the same numbers as text. Changed rows are marked. */
+#tuning-summary {
+  color: #a5a9a6;
+}
+
+#tuning-note {
+  margin: 6px 0;
+  color: #a5a9a6;
+}
+
+#tuning-table {
+  border-collapse: collapse;
+}
+
+#tuning-table th {
+  padding: 8px 12px 2px 0;
+  text-align: left;
+  font-weight: normal;
+  color: #a5a9a6;
+}
+
+#tuning-table td {
+  padding: 1px 12px 1px 0;
+}
+
+#tuning-table input {
+  width: 7em;
+  padding: 2px 5px;
+}
+
+#tuning-table .default {
+  color: #a5a9a6;
+}
+
+#tuning-table tr[data-changed] td:first-child::after {
+  content: ' *';
+  color: #f2e8a8;
+}
+
+#tuning-reset {
+  margin-top: 8px;
 }
 
 /* One look value: its name, then a slider and a number box, a colour picker or a checkbox. Changed

@@ -71,9 +71,12 @@ type Player = { page: Page; network: Network };
 // the Creature — its charcoal robe (an exactly neutral grey; the Hunters' flashlights share
 // that grey but are only a few pixels across, so a charcoal pixel counts only inside a solid
 // 5x5 patch of it), or the ember orange-red it glows while burning. Only meaningful while no
-// text overlay covers the arena.
+// text overlay covers the arena. The HUD's paper colours would count too, so it is hidden for the
+// screenshot.
 async function visiblePlayerColors(page: Page) {
+  await page.locator('#hud-layer').evaluate((layer) => { (layer as HTMLElement).style.visibility = 'hidden'; });
   const screenshot = await page.locator('#arena').screenshot();
+  await page.locator('#hud-layer').evaluate((layer) => { (layer as HTMLElement).style.visibility = ''; });
   return page.evaluate(async (base64) => {
     const image = new Image();
     image.src = `data:image/png;base64,${base64}`;
@@ -201,10 +204,9 @@ async function openPlayers(browser: Browser) {
 
 async function createRoom(host: Player): Promise<string> {
   await host.page.goto('/');
-  await host.page.getByRole('button', { name: 'Create room' }).click();
-  await expect(host.page.locator('#room')).toContainText('Room: ');
-  const code = (await host.page.locator('#room').textContent())!.replace('Room:', '').trim();
-  expect(code).toMatch(/^[A-Z0-9]{4}$/);
+  await host.page.getByRole('button', { name: 'Host a masquerade' }).click();
+  await expect(host.page.locator('#room')).toHaveText(/^[A-Z0-9]{4}$/);
+  const code = (await host.page.locator('#room').textContent())!.trim();
   return code;
 }
 
@@ -213,9 +215,9 @@ async function fillRoom(players: Player[]): Promise<string> {
   const code = await createRoom(players[0]);
   for (const guest of players.slice(1)) {
     await guest.page.goto(`/?room=${code}`);
-    await expect(guest.page.locator('#room')).toHaveText(`Room: ${code}`);
+    await expect(guest.page.locator('#room')).toHaveText(code);
   }
-  for (const player of players) await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+  for (const player of players) await expect(player.page.locator('#players')).toHaveText(`${PLAYER_COUNT} / ${PLAYER_COUNT}`);
   return code;
 }
 
@@ -232,13 +234,17 @@ async function closeMenu(page: Page) {
   if (await page.locator('#debug-menu').isVisible()) await page.keyboard.press('Backquote');
 }
 
-// The host starts; every page reaches the reveal and then the running round. Once a round exists,
-// Start / Restart match is in the debug menu's Room section.
+// The host starts; every page reaches the reveal and then the running round. On the result the
+// host uses Play again; during a round, Restart match is in the debug menu's Room section.
 async function startMatch(host: Player, players: Player[], previousRoundId?: number) {
   const inRound = await host.page.locator('body.in-round').count() > 0;
-  if (inRound) await openMenu(host.page, '#menu-room-section');
-  await host.page.getByRole('button', { name: /Start match|Restart match/ }).click();
-  if (inRound) await closeMenu(host.page);
+  if (await host.page.locator('#play-again').isVisible()) {
+    await host.page.locator('#play-again').click();
+  } else {
+    if (inRound) await openMenu(host.page, '#menu-room-section');
+    await host.page.locator('#start').click();
+    if (inRound) await closeMenu(host.page);
+  }
   for (const player of players) {
     await expect.poll(() => {
       const snapshot = player.network.latest();
@@ -264,7 +270,8 @@ function assertHunterWire(network: Network) {
   const problems: string[] = [];
   const sameKeys = (value: object, expected: string[]) => Object.keys(value).sort().join() === expected.join();
   for (const message of snapshots) {
-    if (Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
+    if (Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'stats').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
+    if (('stats' in message) !== (message.roundState === 'ended')) problems.push(`stats in ${message.roundState}`);
     if (message.catch && (!sameKeys(message.catch, ['elapsed', 'hunter']) || typeof message.catch.elapsed !== 'number')) {
       problems.push(`catch ${JSON.stringify(message.catch)}`);
     }
@@ -296,10 +303,11 @@ test('five players fill a room, receive private roles, move, see only permitted 
     const privateModule = await host.page.request.get(`/@fs/${encodeURI(privateModulePath)}`);
     expect(privateModule.status()).toBe(403);
 
-    // Room screen: a code, a count, and a start button only the host has.
+    // Room screen: a code, a count, the guest list, and a start button only the host has.
     const code = await createRoom(host);
-    await expect(host.page.locator('#players')).toHaveText(`Players: 1 / ${PLAYER_COUNT}`);
-    await expect(host.page.locator('#waiting')).toHaveText('Waiting for players…');
+    await expect(host.page.locator('#players')).toHaveText(`1 / ${PLAYER_COUNT}`);
+    await expect(host.page.locator('#waiting')).toHaveText('The evening begins when all five guests arrive.');
+    await expect(host.page.locator('#guest-list li')).toHaveText(['Guest 1HOST · YOU', 'An empty slot…WAITING', 'An empty slot…WAITING', 'An empty slot…WAITING', 'An empty slot…WAITING']);
     await expect(host.page.locator('#start')).toBeVisible();
     await expect(host.page.locator('#start')).toBeDisabled();
     await expect(host.page.locator('#arena-container')).toBeHidden();
@@ -311,18 +319,20 @@ test('five players fill a room, receive private roles, move, see only permitted 
     await expect(second.page.locator('#status')).toHaveText('No room has that code.');
     await second.page.locator('#code').fill(code.toLowerCase());
     await second.page.getByRole('button', { name: 'Join' }).click();
-    await expect(second.page.locator('#room')).toHaveText(`Room: ${code}`);
-    await expect(second.page.locator('#players')).toHaveText(`Players: 2 / ${PLAYER_COUNT}`);
+    await expect(second.page.locator('#room')).toHaveText(code);
+    await expect(second.page.locator('#players')).toHaveText(`2 / ${PLAYER_COUNT}`);
+    await expect(second.page.locator('#guest-list li').nth(1)).toHaveText('Guest 2YOU');
     await expect(second.page.locator('#start')).toBeHidden();
-    await expect(host.page.locator('#players')).toHaveText(`Players: 2 / ${PLAYER_COUNT}`);
+    await expect(host.page.locator('#players')).toHaveText(`2 / ${PLAYER_COUNT}`);
+    await expect(host.page.locator('#guest-list li').nth(1)).toHaveText('Guest 2ARRIVED');
 
     for (const guest of players.slice(2)) {
       await guest.page.goto(`/?room=${code}`);
-      await expect(guest.page.locator('#room')).toHaveText(`Room: ${code}`);
+      await expect(guest.page.locator('#room')).toHaveText(code);
     }
-    for (const player of players) await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT} / ${PLAYER_COUNT}`);
-    await expect(host.page.locator('#waiting')).toHaveText('Everyone is here. Start the match.');
-    await expect(second.page.locator('#waiting')).toHaveText('Everyone is here. Waiting for the host to start.');
+    for (const player of players) await expect(player.page.locator('#players')).toHaveText(`${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+    await expect(host.page.locator('#waiting')).toHaveText('Everyone has arrived. Begin the evening.');
+    await expect(second.page.locator('#waiting')).toHaveText('Everyone has arrived. Waiting for the host to begin.');
     await expect(host.page.locator('#start')).toBeEnabled();
 
     // Map choice: the host has a picker listing the server's catalogue with the test arena
@@ -331,7 +341,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     await expect(host.page.locator('#map')).toBeVisible();
     await expect(host.page.locator('#map')).toHaveValue('test-arena');
     await expect(second.page.locator('#map')).toBeHidden();
-    await expect(second.page.locator('#map-name')).toHaveText('Map: Test Arena');
+    await expect(second.page.locator('#map-name')).toHaveText('Test Arena');
     const otherMap = host.network.room()!.maps.find((map) => map.id !== 'test-arena');
     if (otherMap) {
       await host.page.locator('#map').selectOption(otherMap.id);
@@ -357,7 +367,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     }
 
     // Start: every page privately shows its own role, then the round runs.
-    await host.page.getByRole('button', { name: 'Start match' }).click();
+    await host.page.getByRole('button', { name: 'Begin the evening' }).click();
     for (const player of players) await expect.poll(() => player.network.latest()?.roundState, { timeout: 10_000 }).toBe('reveal');
     const creaturePages = players.filter((player) => player.network.latest()!.role === 'creature');
     expect(creaturePages).toHaveLength(1);
@@ -380,6 +390,11 @@ test('five players fill a room, receive private roles, move, see only permitted 
       await expect(player.page.locator('#lobby')).toBeHidden();
     }
     for (const hunter of hunters) {
+      await expect(hunter.page.locator('#team-cards')).toContainText(`${hunter.network.hunter().self} · YOU`);
+      await expect(hunter.page.locator('#battery-number')).toHaveText('100');
+      await expect(hunter.page.locator('#battery-stage')).toHaveText('FULL');
+      await expect(hunter.page.locator('#creature-tag')).toHaveText('UNSEEN');
+      await expect(hunter.page.locator('#hp-number')).toHaveText(String(GAMEPLAY.creature.maxHp));
       await expect(hunter.page.locator('#team')).toContainText(`${hunter.network.hunter().self}* ACTIVE`);
       await expect(hunter.page.locator('#proximity')).toHaveText('Proximity: SAFE');
       await expect(hunter.page.locator('#creature-hp')).toHaveText(`Creature HP: ${GAMEPLAY.creature.maxHp}`);
@@ -390,6 +405,9 @@ test('five players fill a room, receive private roles, move, see only permitted 
       expect(hunter.network.hunter().pickups).toHaveLength(0);
     }
     await expect(creature.page.locator('#creature-state')).toHaveText('State: hidden');
+    await expect(creature.page.locator('#hud-battery')).toBeHidden();
+    await expect(creature.page.locator('#creature-tag')).toHaveText('HIDDEN');
+    await expect(creature.page.locator('#clock')).toHaveText(/^\d+:\d{2}$/);
     // The clock is authoritative and identical for both roles; the Creature has no battery.
     for (const player of players) await expect(player.page.locator('#timer')).toHaveText(/^Time: \d+:\d{2}$/);
     await expect(creature.page.locator('#battery')).toBeHidden();
@@ -497,7 +515,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     await leaver.page.close();
     for (const player of remaining) {
       await expect(player.page.locator('#status')).toHaveText('A player disconnected, so the round was ended. Waiting for players…');
-      await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT - 1} / ${PLAYER_COUNT}`);
+      await expect(player.page.locator('#players')).toHaveText(`${PLAYER_COUNT - 1} / ${PLAYER_COUNT}`);
       await expect(player.page.locator('#arena-container')).toBeHidden();
       expect(player.network.room()?.notice).toBe('disconnected');
     }
@@ -509,7 +527,7 @@ test('five players fill a room, receive private roles, move, see only permitted 
     try {
       await replacement.goto(`/?room=${code}`);
       const everyone = [...remaining, { page: replacement, network: replacementNetwork }];
-      for (const player of everyone) await expect(player.page.locator('#players')).toHaveText(`Players: ${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+      for (const player of everyone) await expect(player.page.locator('#players')).toHaveText(`${PLAYER_COUNT} / ${PLAYER_COUNT}`);
       const again = await startMatch(host, everyone, roundId);
       expect(again.roundId).toBe(roundId + 1);
       for (const player of everyone) {
@@ -657,14 +675,40 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     await killer.page.keyboard.up('Space');
     // Killing the Creature outright costs most of one battery.
     expect(killer.network.own().battery).toBeLessThan(0.6 * MAX_BATTERY);
-    for (const player of players) await expect(player.page.locator('#status')).toContainText('Creature defeated. Hunters win.');
-    await expect(host.page.locator('#status')).toContainText('Start the match to play again.');
-    await expect(host.page.locator('#start')).toHaveText('Start match');
+    for (const player of players) {
+      await expect(player.page.locator('#status')).toContainText('Creature defeated. Hunters win.');
+      await expect(player.page.locator('#result')).toBeVisible();
+      await expect(player.page.locator('#result-title')).toHaveAccessibleName('The Hunters win');
+      await expect(player.page.locator('#result-reason')).toHaveText('The Creature has been exorcised.');
+      await expect(player.page.locator('#game-hud')).toBeHidden();
+    }
+    await expect(host.page.locator('#status')).toContainText('Play again to start the next round.');
+    await expect(host.page.locator('#start')).toHaveText('Play again');
     await expect(host.page.locator('#start')).toBeEnabled();
+    await expect(host.page.locator('#play-again')).toBeVisible();
     for (const player of players.filter((player) => player !== host)) {
       await expect(player.page.locator('#status')).toContainText('Waiting for the host to start the next round.');
       await expect(player.page.locator('#start')).toBeHidden();
+      await expect(player.page.locator('#play-again')).toBeHidden();
+      await expect(player.page.locator('#result .result-wait')).toBeVisible();
     }
+    // The tallies came with the result: A's catch, its revival, the battery, and the light on the
+    // Creature at least as long as the kill took.
+    const stats = creature.network.creature().stats!;
+    expect(stats.caught).toBeGreaterThanOrEqual(1);
+    expect(stats.revived).toBeGreaterThanOrEqual(1);
+    expect(stats.batteries).toBeGreaterThanOrEqual(1);
+    expect(stats.lit).toBeGreaterThan(0);
+    await expect(host.page.locator('#result-stats')).toContainText(`CAUGHT${stats.caught}`);
+    // The Gazette opens over everything and closes back to the overlay.
+    await b.page.locator('#read-gazette').click();
+    await expect(b.page.locator('#gazette')).toBeVisible();
+    await expect(b.page.locator('#gazette-headline')).toHaveText('Creature unmasked at the midnight ball');
+    await expect(b.page.locator('#gazette-stats')).toContainText(`LIGHT ON IT${stats.lit.toFixed(1)} s`);
+    await b.page.screenshot({ path: testInfo.outputPath('gazette.png') });
+    await b.page.locator('#close-gazette').click();
+    await expect(b.page.locator('#gazette')).toBeHidden();
+    await expect(b.page.locator('#result')).toBeVisible();
     for (const hunter of hunters) await expect(hunter.page.locator('#creature-hp')).toHaveText('Creature HP: 0');
     expect(creature.network.creature().hp).toBe(0);
     const creatureMessages = creature.network.messages.filter((message): message is CreatureSnapshot => message.type === 'snapshot' && message.role === 'creature');
@@ -751,7 +795,16 @@ test('the Creature wins by downing all four Hunters, and the room can start agai
       assertHunterWire(hunter.network);
     }
     await hunters[0].page.screenshot({ path: testInfo.outputPath('creature-victory.png') });
+    for (const player of players) await expect(player.page.locator('#result-title')).toHaveAccessibleName('The Creature wins');
 
+    // Back to the lobby: everyone returns to the room screen, then the host begins again from it.
+    await host.page.locator('#to-lobby').click();
+    for (const player of players) {
+      await expect(player.page.locator('#room-screen')).toBeVisible();
+      await expect(player.page.locator('#arena-container')).toBeHidden();
+      await expect(player.page.locator('#players')).toHaveText(`${PLAYER_COUNT} / ${PLAYER_COUNT}`);
+    }
+    await expect(host.page.locator('#start')).toHaveText('Begin the evening');
     const again = await startMatch(host, players, roundId);
     expect(again.roundId).toBe(roundId + 1);
     for (const player of players) expect(player.network.latest()!.hunters.every((hunter) => !hunter.down)).toBe(true);

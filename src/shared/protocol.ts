@@ -29,6 +29,11 @@ export type ClientMessage =
   // validated and bounded on the server; see src/shared/tuning.ts).
   | { type: 'tune'; tuning: Tuning }
   | ({ type: 'input'; roundId: number } & InputState)
+  // Host only, once a round has ended: drop it and return the room to the lobby.
+  | { type: 'lobby' }
+  // Leave the room, as a disconnect would (a host leaving closes it), but keep the connection
+  // for the title screen. The server sends nothing back.
+  | { type: 'leave' }
   // DEBUG-MENU: host only, while a round runs: set the match clock (0 ends the round as expired).
   | { type: 'setClock'; seconds: number }
   // DEBUG-ROOM: a room that can start without a full party, and its start with the host's role.
@@ -60,13 +65,15 @@ export type HunterView = {
 export type MapSummary = { id: string; name: string };
 
 // Room membership, sent whenever it changes, whenever a round is abandoned, and whenever
-// the host switches map. `host` is per recipient. `notice` explains why a round was cut
-// short. `maps` lists every playable map on the server and `mapId` is the room's choice.
+// the host switches map. `host` and `seat` are per recipient: `seat` is its place in the join
+// order, 0 for the host. `notice` explains why a round was cut short. `maps` lists every
+// playable map on the server and `mapId` is the room's choice.
 export type RoomMessage = {
   type: 'room';
   code: string;
   players: number;
   host: boolean;
+  seat: number;
   notice: 'disconnected' | null;
   maps: MapSummary[];
   mapId: string;
@@ -80,6 +87,17 @@ export type RoomMessage = {
 export type MapMessage = { type: 'map'; map: GameMap };
 
 export type ErrorMessage = { type: 'error'; reason: 'not-found' | 'full' | 'host-left' };
+
+// A finished round's tallies for the result screen, the same for every player. Seconds are to a
+// tenth. `caught` counts every tag (a Hunter revived and caught again counts twice), `lit` is the
+// time any flashlight was on the Creature, and `flashlight` each Hunter's time with its beam on.
+export type RoundSummary = {
+  caught: number;
+  revived: number;
+  batteries: number;
+  lit: number;
+  flashlight: Record<HunterId, number>;
+};
 
 type RoundSnapshot = {
   type: 'snapshot';
@@ -98,6 +116,8 @@ type RoundSnapshot = {
   // seconds since the catch (the room's tuning has the cutscene's length). The round is paused
   // meanwhile. The Creature is revealed for it like any reveal, through `creature`.
   catch?: { hunter: HunterId; elapsed: number };
+  // Present only once the round has ended (roundState 'ended').
+  stats?: RoundSummary;
 };
 
 // Separate shapes make accidental hidden-state serialization harder to introduce.

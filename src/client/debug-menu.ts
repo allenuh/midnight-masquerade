@@ -1,6 +1,6 @@
-// DEBUG-MENU: the menu over the game, toggled with the ` key (closed with Esc). During a round the
-// page shows only the game, so this is where the round's numbers live (index.html moves the HUD,
-// the details and the VFX toggles here, and main.ts the host's room controls). It also has the
+// DEBUG-MENU: the menu over the page, toggled with the ` key (closed with Esc), in the lobby or a
+// round. It holds the round's numbers as plain text, the VFX toggles and the host's tuning table
+// (all in index.html), and during a round the host's start (main.ts moves it here). It also has the
 // host's clock buttons, the fear preview, a frame-rate readout and live tuning of the look: every
 // control in look-controls.ts edits a plain value object that its module pushes to the picture
 // each frame. Edits last until the page is reloaded; "Copy changes" lists them for the source.
@@ -39,7 +39,6 @@ const formatNumber = (value: number): string => String(Number(value.toFixed(4)))
 
 export function mountDebugMenu(send: (message: ClientMessage) => void, initialFearPreview: number | null) {
   const menu = element('#debug-menu');
-  const container = element('#arena-container');
   const perfText = element('#perf');
   const roundActions = element('#round-actions');
   const lookSections = element('#look-sections');
@@ -62,7 +61,7 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
   window.addEventListener('keydown', (event) => {
     // The room code box takes any character.
     if (event.target instanceof HTMLInputElement && event.target.type === 'text') return;
-    if (event.code === 'Backquote' && !container.hidden) {
+    if (event.code === 'Backquote') {
       event.preventDefault();
       setOpen(menu.hidden !== false);
     } else if (event.code === 'Escape' && !menu.hidden) {

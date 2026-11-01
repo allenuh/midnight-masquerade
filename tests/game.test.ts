@@ -14,7 +14,7 @@ import {
   type Game,
 } from '../src/server/game.js';
 import {
-  CREATURE_PAYLOAD_KEYS, PLAYERS, assertHunterPayload, closeTo, creatureId, creatureView, groundPosition, groundedY,
+  CREATURE_PAYLOAD_KEYS, PLAYERS, assertHunterPayload, assertStatsPayload, closeTo, creatureId, creatureView, groundPosition, groundedY,
   hunterId, hunterView, input, ownView, positions, stageGame, type Keys,
   TEST_WORLD,
 } from './helpers/game.js';
@@ -336,8 +336,16 @@ test('Hunter payload contains only permitted data in every round state', () => {
   while (game.catch) stepGame(game);
   assert.equal(game.roundState, 'ended');
   assert.equal(game.result, 'caught');
+  // The ended round carries its tallies to both roles: four catches, nothing else happened.
+  for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+  const ended = creatureView(game);
+  assert.deepEqual(Object.keys(ended).sort(), [...CREATURE_PAYLOAD_KEYS, 'stats'].sort());
+  assertStatsPayload(ended);
+  assert.deepEqual(ended.stats, { caught: 4, revived: 0, batteries: 0, lit: 0, flashlight: { H1: 0, H2: 0, H3: 0, H4: 0 } });
+  assert.deepEqual(hunterView(game).stats, ended.stats);
   startRound(game, PLAYERS);
   for (let slot = 0; slot < game.hunters.length; slot++) assertHunterPayload(hunterView(game, slot));
+  assert.equal('stats' in creatureView(game), false, 'a new round starts without tallies');
   abandonRound(game);
   assert.throws(() => snapshotFor(game, PLAYERS[0]), /without a role/);
 });

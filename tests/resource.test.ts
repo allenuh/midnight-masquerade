@@ -395,7 +395,7 @@ test('a rematch resets every Prototype 4 resource: batteries, the battery on the
   assert.equal(game.hunters.every((hunter) => !hunter.down && hunter.reviveTicks === 0 && !hunter.input.light), true);
   assert.equal(game.creatureState.hp, GAMEPLAY.creature.maxHp);
   assert.deepEqual(game.stats, {
-    incapacitations: 0, revives: 0, pickupsCollected: 0, lightTicks: { H1: 0, H2: 0, H3: 0, H4: 0 },
+    incapacitations: 0, revives: 0, pickupsCollected: 0, exposureTicks: 0, lightTicks: { H1: 0, H2: 0, H3: 0, H4: 0 },
   });
   while (game.roundState === 'reveal') stepGame(game);
   for (const view of [hunterView(game), creatureView(game)]) {
@@ -472,4 +472,26 @@ test('revival still costs the reviver battery, so a rescue and a hunt compete fo
   }
   assert.equal(game.hunters[0].reviveTicks, 30, 'no further progress without battery');
   assert.equal(game.hunters[0].down, true);
+});
+
+test('the result tallies count the time a flashlight was on the Creature and each Hunter\'s time with its beam on', () => {
+  const game = stageGame(LANE_HUNTER, LANE_CREATURE, EAST);
+  step(game, 15, { light: true });
+  assert.equal(game.stats.exposureTicks, 15);
+  assert.equal(game.stats.lightTicks.H1, 15);
+  // The beam swept off the Creature: H1's light still counts, the Creature's exposure does not.
+  game.hunters[0].facing = Math.PI;
+  step(game, 6, { light: true });
+  assert.equal(game.stats.exposureTicks, 15);
+  assert.equal(game.stats.lightTicks.H1, 21);
+  assert.equal('stats' in creatureView(game), false, 'no tallies while the round runs');
+
+  game.timeTicks = 1;
+  step(game);
+  assert.equal(game.result, 'expired');
+  const tenths = (ticks: number) => Math.round(ticks * STEP_SECONDS * 10) / 10;
+  const expected = { caught: 0, revived: 0, batteries: 0, lit: tenths(15), flashlight: { H1: tenths(21), H2: 0, H3: 0, H4: 0 } };
+  assert.deepEqual(creatureView(game).stats, expected);
+  assert.deepEqual(hunterView(game, 2).stats, expected);
+  assertHunterPayload(hunterView(game));
 });

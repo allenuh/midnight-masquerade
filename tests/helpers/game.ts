@@ -128,13 +128,29 @@ export function assertCatchPayload(payload: { catch?: unknown }): void {
   assert.equal(typeof seen.elapsed, 'number');
 }
 
+// The optional `stats` key, in either role's payload, present exactly when the round has ended:
+// whole counts, and seconds to a tenth.
+export function assertStatsPayload(payload: { roundState?: unknown; stats?: unknown }): void {
+  assert.equal('stats' in payload, payload.roundState === 'ended', 'the tallies are sent once the round has ended');
+  if (!('stats' in payload)) return;
+  const stats = payload.stats as Record<string, unknown>;
+  assert.deepEqual(Object.keys(stats).sort(), ['batteries', 'caught', 'flashlight', 'lit', 'revived']);
+  for (const key of ['caught', 'revived', 'batteries']) assert.ok(Number.isInteger(stats[key]) && (stats[key] as number) >= 0);
+  const tenth = (value: unknown) => typeof value === 'number' && value >= 0 && Math.abs(value * 10 - Math.round(value * 10)) < 1e-9;
+  assert.ok(tenth(stats.lit));
+  const flashlight = stats.flashlight as Record<string, unknown>;
+  assert.deepEqual(Object.keys(flashlight).sort(), ['H1', 'H2', 'H3', 'H4']);
+  for (const seconds of Object.values(flashlight)) assert.ok(tenth(seconds));
+}
+
 // Strict allowlist over the serialized Hunter payload, including every teammate entry.
-// `creature` is optional: present only while the Creature is revealed. So is `catch`.
+// `creature` is optional: present only while the Creature is revealed. So are `catch` and `stats`.
 export function assertHunterPayload(value: unknown): void {
   const payload = JSON.parse(JSON.stringify(value));
-  const keys = Object.keys(payload).filter((key) => key !== 'creature' && key !== 'catch').sort();
+  const keys = Object.keys(payload).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'stats').sort();
   assert.deepEqual(keys, HUNTER_PAYLOAD_KEYS);
   assertCatchPayload(payload);
+  assertStatsPayload(payload);
   assert.equal(payload.type, 'snapshot');
   assert.equal(payload.role, 'hunter');
   assert.equal(typeof payload.roundId, 'number');

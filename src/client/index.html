@@ -3,85 +3,214 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Creature Containment Crew — Prototype 4</title>
+    <title>Midnight Masquerade</title>
     <link rel="icon" href="data:," />
+    <!-- The ransom-note faces. Offline, every one falls back to the stacks in style.css. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Alfa+Slab+One&family=Bodoni+Moda:wght@900&family=Bungee&family=Courier+Prime:wght@400;700&family=Playfair+Display:ital,wght@1,900&family=Rye&family=UnifrakturMaguntia&display=swap" />
   </head>
   <body>
-    <header>
-      <span>Prototype 4 — Resource Game</span>
-      <!-- The room's controls: in the header in the lobby, in the debug menu's Room section during a round. -->
-      <span id="room-controls">
-        <span id="room" hidden></span>
-        <span id="map-name" hidden></span>
-        <select id="map" aria-label="Map" hidden></select>
-        <button id="start" type="button" hidden disabled>Start match</button>
-      </span>
-    </header>
-    <p id="status" role="status">Connecting…</p>
+    <!-- Icons, drawn in the colour of whatever uses them. -->
+    <svg class="symbols" aria-hidden="true">
+      <symbol id="mask" viewBox="0 0 48 26"><path d="M2 7c8-5 16-3 22 3 6-6 14-8 22-3 0 10-7 17-15 14-3-1-5-4-7-4s-4 3-7 4C9 24 2 17 2 7z"/><ellipse cx="14" cy="12" rx="4" ry="2.6"/><ellipse cx="34" cy="12" rx="4" ry="2.6"/></symbol>
+      <symbol id="mask-down" viewBox="0 0 48 26"><path d="M2 7c8-5 16-3 22 3 6-6 14-8 22-3 0 10-7 17-15 14-3-1-5-4-7-4s-4 3-7 4C9 24 2 17 2 7z"/><path d="M10 9l8 6M18 9l-8 6M30 9l8 6M38 9l-8 6"/></symbol>
+      <symbol id="mask-outline" viewBox="0 0 48 26"><path stroke-dasharray="3 3" d="M2 7c8-5 16-3 22 3 6-6 14-8 22-3 0 10-7 17-15 14-3-1-5-4-7-4s-4 3-7 4C9 24 2 17 2 7z"/></symbol>
+      <symbol id="mask-plume" viewBox="0 0 48 26"><path d="M2 7c8-5 16-3 22 3 6-6 14-8 22-3 0 10-7 17-15 14-3-1-5-4-7-4s-4 3-7 4C9 24 2 17 2 7z"/><ellipse cx="14" cy="12" rx="4" ry="2.6"/><ellipse cx="34" cy="12" rx="4" ry="2.6"/><path d="M24 10V6M22 4c1-2 3-2 4 0"/></symbol>
+      <symbol id="watch" viewBox="0 0 48 56"><circle cx="24" cy="6" r="4"/><path d="M20 12h8v4h-8z"/><circle cx="24" cy="35" r="19"/><circle cx="24" cy="35" r="14.5" stroke-width="1.2" stroke-dasharray="2 3"/><path d="M24 20v3M39 35h-3M24 50v-3M9 35h3"/><path d="M24 35V25.5c-1.5 1-1.5 2.5 0 3.5M24 35l6.5 4c-1.5.2-2.4 1.2-2 2.6"/><circle cx="24" cy="35" r="1.8" fill="currentColor"/></symbol>
+    </svg>
+
+    <!-- Before a round: the title screen, then the room. Both are laid out on a 1440 × 900 stage
+         that main.ts scales to the window. -->
     <section id="lobby" aria-label="Room">
-      <div id="menu" hidden>
-        <button id="create" type="button">Create room</button>
-        <form id="join-form">
-          <input id="code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code" />
-          <button id="join" type="submit">Join</button>
-        </form>
+      <div class="stage">
+        <div class="gilt"></div>
+        <div id="title-screen">
+          <svg class="icon title-mask" viewBox="0 0 48 26" aria-hidden="true"><use href="#mask-plume" /></svg>
+          <h1 id="game-title" aria-label="Midnight Masquerade"></h1>
+          <p class="tagline">Four guests. One uninvited. The clock strikes at midnight.</p>
+          <div id="menu" hidden>
+            <button id="create" type="button">Host a masquerade</button>
+            <form id="join-form">
+              <label for="code">INVITATION CODE</label>
+              <input id="code" name="code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" />
+              <button id="join" type="submit">Join</button>
+            </form>
+          </div>
+          <p class="controls-hint">WASD to move · Space or click for your light (or, as the Creature, to sprint)</p>
+        </div>
+
+        <div id="room-screen" hidden>
+          <button id="leave-room" type="button" title="Leave the room and go back to the title screen"><svg class="icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4l12 12M16 4L4 16" /></svg><span>LEAVE</span></button>
+          <section class="invitation" aria-label="Room code">
+            <svg class="icon invitation-mask" viewBox="0 0 48 26" aria-hidden="true"><use href="#mask" /></svg>
+            <h2>You are invited</h2>
+            <p class="invitation-sub">TO AN EVENING OF HIDDEN FACES</p>
+            <p id="room" class="room-code"></p>
+            <p class="invitation-note">Give this code to your guests,<br />or send them the link.</p>
+            <button id="copy-link" type="button">Copy invitation link</button>
+            <input id="invite-link" readonly hidden aria-label="Invitation link" />
+          </section>
+
+          <section class="guests" aria-label="Guests">
+            <div class="guests-head">
+              <h2 id="guests-title" aria-label="Guest list"></h2>
+              <span id="players"></span>
+            </div>
+            <ol id="guest-list"></ol>
+            <div class="house-row">
+              <div class="house">
+                <label for="map">THE HOUSE</label>
+                <select id="map" hidden></select>
+                <span id="map-name" hidden></span>
+              </div>
+              <!-- The host's start; main.ts moves it into the debug menu during a round. -->
+              <span id="start-controls"><button id="start" type="button" hidden disabled>Begin the evening</button></span>
+            </div>
+            <p id="waiting"></p>
+          </section>
+        </div>
+
+        <p id="status" role="status">Connecting…</p>
       </div>
-      <p id="players" hidden></p>
-      <p id="waiting" hidden></p>
     </section>
-    <details id="tuning" hidden>
-      <summary>Tuning <span id="tuning-summary"></span></summary>
-      <p id="tuning-note"></p>
-      <table id="tuning-table"><tbody></tbody></table>
-      <button id="tuning-reset" type="button" hidden>Reset to defaults</button>
-    </details>
+
     <main id="arena-container" hidden>
       <div id="arena-view">
         <canvas id="arena" aria-label="3D hunt arena. Hunters: figures with flashlight cones, your own in white. Creature: a hooded, skull-faced wraith, visible to Hunters only while lit or sprinting. Glowing blue and orange JohnBattery cans: battery pickups."></canvas>
-        <div id="overlay" hidden><p id="overlay-title"></p><p id="overlay-detail"></p></div>
+        <!-- Everything over the game, laid out 1440 wide and scaled to the arena by main.ts. -->
+        <div id="hud-layer">
+          <div id="game-hud">
+            <section id="hud-team" aria-label="Team">
+              <h2 id="team-title" class="hud-title" aria-label="The Guests"></h2>
+              <div id="team-cards"></div>
+            </section>
+            <section id="hud-clock" aria-label="Time left">
+              <div class="clock-row">
+                <span id="clock-watch"><svg class="icon" viewBox="0 0 48 56" aria-hidden="true"><use href="#watch" /></svg></span>
+                <div id="clock" role="timer"></div>
+              </div>
+              <span id="clock-warning" hidden>THE CLOCK IS STRIKING</span>
+            </section>
+            <section id="hud-creature" aria-label="Creature">
+              <h2 id="creature-title" class="hud-title" aria-label="The Creature"></h2>
+              <div class="hp-strip">
+                <div id="hp-bar" role="img"><div id="hp-fill"></div><div class="hp-ticks"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+                <span id="hp-number"></span>
+              </div>
+              <span id="creature-tag"></span>
+              <span id="creature-note" hidden></span>
+            </section>
+            <section id="hud-battery" aria-label="Flashlight battery" hidden>
+              <div class="battery-case">
+                <div id="battery-icon" role="img">
+                  <div class="battery-body"><div id="battery-fill"></div><div id="battery-marks"></div></div>
+                  <div class="battery-nub"></div>
+                </div>
+              </div>
+              <div class="battery-readout">
+                <span id="battery-number"></span>
+                <span id="battery-stage"></span>
+              </div>
+            </section>
+          </div>
+
+          <!-- The role reveal and incapacitation. -->
+          <div id="overlay" hidden><p id="overlay-title"></p><p id="overlay-detail"></p></div>
+
+          <!-- The result over the stilled game. -->
+          <div id="result" hidden>
+            <div class="result-body">
+              <span class="kicker">THE PARTY IS OVER</span>
+              <h1 id="result-title"></h1>
+              <p id="result-reason"></p>
+              <dl id="result-stats"></dl>
+              <div class="result-host result-actions">
+                <button id="play-again" class="play-again" type="button">Play again</button>
+                <button id="to-lobby" class="to-lobby" type="button">Back to the lobby</button>
+              </div>
+              <p class="result-wait">Waiting for the host to start the next round…</p>
+              <button id="read-gazette" type="button">Read the Gazette</button>
+            </div>
+          </div>
+        </div>
       </div>
-      <!-- Debug menu (debug-menu.ts): over the game, toggled with the ` key. -->
-      <aside id="debug-menu" aria-label="Debug menu" hidden>
-        <p class="debug-hint">Debug menu · press ` to close</p>
-        <details open>
-          <summary>Round</summary>
-          <div id="hud">
-            <span id="timer" hidden></span>
-            <span id="role" hidden></span>
-            <span id="battery" hidden></span>
-            <span id="proximity" hidden></span>
-            <span id="creature-hp" hidden></span>
-            <span id="creature-state" hidden></span>
-            <span id="team" hidden></span>
-          </div>
-          <pre id="debug" hidden></pre>
-          <div id="round-actions" class="debug-row"></div>
-          <p id="perf"></p>
-        </details>
-        <details id="menu-room-section">
-          <summary>Room</summary>
-          <div id="menu-room"></div>
-        </details>
-        <details id="vfx-section">
-          <summary>VFX</summary>
-          <div id="vfx">
-            <label><input type="checkbox" data-vfx="outline" /> outline</label>
-            <label><input type="checkbox" data-vfx="ditherShading" /> dither shading</label>
-            <label><input type="checkbox" data-vfx="beam" /> beam</label>
-            <label><input type="checkbox" data-vfx="lightPool" /> light pool</label>
-            <label><input type="checkbox" data-vfx="blobShadows" /> blob shadows</label>
-            <label><input type="checkbox" data-vfx="bloom" /> bloom</label>
-            <label><input type="checkbox" data-vfx="grade" /> night grade</label>
-            <label><input type="checkbox" data-vfx="pixelTextures" /> pixel textures</label>
-            <label><input type="checkbox" data-vfx="batteryGlow" /> battery glow</label>
-            <label><input type="checkbox" data-vfx="candleLight" /> candle light</label>
-          </div>
-        </details>
-        <div id="look-sections"></div>
-        <div id="look-actions" class="debug-row"></div>
-      </aside>
     </main>
-    <footer>WASD to move and turn. Hunter: hold Space or the left mouse button for the flashlight; it drains battery, reveals and damages the Creature, and revives a downed teammate it shines on. Walk over a battery to refill. Creature: hold Space or the left mouse button to sprint; touch a Hunter to incapacitate it. The Creature wins if the timer runs out. In a round, the game fills the window; press ` for the debug menu.</footer>
+
+    <!-- The result in full: the winner's headline and the Gazette's report of the round. -->
+    <section id="gazette" aria-label="Round report" hidden>
+      <div class="stage">
+        <div class="gilt"></div>
+        <div class="gazette-layout">
+          <div class="gazette-headline">
+            <span class="kicker">THE PARTY IS OVER</span>
+            <h1 id="gazette-title"></h1>
+            <p id="gazette-reason"></p>
+            <div class="result-host result-actions">
+              <button id="gazette-play-again" class="play-again" type="button">Play again</button>
+              <button id="gazette-to-lobby" class="to-lobby" type="button">Back to the lobby</button>
+            </div>
+            <p class="result-wait">Waiting for the host to start the next round…</p>
+            <button id="close-gazette" type="button">Back to the game</button>
+          </div>
+          <article class="clipping">
+            <p class="masthead">The Gaslight Gazette</p>
+            <h2 id="gazette-headline"></h2>
+            <p class="byline">FROM OUR CORRESPONDENT AT THE HOUSE</p>
+            <dl id="gazette-stats"></dl>
+            <p id="gazette-flashlight"></p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Debug menu (debug-menu.ts): over everything, toggled with the ` key. -->
+    <aside id="debug-menu" aria-label="Debug menu" hidden>
+      <p class="debug-hint">Debug menu · press ` to close</p>
+      <details open>
+        <summary>Round</summary>
+        <div id="hud">
+          <span id="timer" hidden></span>
+          <span id="role" hidden></span>
+          <span id="battery" hidden></span>
+          <span id="proximity" hidden></span>
+          <span id="creature-hp" hidden></span>
+          <span id="creature-state" hidden></span>
+          <span id="team" hidden></span>
+        </div>
+        <pre id="debug" hidden></pre>
+        <div id="round-actions" class="debug-row"></div>
+        <p id="perf"></p>
+      </details>
+      <details id="menu-room-section">
+        <summary>Room</summary>
+        <div id="menu-room"></div>
+      </details>
+      <!-- Between-round tuning: the host edits, everyone else reads. -->
+      <details id="tuning" hidden>
+        <summary>Tuning <span id="tuning-summary"></span></summary>
+        <p id="tuning-note"></p>
+        <table id="tuning-table"><tbody></tbody></table>
+        <button id="tuning-reset" type="button" hidden>Reset to defaults</button>
+      </details>
+      <details id="vfx-section">
+        <summary>VFX</summary>
+        <div id="vfx">
+          <label><input type="checkbox" data-vfx="outline" /> outline</label>
+          <label><input type="checkbox" data-vfx="ditherShading" /> dither shading</label>
+          <label><input type="checkbox" data-vfx="beam" /> beam</label>
+          <label><input type="checkbox" data-vfx="lightPool" /> light pool</label>
+          <label><input type="checkbox" data-vfx="blobShadows" /> blob shadows</label>
+          <label><input type="checkbox" data-vfx="bloom" /> bloom</label>
+          <label><input type="checkbox" data-vfx="grade" /> night grade</label>
+          <label><input type="checkbox" data-vfx="pixelTextures" /> pixel textures</label>
+          <label><input type="checkbox" data-vfx="batteryGlow" /> battery glow</label>
+          <label><input type="checkbox" data-vfx="candleLight" /> candle light</label>
+        </div>
+      </details>
+      <div id="look-sections"></div>
+      <div id="look-actions" class="debug-row"></div>
+    </aside>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>
