@@ -204,7 +204,7 @@ async function openPlayers(browser: Browser) {
 
 async function createRoom(host: Player): Promise<string> {
   await host.page.goto('/');
-  await host.page.getByRole('button', { name: 'Host a masquerade' }).click();
+  await host.page.getByRole('button', { name: 'Host a game' }).click();
   await expect(host.page.locator('#room')).toHaveText(/^[A-Z0-9]{4}$/);
   const code = (await host.page.locator('#room').textContent())!.trim();
   return code;

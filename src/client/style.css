@@ -307,15 +307,6 @@ button:disabled {
   gap: 6px;
 }
 
-.tagline {
-  margin: 0;
-  padding: 4px 14px;
-  background: var(--ink);
-  font-size: 18px;
-  letter-spacing: 0.08em;
-  transform: rotate(-0.5deg);
-}
-
 #menu {
   display: flex;
   align-items: stretch;

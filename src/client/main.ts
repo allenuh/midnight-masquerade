@@ -678,7 +678,9 @@ function start(
   let animationFrame = 0;
   let letterbox = '';
   function draw(): void {
-    scene?.render(shownSnapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview); // DEBUG-MENU: was FEAR_PREVIEW
+    const sparklePreview = debugMenu.takeSparklePreview(); // DEBUG-MENU
+    if (sparklePreview) scene?.previewSparkle(sparklePreview); // DEBUG-MENU
+    scene?.render(shownSnapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview, debugMenu.firePreview); // DEBUG-MENU: was FEAR_PREVIEW
     if (scene) debugMenu.frame(scene.renderer); // DEBUG-MENU
     // The letterbox round the game matches the night beyond the map.
     if (letterbox !== NIGHT.BACKGROUND_COLOR) container.style.background = letterbox = NIGHT.BACKGROUND_COLOR;

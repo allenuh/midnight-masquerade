@@ -3,11 +3,12 @@
 // it takes any value). Every object here is read by its module every frame, so an edit shows at
 // once. Adding a value: put it in its module's object, read it from there each frame, list it here.
 import { FEAR_STAGES, FEAR_TIMING, type FearLevels } from './fear.js';
+import { FIRE, SPARKLE } from './particles.js';
 import { BLOOM, FEAR_LINE_COLOR, FEAR_PASS, GRADE } from './post.js';
 import { CANDLE_FLAMES } from './props.js';
 import { BATTERY_LOOK, CATCH, CHARACTERS, NIGHT, VIEW } from './scene.js';
 import {
-  BATTERY_LIGHT, BATTERY_LIGHT_REACH, CANDLE_LIGHT, CANDLE_LIGHT_REACH, FLASHLIGHT, SHADING,
+  BATTERY_LIGHT, BATTERY_LIGHT_REACH, BATTERY_SPAWN, CANDLE_LIGHT, CANDLE_LIGHT_REACH, FIRE_LIGHT, FIRE_LIGHT_REACH, FLASHLIGHT, SHADING,
 } from './vfx.js';
 
 type Values = Record<string | number, unknown>;
@@ -77,6 +78,32 @@ add('Battery glow', 'vfx.ts', 'BATTERY_LIGHT', BATTERY_LIGHT, {
 add('Battery glow', 'scene.ts', 'BATTERY_LOOK', BATTERY_LOOK, {
   BATTERY_HALO_RADIUS: [0, 100, 0.5], BATTERY_PULSE_DEPTH: unit, BATTERY_PULSE_RATE: [0, 4, 0.05],
   BATTERY_CHARGE_FLASH: [0, 2, 0.01], BATTERY_SHADOW_RADIUS: [0, 40, 0.5],
+});
+
+add('Battery spawn', 'vfx.ts', 'BATTERY_SPAWN', BATTERY_SPAWN, {
+  SECONDS: [0, 3, 0.01], FROM: unit, OVERSHOOT: [0, 5, 0.05], TURNS: [0, 4, 0.25], WORLD_AXIS: 'boolean',
+});
+
+add('Sparkle', 'particles.ts', 'SPARKLE', SPARKLE, {
+  COLOR_LEMON: 'color', COLOR_WHITE: 'color', COLOR_POWDER: 'color', INTENSITY: intensity,
+  FLASH_LIFE: [0.05, 1.5, 0.01], RING_LIFE: [0.05, 1.5, 0.01], RING_DELAY: [0, 0.5, 0.01], RING_THICKNESS: [0.02, 1, 0.01], RING_BRIGHTNESS: [0, 2, 0.01],
+  GLINT_SIZE: [0, 30, 0.5], GLINT_LIFE: [0.1, 3, 0.05], FLAKE_SIZE: [0, 30, 0.5], FLAKE_LIFE: [0.1, 3, 0.05],
+  DRAG: [0, 12, 0.1], GRAVITY: [-100, 300, 1],
+  SPAWN_FLASH: [0, 120, 1], SPAWN_RING: [0, 160, 1], SPAWN_GLINTS: [0, 40, 1], SPAWN_SPEED: [0, 400, 5], SPAWN_RISE: [0, 200, 1],
+  PICKUP_FLASH: [0, 120, 1], PICKUP_RING: [0, 160, 1], PICKUP_GLINTS: [0, 40, 1], PICKUP_FLAKES: [0, 40, 1], PICKUP_SPEED: [0, 500, 5],
+});
+
+add('Fire', 'particles.ts', 'FIRE', FIRE, {
+  COLOR_HOT: 'color', COLOR_MID: 'color', COLOR_LOW: 'color', COLOR_DYING: 'color', INTENSITY: intensity, FACET_SHADE: unit,
+  FLAMES_PER_SECOND: [0, 150, 1], FLAME_WIDTH: [0, 40, 0.5], FLAME_LENGTH: [0, 90, 0.5], FLAME_LIFE: [0.1, 2, 0.01],
+  FLAME_RISE: [0, 400, 5], FLAME_FLUTTER: [0, 2, 0.01], BODY_RADIUS: [0, 60, 0.5],
+  FRONT_SHARE: unit, FRONT_SCALE: [0, 2, 0.01], DISSOLVE_FROM: unit, IGNITE_FLAMES: [0, 60, 1],
+  EMBERS_PER_SECOND: [0, 60, 1], EMBER_SIZE: [0, 12, 0.1], EMBER_LIFE: [0.1, 3, 0.05], EMBER_RISE: [0, 500, 5],
+  EMBER_DRIFT: [0, 150, 1], SNUFF_EMBERS: [0, 60, 1],
+});
+add('Fire', 'vfx.ts', 'FIRE_LIGHT', FIRE_LIGHT, {
+  FIRE_LIGHT_COLOR: 'color', FIRE_LIGHT_RADIUS: [0, FIRE_LIGHT_REACH, 1], FIRE_LIGHT_INTENSITY: [0, 8, 0.05], FIRE_LIGHT_FLICKER: unit,
+  FIRE_LIGHT_HEIGHT: [0, 100, 1], FIRE_LIGHT_UP: [0, 1, 0.01], FIRE_LIGHT_DOWN: [0, 1.5, 0.01],
 });
 
 // Each fear band's values, from its outer edge to its inner edge (fear.ts). The fear preview in

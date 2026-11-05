@@ -28,6 +28,8 @@ import { TILE_SIZE } from '../shared/map/schema.js';
 // round each flame.
 // On the whole picture (post.ts): a soft bloom, and a night grade with a vignette. Under the
 // players and batteries: soft round blob shadows.
+// As a battery appears or is collected: a sparkle (particles.ts). On a burning Creature: flames,
+// and their flickering light on everything round it.
 export const VFX = {
   outline: true,
   ditherShading: true,
@@ -39,6 +41,8 @@ export const VFX = {
   pixelTextures: false,
   batteryGlow: true,
   candleLight: true,
+  sparkles: true,
+  fire: true,
 };
 export type VfxKey = keyof typeof VFX;
 
@@ -144,6 +148,23 @@ export const CANDLE_LIGHT_RAYS = 24;
 export const CANDLE_LIGHT_REACH = 300;
 export const MAX_CANDLE_LIGHTS = 96;
 
+// The burning Creature's light (the flames themselves are in particles.ts): it lights what is within
+// FIRE_LIGHT_RADIUS in FIRE_LIGHT_COLOR at FIRE_LIGHT_INTENSITY times the surface's own colour,
+// flickering by up to FIRE_LIGHT_FLICKER, from FIRE_LIGHT_HEIGHT above the floor. It comes up over
+// FIRE_LIGHT_UP seconds and dies over FIRE_LIGHT_DOWN. It moves with the Creature, so its
+// FIRE_LIGHT_RAYS rays are measured every frame while it is lit, out to FIRE_LIGHT_REACH.
+export const FIRE_LIGHT = {
+  FIRE_LIGHT_COLOR: '#ff7426',
+  FIRE_LIGHT_RADIUS: 120,
+  FIRE_LIGHT_INTENSITY: 2.1,
+  FIRE_LIGHT_FLICKER: 0.2,
+  FIRE_LIGHT_HEIGHT: 34,
+  FIRE_LIGHT_UP: 0.1,
+  FIRE_LIGHT_DOWN: 0.28,
+};
+export const FIRE_LIGHT_RAYS = 24;
+export const FIRE_LIGHT_REACH = 220;
+
 // The battery's own body is lit, PlayStation style (createBatteryMaterial): by the night's
 // ambient and moonlight like the floors and, with the glow off, a key, BATTERY_KEY_COLOR at
 // BATTERY_KEY_INTENSITY, falling to half at BATTERY_KEY_FALLOFF units from the key's point.
@@ -180,6 +201,12 @@ const MOTE_FROM = -0.4;
 const MOTE_TO = 1.3;
 const MOTE_LIFE = 2.6;
 const MOTE_RADIUS = 0.36;
+// A battery appearing (scene.ts) grows out from its middle over SECONDS, from FROM of its size, going
+// a little past full size before it settles (OVERSHOOT: 0 settles straight in) while it makes TURNS
+// full turns that slow to a stop. WORLD_AXIS turns it about the world's upright, which on this steep
+// camera makes it tumble and show its end caps; off, it turns about its own long axis. Its glow, floor
+// light, motes and shadow grow with it.
+export const BATTERY_SPAWN = { SECONDS: 0.85, FROM: 0.04, OVERSHOOT: 1.4, TURNS: 1, WORLD_AXIS: true };
 // PlayStation colour depth: levels per channel, in display (sRGB) space.
 const PS1_COLOR_LEVELS = 32;
 
@@ -194,7 +221,7 @@ export const VFX_UNIFORMS = {
 };
 
 // 4x4 ordered-dither threshold in [0, 1) for a pixel coordinate, built from the 2x2 Bayer matrix.
-const BAYER_GLSL = /* glsl */ `
+export const BAYER_GLSL = /* glsl */ `
 float vfxBayer2(vec2 a) { a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
 float vfxBayer4(vec2 a) { return vfxBayer2(0.5 * a) * 0.25 + vfxBayer2(a) + 1.0 / 32.0; }
 `;
@@ -350,15 +377,25 @@ export const CANDLE_LIGHT_UNIFORMS = {
   candleLightMax: { value: CANDLE_LIGHT.CANDLE_LIGHT_MAX },
 };
 
+// The fire's light, shared like the others: `fireLight` is (x, y, z, brightness), brightness 0 while
+// nothing burns, and `fireLightReach` one row like `batteryLightReach`. Set by scene.ts.
+export const FIRE_LIGHT_UNIFORMS = {
+  fireLight: { value: new Vector4() },
+  fireLightReach: { value: new DataTexture(new Float32Array(FIRE_LIGHT_RAYS), FIRE_LIGHT_RAYS, 1, RedFormat, FloatType) },
+  fireLightColor: { value: new Color(FIRE_LIGHT.FIRE_LIGHT_COLOR) },
+  fireLightRadius: { value: FIRE_LIGHT.FIRE_LIGHT_RADIUS },
+  fireLightIntensity: { value: FIRE_LIGHT.FIRE_LIGHT_INTENSITY },
+};
+
 // The flashlight lighting a floor or wall material (MeshLambertMaterial): every lit slot adds
 // warm light to the surface's own colour, brightest near the Hunter and fading with distance,
 // with soft sides and a brighter core inside the hit cone. A fragment further than its ray's
 // reach is behind a wall and gets nothing; the small margin lets the wall face the ray stops at
 // catch the light, while wall tops stay dark. Positions and normals are world space (the
-// surface meshes are untransformed). The battery and candle lights are added the same way, each
-// a round pool cut at its walls. Called first by every surface material's onBeforeCompile.
+// surface meshes are untransformed). The battery, candle and fire lights are added the same way,
+// each a round pool cut at its walls. Called first by every surface material's onBeforeCompile.
 export function flashlitSurfaceShader(shader: WebGLProgramParametersWithUniforms): void {
-  Object.assign(shader.uniforms, POOL_UNIFORMS, BATTERY_LIGHT_UNIFORMS, CANDLE_LIGHT_UNIFORMS);
+  Object.assign(shader.uniforms, POOL_UNIFORMS, BATTERY_LIGHT_UNIFORMS, CANDLE_LIGHT_UNIFORMS, FIRE_LIGHT_UNIFORMS);
   shader.vertexShader = shader.vertexShader
     .replace('#include <common>', '#include <common>\nvarying vec3 vFlashWorld;\nvarying vec3 vFlashNormal;')
     .replace('#include <project_vertex>', `#include <project_vertex>
@@ -393,6 +430,11 @@ uniform vec3 candleLightColor;
 uniform float candleLightRadius;
 uniform float candleLightIntensity;
 uniform float candleLightMax;
+uniform vec4 fireLight;
+uniform sampler2D fireLightReach;
+uniform vec3 fireLightColor;
+uniform float fireLightRadius;
+uniform float fireLightIntensity;
 ${ANGLE_GLSL}
 #ifdef FLASHLIT_PROP
 #define FLASH_MARGIN ${PROP_LIGHT_MARGIN.toFixed(1)}
@@ -454,11 +496,20 @@ float vfxCandleLight(vec3 world, vec3 normal) {
       light.xyz, candleLightRadius, candleLightReach, slot, ${CANDLE_LIGHT_RAYS});
   }
   return min(total, candleLightMax);
+}
+float vfxFireLight(vec3 world, vec3 normal) {
+  if (fireLight.w <= 0.0) return 0.0;
+#ifndef FLASHLIT_PROP
+  if (normal.y > 0.5 && world.y > flashFloorY + 1.0) return 0.0;
+#endif
+  return fireLightIntensity * fireLight.w * vfxRoundLight(world, normal,
+    fireLight.xyz, fireLightRadius, fireLightReach, 0, ${FIRE_LIGHT_RAYS});
 }`)
     .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
 reflectedLight.directDiffuse += diffuseColor.rgb * flashColor * vfxFlashlight(vFlashWorld, normalize(vFlashNormal));
 reflectedLight.directDiffuse += diffuseColor.rgb * batteryLightColor * vfxBatteryLight(vFlashWorld, normalize(vFlashNormal));
-reflectedLight.directDiffuse += diffuseColor.rgb * candleLightColor * vfxCandleLight(vFlashWorld, normalize(vFlashNormal));`);
+reflectedLight.directDiffuse += diffuseColor.rgb * candleLightColor * vfxCandleLight(vFlashWorld, normalize(vFlashNormal));
+reflectedLight.directDiffuse += diffuseColor.rgb * fireLightColor * vfxFireLight(vFlashWorld, normalize(vFlashNormal));`);
 }
 
 // The same lighting on a prop's material. A prop stands inside the tile it blocks, so a ray stops
@@ -676,12 +727,29 @@ export function syncVfxUniforms(): void {
   CANDLE_LIGHT_UNIFORMS.candleLightRadius.value = Math.min(CANDLE_LIGHT.CANDLE_LIGHT_RADIUS, CANDLE_LIGHT_REACH);
   CANDLE_LIGHT_UNIFORMS.candleLightIntensity.value = CANDLE_LIGHT.CANDLE_LIGHT_INTENSITY;
   CANDLE_LIGHT_UNIFORMS.candleLightMax.value = CANDLE_LIGHT.CANDLE_LIGHT_MAX;
+  FIRE_LIGHT_UNIFORMS.fireLightColor.value.set(FIRE_LIGHT.FIRE_LIGHT_COLOR);
+  FIRE_LIGHT_UNIFORMS.fireLightRadius.value = Math.min(FIRE_LIGHT.FIRE_LIGHT_RADIUS, FIRE_LIGHT_REACH);
+  FIRE_LIGHT_UNIFORMS.fireLightIntensity.value = FIRE_LIGHT.FIRE_LIGHT_INTENSITY;
 }
 
 // The flash as a charge reaches the cap: 1 that moment, fading to 0 by the next sweep.
 export function batteryChargeFlash(seconds: number): number {
   const phase = (seconds / BATTERY_CHARGE_PERIOD) % 1;
   return phase < BATTERY_CHARGE_SWEEP ? 0 : (1 - (phase - BATTERY_CHARGE_SWEEP) / (1 - BATTERY_CHARGE_SWEEP)) ** 2;
+}
+
+// How far a battery that appeared `elapsed` seconds ago is through its entrance: its `scale`, 1 at
+// full size, and its `turn` in radians, reaching exactly 1 and 0 as it ends (`done`), so it finishes
+// in the pose it stands in for the rest of its time on the map.
+export function batterySpawnPose(elapsed: number): { scale: number; turn: number; done: boolean } {
+  const { SECONDS, FROM, OVERSHOOT, TURNS } = BATTERY_SPAWN;
+  if (elapsed >= SECONDS) return { scale: 1, turn: 0, done: true };
+  const progress = Math.max(elapsed, 0) / SECONDS;
+  // A plain overshoot curve is nearly full size a third of the way in, under the sparkle's flash;
+  // starting it more slowly keeps the growth in view.
+  const rest = progress ** 1.35 - 1;
+  const grown = 1 + (OVERSHOOT + 1) * rest ** 3 + OVERSHOOT * rest ** 2;
+  return { scale: FROM + (1 - FROM) * grown, turn: -2 * Math.PI * TURNS * (1 - progress) ** 2, done: false };
 }
 
 // A battery body drawn the way a PlayStation would: lit per vertex and blended across each

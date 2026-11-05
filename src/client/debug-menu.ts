@@ -110,6 +110,24 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
   fearRow.append(fearLabel, fearSlider, fearValue);
   roundActions.after(fearRow);
 
+  // Effect previews, on this screen only: replay a battery's entrance and sparkle, or a pickup's
+  // sparkle, at the battery on the map, and set a Creature this client can already see burning.
+  let sparklePreview: 'spawn' | 'pickup' | null = null;
+  const effectRow = document.createElement('div');
+  effectRow.className = 'look-row';
+  const fireOn = document.createElement('input');
+  fireOn.type = 'checkbox';
+  releaseFocus(fireOn);
+  const fireLabel = document.createElement('label');
+  fireLabel.append(fireOn, ' fire preview');
+  fireLabel.title = 'Sets a Creature this client can already see burning, on this screen only';
+  effectRow.append(
+    button('Battery spawn', () => { sparklePreview = 'spawn'; }),
+    button('Pickup sparkle', () => { sparklePreview = 'pickup'; }),
+    fireLabel,
+  );
+  fearRow.after(effectRow);
+
   // Live look controls, one collapsible section each, in the order look-controls.ts lists them.
   type Row = { control: LookControl; initial: number | string | boolean; row: HTMLElement; set: (value: number | string | boolean) => void };
   const rows: Row[] = [];
@@ -251,6 +269,16 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
     // The fear preview level, or null to follow the server's band.
     get fearPreview(): number | null {
       return fearPreview;
+    },
+    // Whether the fire preview is on.
+    get firePreview(): boolean {
+      return fireOn.checked;
+    },
+    // The sparkle a button just asked for, once.
+    takeSparklePreview(): 'spawn' | 'pickup' | null {
+      const kind = sparklePreview;
+      sparklePreview = null;
+      return kind;
     },
     // From main.ts's updateUi: the clock buttons work only for the host of a running round.
     update(state: { host: boolean; running: boolean }): void {

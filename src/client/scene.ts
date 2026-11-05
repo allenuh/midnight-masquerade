@@ -40,18 +40,19 @@ import hunterModelUrl from './assets/hunter.glb?url';
 import { flashlightRange } from '../shared/flashlight.js';
 import type { Tuning } from '../shared/tuning.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
-import type { World } from '../shared/map/world.js';
+import { lightOccluders, type World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
 import { createFear, hunterFear, previewInput } from './fear.js';
+import { createFire, createSparkles, pickupChanges } from './particles.js';
 import { createPost } from './post.js';
 import { buildProps, type PropModels } from './props.js';
 import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
-  BATTERY_LIGHT, BATTERY_LIGHT_REACH, BATTERY_LIGHT_RAYS, BATTERY_LIGHT_UNIFORMS, FLASHLIGHT, MAX_BATTERY_LIGHTS,
-  OUTLINE_MATERIAL, POOL_RAYS, POOL_UNIFORMS, SHADING, VFX, VFX_UNIFORMS, BATTERY_BODY_UNIFORMS, MOTE_COUNT, MOTE_PIXELS,
-  batteryChargeFlash, createBatteryMaterial, createBeamMaterial, createBlobShadowMaterial, createGlowMaterial,
+  BATTERY_LIGHT, BATTERY_LIGHT_REACH, BATTERY_LIGHT_RAYS, BATTERY_LIGHT_UNIFORMS, BATTERY_SPAWN, FIRE_LIGHT, FIRE_LIGHT_RAYS, FIRE_LIGHT_REACH,
+  FIRE_LIGHT_UNIFORMS, FLASHLIGHT, MAX_BATTERY_LIGHTS, OUTLINE_MATERIAL, POOL_RAYS, POOL_UNIFORMS, SHADING, VFX, VFX_UNIFORMS, BATTERY_BODY_UNIFORMS, MOTE_COUNT, MOTE_PIXELS,
+  batteryChargeFlash, batterySpawnPose, createBatteryMaterial, createBeamMaterial, createBlobShadowMaterial, createGlowMaterial,
   createHaloMaterial, createMoteMaterial, createOutlineMaterial, ditheredBody, syncVfxUniforms,
 } from './vfx.js';
 
@@ -181,6 +182,8 @@ export const CATCH = {
 };
 // Blob shadows sit this far above the floor, under the flat flashlight fan.
 const SHADOW_LIFT = 0.5;
+// A battery's own long axis, cap up, which its entrance turns it about with WORLD_AXIS off.
+const LOCAL_UP = new Vector3(0, 1, 0);
 
 // The Hunter model and its Walk clip, loaded once per page and cloned for every Hunter.
 // `scale` fits it to HUNTER_HEIGHT; `backDepth` is how far its back sticks out behind the
@@ -403,8 +406,10 @@ export function createScene(
     });
     // `pose` turns and leans the battery about its middle: turned like the camera, so its face is
     // parallel to the screen with the cap up, then leaned about the line of sight, then the cap
-    // tipped toward the camera. Every battery leans the same on screen wherever it stands.
-    const pose = new Group().add(model);
+    // tipped toward the camera. Every battery leans the same on screen wherever it stands. `spin`,
+    // inside it, carries the entrance's growth and turn (batterySpawnPose), also about its middle.
+    const spin = new Group().add(model);
+    const pose = new Group().add(spin);
     pose.position.set(x, world.floorY, z);
     pose.quaternion.copy(camera.quaternion);
     pose.rotateZ((index % 2 === 0 ? -1 : 1) * BATTERY_LEAN);
@@ -447,9 +452,45 @@ export function createScene(
           wallDistance(origin, direction, BATTERY_LIGHT_REACH, world.wallBoxes);
       }
     }
-    return { pose, shadow, halo, motes };
+    // The world's upright as `spin` sees it, and when this battery's entrance began (null: none playing).
+    const worldUp = new Vector3(0, 1, 0).applyQuaternion(pose.quaternion.clone().invert());
+    return { pose, spin, worldUp, spawnedAt: null as number | null, shadow, halo, motes };
   });
   lightReaches.needsUpdate = true;
+
+  // The sparkle as a battery appears or is collected, the burning Creature's flames (particles.ts)
+  // and their light. `lastPickups` is the pickup list last seen; `fireGlow` is the light's 0..1.
+  const sparkles = createSparkles(camera.quaternion);
+  const fire = createFire();
+  scene.add(sparkles.mesh, fire.mesh);
+  let lastPickups: readonly number[] | null = null;
+  let fireGlow = 0;
+  const fireOccluders = lightOccluders(world);
+  const fireReaches = FIRE_LIGHT_UNIFORMS.fireLightReach.value;
+  const fireReachData = fireReaches.image.data as Float32Array;
+  FIRE_LIGHT_UNIFORMS.fireLight.value.set(0, 0, 0, 0);
+  const fireFloor = { x: 0, y: 0, z: 0 };
+
+  // The light follows `fireFloor` while it glows, cut at the walls and the tall props like a candle's.
+  function updateFireLight(seconds: number, deltaSeconds: number, burning: boolean): void {
+    const step = deltaSeconds / Math.max(burning ? FIRE_LIGHT.FIRE_LIGHT_UP : FIRE_LIGHT.FIRE_LIGHT_DOWN, 1e-3);
+    fireGlow = Math.min(1, Math.max(0, fireGlow + (burning ? step : -step)));
+    const light = FIRE_LIGHT_UNIFORMS.fireLight.value;
+    if (fireGlow === 0) {
+      light.w = 0;
+      return;
+    }
+    const origin = {
+      x: fireFloor.x, z: fireFloor.z, y: Math.min(fireFloor.y + FIRE_LIGHT.FIRE_LIGHT_HEIGHT, world.floorY + world.wallHeight - 1),
+    };
+    for (let ray = 0; ray < FIRE_LIGHT_RAYS; ray++) {
+      const angle = (2 * Math.PI * ray) / FIRE_LIGHT_RAYS;
+      fireReachData[ray] = wallDistance(origin, { x: Math.cos(angle), y: 0, z: Math.sin(angle) }, FIRE_LIGHT_REACH, fireOccluders);
+    }
+    fireReaches.needsUpdate = true;
+    const wave = (Math.sin(seconds * 11.3) + Math.sin(seconds * 23.7 + 1.1) + Math.sin(seconds * 6.1 + 2.3)) / 3;
+    light.set(origin.x, origin.y, origin.z, fireGlow * (1 + FIRE_LIGHT.FIRE_LIGHT_FLICKER * wave));
+  }
 
   // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
   // at the origin opening along +X, scaled each frame to the light's range and width. The lens
@@ -715,8 +756,9 @@ export function createScene(
   };
 
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
-  // `fearPreview` (the debug menu's fear preview) replaces a Hunter's band and dread.
-  function render(snapshot: Snapshot | null, tuning: Tuning, fearPreview: number | null = null): void {
+  // `fearPreview` (the debug menu's fear preview) replaces a Hunter's band and dread. `firePreview`
+  // (the debug menu's too) sets a Creature this client can already see burning, on this screen only.
+  function render(snapshot: Snapshot | null, tuning: Tuning, fearPreview: number | null = null, firePreview = false): void {
     // The look values (NIGHT, CHARACTERS, BATTERY_LOOK, VIEW and vfx.ts's) may have been edited
     // in the debug menu since the last frame.
     syncNight();
@@ -852,19 +894,40 @@ export function createScene(
     BATTERY_BODY_UNIFORMS.batteryGlowPulse.value = VFX.batteryGlow ? pulse : 1;
     BATTERY_BODY_UNIFORMS.batteryGlowOn.value = VFX.batteryGlow ? 1 : 0;
     BATTERY_BODY_UNIFORMS.batteryTime.value = seconds;
+    // Both roles see the same list, so both see the same entrances and sparkles. A battery already
+    // out when this client joined just stands there.
+    if (snapshot && newSnapshot) {
+      const { spawned, taken } = pickupChanges(lastPickups, snapshot.pickups, snapshot.roundState);
+      for (const index of spawned) pickups[index].spawnedAt = seconds;
+      if (VFX.sparkles) {
+        for (const index of spawned) sparkles.burst('spawn', pickups[index].pose.position, seconds);
+        for (const index of taken) sparkles.burst('pickup', pickups[index].pose.position, seconds);
+      }
+    }
+    lastPickups = snapshot?.pickups ?? null;
+    sparkles.update(seconds);
     for (const [index, pickup] of pickups.entries()) {
       pickup.pose.visible = snapshot?.pickups.includes(index) ?? false;
+      // Its entrance, if one is playing. A battery collected partway through is simply gone.
+      if (!pickup.pose.visible) pickup.spawnedAt = null;
+      const entrance = batterySpawnPose(pickup.spawnedAt === null ? Infinity : seconds - pickup.spawnedAt);
+      if (entrance.done) pickup.spawnedAt = null;
+      pickup.spin.scale.setScalar(entrance.scale);
+      pickup.spin.quaternion.setFromAxisAngle(BATTERY_SPAWN.WORLD_AXIS ? pickup.worldUp : LOCAL_UP, entrance.turn);
+      // What it casts grows with it, but its light never goes past full on the overshoot.
+      const grown = Math.min(entrance.scale, 1);
       pickup.shadow.visible = pickup.pose.visible && VFX.blobShadows;
-      pickup.shadow.scale.set(BATTERY_LOOK.BATTERY_SHADOW_RADIUS, 1, BATTERY_LOOK.BATTERY_SHADOW_RADIUS);
+      pickup.shadow.scale.set(BATTERY_LOOK.BATTERY_SHADOW_RADIUS * grown, 1, BATTERY_LOOK.BATTERY_SHADOW_RADIUS * grown);
       pickup.halo.visible = pickup.pose.visible && VFX.batteryGlow;
-      pickup.halo.scale.setScalar(BATTERY_LOOK.BATTERY_HALO_RADIUS);
+      pickup.halo.scale.setScalar(BATTERY_LOOK.BATTERY_HALO_RADIUS * grown);
       pickup.motes.visible = pickup.halo.visible;
-      if (index < MAX_BATTERY_LIGHTS) BATTERY_LIGHT_UNIFORMS.batteryLights.value[index].z = pickup.halo.visible ? pulse : 0;
+      pickup.motes.scale.setScalar(grown);
+      if (index < MAX_BATTERY_LIGHTS) BATTERY_LIGHT_UNIFORMS.batteryLights.value[index].z = pickup.halo.visible ? pulse * grown : 0;
     }
 
     const creatureView = snapshot?.role === 'creature'
-      ? { position: snapshot.creature, facing: snapshot.facing, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning }
-      : snapshot?.creature ?? null;
+      ? { position: snapshot.creature, facing: snapshot.facing, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning || firePreview }
+      : snapshot?.creature ? { ...snapshot.creature, burning: snapshot.creature.burning || firePreview } : null;
     if (creatureView) {
       const mesh = ensureCreature();
       const { position } = creatureView;
@@ -933,6 +996,14 @@ export function createScene(
     } else {
       removeCreature();
     }
+    // The fire stands wherever the Creature's body is drawn, the catch's slide included.
+    const burning = VFX.fire && (creatureView?.burning ?? false);
+    if (creature) {
+      const { x, y, z } = creature.group.position;
+      Object.assign(fireFloor, { x, y: y - GAMEPLAY.playerRadius, z });
+    }
+    fire.update(seconds, deltaSeconds, burning, creature ? fireFloor : null, CREATURE_HEIGHT);
+    updateFireLight(seconds, deltaSeconds, burning);
     post.render();
   }
 
@@ -945,9 +1016,20 @@ export function createScene(
     VFX_UNIFORMS.vfxAspect.value = width / height;
   }
 
+  // The debug menu's replay, at the battery on the map, or the first battery point if there is none
+  // (just the sparkle then, with no can to grow).
+  function previewSparkle(kind: 'spawn' | 'pickup'): void {
+    const pickup = pickups[lastPickups?.[0] ?? 0];
+    if (!pickup) return;
+    const seconds = (performance.now() - startTime) / 1000;
+    sparkles.burst(kind, pickup.pose.position, seconds);
+    if (kind === 'spawn') pickup.spawnedAt = seconds;
+  }
+
   // Frees this scene's geometry; the renderer is kept when the caller will reuse it for
   // the next map and disposed only when the page goes away.
   function dispose(keepRenderer = false): void {
+    FIRE_LIGHT_UNIFORMS.fireLight.value.set(0, 0, 0, 0);
     props.dispose();
     surfaces.dispose();
     post.dispose();
@@ -964,5 +1046,5 @@ export function createScene(
     if (!keepRenderer) renderer.dispose();
   }
 
-  return { render, resize, dispose, renderer, aspect: CAMERA.aspect };
+  return { render, resize, dispose, previewSparkle, renderer, aspect: CAMERA.aspect };
 }
