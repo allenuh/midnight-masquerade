@@ -1,5 +1,5 @@
 # Adds the Creature's Grab animation (the catch cutscene) to art/creature.blend and exports
-# src/client/assets/creature.glb with both clips, Float and Grab. Developer-only, re-run by hand:
+# src/client/assets/creature.glb with every clip (Float, Grab, Exorcism). Developer-only, re-run by hand:
 #     blender -b art/creature.blend --python art/animate_creature_grab.py
 # Add `-- --dry-run` to build the action without saving the .blend or exporting.
 # The rig is six rigid bones (Root, Body, Hem, Head, Arm.L, Arm.R); each sleeve and claw rides its

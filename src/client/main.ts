@@ -453,7 +453,7 @@ function start(
         statusText.textContent = 'Roles are assigned. The round starts in a moment.';
         break;
       case 'running':
-        if (snapshot.catch) {
+        if (snapshot.catch || snapshot.exorcism) {
           statusText.textContent = '';
         } else if (own?.down) {
           // Nothing covers the game: a downed Hunter watches on, and its card in the HUD shows the revive.
@@ -680,6 +680,7 @@ function start(
   function draw(): void {
     const sparklePreview = debugMenu.takeSparklePreview(); // DEBUG-MENU
     if (sparklePreview) scene?.previewSparkle(sparklePreview); // DEBUG-MENU
+    if (debugMenu.takeExorcismPreview()) scene?.previewExorcism(); // DEBUG-MENU
     scene?.render(shownSnapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview, debugMenu.firePreview); // DEBUG-MENU: was FEAR_PREVIEW
     if (scene) debugMenu.frame(scene.renderer); // DEBUG-MENU
     // The letterbox round the game matches the night beyond the map.

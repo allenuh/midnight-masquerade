@@ -63,10 +63,12 @@ export const GAMEPLAY = {
   // Light held on it keeps the timer at full, so this is how long after the beam leaves
   // before the Creature is dangerous again. Burning has no cooldown and is independent of
   // the stagger and the reveal. Every tag plays the catch cutscene for catchSeconds: the whole
-  // round pauses while every screen watches the Creature grab the Hunter (0 skips it).
+  // round pauses while every screen watches the Creature grab the Hunter (0 skips it). HP reaching
+  // zero plays the exorcism cutscene for exorcismSeconds the same way, and the round ends with it
+  // (0 skips it, ending the round at once).
   creature: {
     maxHp: 100, staggerSeconds: 1, staggerCooldownSeconds: 6, visibilityLingerSeconds: 0.5, attackCooldownSeconds: 1,
-    burnSeconds: 3, catchSeconds: 2,
+    burnSeconds: 3, catchSeconds: 2, exorcismSeconds: 6,
   },
   // Creature sprint (the GDD's Dash): held Space / left mouse button replaces speed.creature with
   // sprint.speed and reveals the Creature. The cooldown runs after every

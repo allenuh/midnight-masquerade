@@ -21,6 +21,7 @@ import {
   Vector3,
 } from 'three';
 import type { RoundState } from '../shared/protocol.js';
+import { STEADY_FIRE, type FireSurge } from './exorcism.js';
 import { BAYER_GLSL } from './vfx.js';
 
 // The sparkle. Lemon, white and the can's powder blue, never as orange as the fire, so the two never
@@ -69,7 +70,9 @@ export const SPARKLE = {
 // from DISSOLVE_FROM of their life. A burst of IGNITE_FLAMES marks the moment it catches. Embers:
 // EMBERS_PER_SECOND small sparks going higher and living longer, EMBER_DRIFT to either side, and
 // SNUFF_EMBERS thrown off as the burn ends, so the moment the Creature can catch again shows too. The
-// shards stay where they were born, so a moving Creature trails fire.
+// shards stay where they were born, so a moving Creature trails fire. Ash (the exorcism only; see
+// exorcism.ts, which also makes the fire swell and die): grey flakes of COLOR_ASH, ASH_SIZE across,
+// lifting off the body at ASH_RISE and drifting ASH_DRIFT to either side for ASH_LIFE seconds.
 //
 // The light: the fire lights the floors and walls round it (vfx.ts) by FIRE_LIGHT.
 export const FIRE = {
@@ -77,6 +80,7 @@ export const FIRE = {
   COLOR_MID: '#ffae2c',
   COLOR_LOW: '#f2541b',
   COLOR_DYING: '#9c1c12',
+  COLOR_ASH: '#8f8c88',
   INTENSITY: 1.2,
   FACET_SHADE: 0.74,
   FLAMES_PER_SECOND: 90,
@@ -96,10 +100,15 @@ export const FIRE = {
   EMBER_RISE: 95,
   EMBER_DRIFT: 26,
   SNUFF_EMBERS: 16,
+  ASH_SIZE: 3.5,
+  ASH_LIFE: 1.7,
+  ASH_RISE: 62,
+  ASH_DRIFT: 34,
 };
 
 const SPARKLE_CAPACITY = 128;
-const FIRE_CAPACITY = 160;
+// Room for a steady burn three times over: the exorcism's swell, and its ash.
+const FIRE_CAPACITY = 448;
 // World units straight up per unit up the screen, for a camera about 72 degrees down (camera-config.ts).
 const UPRIGHT = 3;
 // How far forward a front flame draws, in Creature heights: enough to clear the head from the floor.
@@ -376,12 +385,13 @@ export function createFire(random: () => number = Math.random) {
       uMid: { value: new Color() },
       uLow: { value: new Color() },
       uDying: { value: new Color() },
+      uAsh: { value: new Color() },
     },
     vertexShader: /* glsl */ `
 attribute float aFacet;
 attribute vec4 aStart;  // where it starts, and when
 attribute vec4 aMotion; // its velocity across and up the screen, how far forward it draws, how long it lives
-attribute vec4 aLook;   // width, length, starting heat, a random 0..1
+attribute vec4 aLook;   // width, length, starting heat (below 0: ash, which has none), a random 0..1
 uniform float uTime;
 uniform float uFlutter;
 varying float vHeat;
@@ -410,7 +420,7 @@ void main() {
   view.z += aMotion.z + position.z * 0.5 + aMotion.y * age * ${UPRIGHT.toFixed(2)};
   vec4 depth = projectionMatrix * view;
   gl_Position.z = (depth.z / depth.w) * gl_Position.w;
-  vHeat = (aLook.z + position.z * 0.35) * (1.0 - life);
+  vHeat = aLook.z < 0.0 ? -1.0 : (aLook.z + position.z * 0.35) * (1.0 - life);
   vLife = life;
   vFacet = aFacet;
 }`,
@@ -421,6 +431,7 @@ uniform vec3 uHot;
 uniform vec3 uMid;
 uniform vec3 uLow;
 uniform vec3 uDying;
+uniform vec3 uAsh;
 varying float vHeat;
 varying float vLife;
 varying float vFacet;
@@ -430,24 +441,24 @@ void main() {
   if (vLife > uDissolve && (vLife - uDissolve) / (1.0 - uDissolve) > threshold) discard;
   // Hard colour bands, dithered where they meet like the shading on the bodies.
   float band = vHeat * 3.0 + (threshold - 0.5) * 0.3;
-  vec3 color = band > 2.0 ? uHot : band > 1.15 ? uMid : band > 0.45 ? uLow : uDying;
+  vec3 color = vHeat < -0.5 ? uAsh : band > 2.0 ? uHot : band > 1.15 ? uMid : band > 0.45 ? uLow : uDying;
   gl_FragColor = vec4(color * mix(1.0, uFacet, vFacet), 1.0);
 }`,
   });
   const mesh = new Mesh(geometry, material);
   mesh.frustumCulled = false;
 
-  function flame(floor: Position3, height: number, seconds: number): void {
+  function flame(floor: Position3, height: number, seconds: number, surge: Readonly<FireSurge>): void {
     const along = random() ** 1.3;
     const angle = random() * 2 * Math.PI;
     const radius = FIRE.BODY_RADIUS * (1 - 0.3 * along) * Math.sqrt(random());
     // Some lick up in front of the body, smaller so its shape still shows; the rest stand behind it.
-    const front = random() < FIRE.FRONT_SHARE;
-    const scale = (0.6 + 0.4 * random()) * (1 - 0.35 * along) * (front ? FIRE.FRONT_SCALE : 1);
+    const front = random() < FIRE.FRONT_SHARE * surge.front;
+    const scale = surge.size * (0.6 + 0.4 * random()) * (1 - 0.35 * along) * (front ? FIRE.FRONT_SCALE : 1);
     const life = FIRE.FLAME_LIFE * (0.7 + 0.3 * random());
     pool.write({
       aStart: [floor.x + Math.cos(angle) * radius, floor.y + along * height, floor.z + Math.sin(angle) * radius, seconds],
-      aMotion: [0, FIRE.FLAME_RISE * (0.75 + 0.25 * random()), front ? height * FIRE_FRONT_DEPTH : 0, life],
+      aMotion: [0, FIRE.FLAME_RISE * surge.size * (0.75 + 0.25 * random()), front ? height * FIRE_FRONT_DEPTH : 0, life],
       aLook: [FIRE.FLAME_WIDTH * scale, FIRE.FLAME_LENGTH * scale, 0.5 + 0.16 * random(), random()],
     }, seconds + life);
   }
@@ -465,17 +476,34 @@ void main() {
     }, seconds + life);
   }
 
+  // A flake of ash off the body, drawn in front of it.
+  function ash(floor: Position3, height: number, seconds: number): void {
+    const angle = random() * 2 * Math.PI;
+    const radius = FIRE.BODY_RADIUS * Math.sqrt(random());
+    const life = FIRE.ASH_LIFE * (0.6 + 0.4 * random());
+    const size = FIRE.ASH_SIZE * (0.6 + 0.4 * random());
+    pool.write({
+      aStart: [floor.x + Math.cos(angle) * radius, floor.y + random() * height, floor.z + Math.sin(angle) * radius, seconds],
+      aMotion: [(random() - 0.5) * 2 * FIRE.ASH_DRIFT, FIRE.ASH_RISE * (0.6 + 0.4 * random()), height * FIRE_FRONT_DEPTH, life],
+      aLook: [size, size * 1.4, -1, random()],
+    }, seconds + life);
+  }
+
   let burning = false;
+  let lastRate = 0;
   let flameDebt = 0;
   let emberDebt = 0;
+  let ashDebt = 0;
   let drawnOnce = false;
   const lastFloor: Position3 = { x: 0, y: 0, z: 0 };
   let lastHeight = 0;
 
   // Once a frame. `floor` is the point on the floor under the Creature and `height` how tall it stands,
   // or null with `burning` false once it has gone. Burning makes flames; the fire already made burns
-  // out where it is, wherever the Creature has got to.
-  function update(seconds: number, deltaSeconds: number, isBurning: boolean, floor: Position3 | null, height: number): void {
+  // out where it is, wherever the Creature has got to. `surge` is the exorcism's (exorcism.ts).
+  function update(
+    seconds: number, deltaSeconds: number, isBurning: boolean, floor: Position3 | null, height: number, surge: Readonly<FireSurge> = STEADY_FIRE,
+  ): void {
     const uniforms = material.uniforms;
     uniforms.uTime.value = seconds;
     uniforms.uFlutter.value = FIRE.FLAME_FLUTTER;
@@ -485,21 +513,26 @@ void main() {
     (uniforms.uMid.value as Color).set(FIRE.COLOR_MID).multiplyScalar(FIRE.INTENSITY);
     (uniforms.uLow.value as Color).set(FIRE.COLOR_LOW).multiplyScalar(FIRE.INTENSITY);
     (uniforms.uDying.value as Color).set(FIRE.COLOR_DYING).multiplyScalar(FIRE.INTENSITY);
+    (uniforms.uAsh.value as Color).set(FIRE.COLOR_ASH);
 
     const lit = isBurning && floor !== null;
     if (lit) {
       Object.assign(lastFloor, floor);
       lastHeight = height;
-      if (!burning) for (let index = 0; index < FIRE.IGNITE_FLAMES; index++) flame(floor, height, seconds);
-      flameDebt += FIRE.FLAMES_PER_SECOND * deltaSeconds;
-      emberDebt += FIRE.EMBERS_PER_SECOND * deltaSeconds;
-      for (; flameDebt >= 1; flameDebt -= 1) flame(floor, height, seconds);
+      if (!burning) for (let index = 0; index < FIRE.IGNITE_FLAMES; index++) flame(floor, height, seconds, surge);
+      flameDebt += FIRE.FLAMES_PER_SECOND * surge.rate * deltaSeconds;
+      emberDebt += FIRE.EMBERS_PER_SECOND * surge.rate * deltaSeconds;
+      ashDebt += surge.ash * deltaSeconds;
+      for (; flameDebt >= 1; flameDebt -= 1) flame(floor, height, seconds, surge);
       for (; emberDebt >= 1; emberDebt -= 1) ember(floor, height, seconds);
+      for (; ashDebt >= 1; ashDebt -= 1) ash(floor, height, seconds);
     } else if (burning) {
-      for (let index = 0; index < FIRE.SNUFF_EMBERS; index++) ember(lastFloor, lastHeight, seconds);
-      flameDebt = emberDebt = 0;
+      // A fire that has already died down, as the exorcism's has, ends without a puff.
+      if (lastRate > 0) for (let index = 0; index < FIRE.SNUFF_EMBERS; index++) ember(lastFloor, lastHeight, seconds);
+      flameDebt = emberDebt = ashDebt = 0;
     }
     burning = lit;
+    lastRate = lit ? surge.rate : 0;
     pool.flush();
     mesh.visible = !drawnOnce || seconds < pool.aliveUntil;
     drawnOnce = true;

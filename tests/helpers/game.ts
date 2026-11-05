@@ -29,12 +29,13 @@ export const groundPosition = (x: number, z: number): Position => ({ x, y: groun
 // stage, so idle Hunters never touch, light, or block anything.
 export const PARKED: readonly Position[] = [groundPosition(700, 560), groundPosition(760, 560), groundPosition(820, 560)];
 
-// The rule tests run on the shipped defaults with two exceptions: no flashlight effect
-// delay and no catch cutscene. They stage single-step encounters to test the individual
-// rules (one lit step damages, staggers, burns; a tag downs at once), and the delay and the
-// cutscene have their own tests (tests/tuning.test.ts, tests/catch.test.ts). Every other
-// value is exactly gameplay-config.ts, so expectations derived from GAMEPLAY stay valid.
-export const TEST_TUNING: Readonly<Tuning> = Object.freeze({ ...defaultTuning(), lightEffectDelaySeconds: 0, catchSeconds: 0 });
+// The rule tests run on the shipped defaults with three exceptions: no flashlight effect
+// delay, no catch cutscene and no exorcism cutscene. They stage single-step encounters to test
+// the individual rules (one lit step damages, staggers, burns; a tag downs at once; a kill ends
+// the round), and the delay and the cutscenes have their own tests (tests/tuning.test.ts,
+// tests/catch.test.ts, tests/exorcism.test.ts). Every other value is exactly gameplay-config.ts,
+// so expectations derived from GAMEPLAY stay valid.
+export const TEST_TUNING: Readonly<Tuning> = Object.freeze({ ...defaultTuning(), lightEffectDelaySeconds: 0, catchSeconds: 0, exorcismSeconds: 0 });
 
 // A round for the five test players, stepped through the role reveal so it is running.
 export function startedGame(): Game {
@@ -128,6 +129,15 @@ export function assertCatchPayload(payload: { catch?: unknown }): void {
   assert.equal(typeof seen.elapsed, 'number');
 }
 
+// The optional `exorcism` key, in either role's payload, present only while the exorcism cutscene
+// plays: the seconds since the Creature's HP reached zero, and nothing else.
+export function assertExorcismPayload(payload: { exorcism?: unknown }): void {
+  if (!('exorcism' in payload)) return;
+  const seen = payload.exorcism as { elapsed: unknown };
+  assert.deepEqual(Object.keys(seen), ['elapsed']);
+  assert.equal(typeof seen.elapsed, 'number');
+}
+
 // The optional `stats` key, in either role's payload, present exactly when the round has ended:
 // whole counts, and seconds to a tenth.
 export function assertStatsPayload(payload: { roundState?: unknown; stats?: unknown }): void {
@@ -144,12 +154,14 @@ export function assertStatsPayload(payload: { roundState?: unknown; stats?: unkn
 }
 
 // Strict allowlist over the serialized Hunter payload, including every teammate entry.
-// `creature` is optional: present only while the Creature is revealed. So are `catch` and `stats`.
+// `creature` is optional: present only while the Creature is revealed. So are `catch`, `exorcism`
+// and `stats`.
 export function assertHunterPayload(value: unknown): void {
   const payload = JSON.parse(JSON.stringify(value));
-  const keys = Object.keys(payload).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'stats').sort();
+  const keys = Object.keys(payload).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'exorcism' && key !== 'stats').sort();
   assert.deepEqual(keys, HUNTER_PAYLOAD_KEYS);
   assertCatchPayload(payload);
+  assertExorcismPayload(payload);
   assertStatsPayload(payload);
   assert.equal(payload.type, 'snapshot');
   assert.equal(payload.role, 'hunter');

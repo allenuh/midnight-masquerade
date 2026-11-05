@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Quaternion, Vector3 } from 'three';
+import { EXORCISM } from '../src/client/exorcism.js';
 import { FIRE, SPARKLE, createFire, createSparkles, pickupChanges } from '../src/client/particles.js';
 import { BATTERY_SPAWN, batterySpawnPose } from '../src/client/vfx.js';
 
@@ -120,6 +121,42 @@ test('the fire keeps within its ring at full burn, so a flame is never cut short
   const fire = createFire();
   const peak = FIRE.FLAMES_PER_SECOND * FIRE.FLAME_LIFE + FIRE.EMBERS_PER_SECOND * FIRE.EMBER_LIFE + FIRE.IGNITE_FLAMES + FIRE.SNUFF_EMBERS;
   assert.ok(peak <= fire.geometry.instanceCount, `${peak} alive at most`);
+});
+
+test('the fire keeps within its ring at the exorcism\'s peak too', () => {
+  const fire = createFire();
+  const peak = (FIRE.FLAMES_PER_SECOND * FIRE.FLAME_LIFE + FIRE.EMBERS_PER_SECOND * FIRE.EMBER_LIFE) * EXORCISM.FIRE_RATE
+    + EXORCISM.ASH_PER_SECOND * FIRE.ASH_LIFE;
+  assert.ok(peak <= fire.geometry.instanceCount, `${peak} alive at most`);
+});
+
+test('a surge scales the flames and embers, sheds ash, and a fire that has died ends without a puff', () => {
+  const written = (fire: ReturnType<typeof createFire>) => {
+    const start = fire.geometry.getAttribute('aStart');
+    let count = 0;
+    for (let index = 0; index < start.count; index++) if (start.array[index * 4 + 3] >= 1) count += 1;
+    return count;
+  };
+  const surged = createFire();
+  surged.update(1, 0, true, floor, 67);
+  const ignited = written(surged);
+  surged.update(2, 1, true, floor, 67, { rate: 2, size: 1.5, front: 1, ash: 10, light: 1 });
+  const expected = 2 * (FIRE.FLAMES_PER_SECOND + FIRE.EMBERS_PER_SECOND) + 10;
+  assert.ok(Math.abs(written(surged) - ignited - expected) <= 2, `${written(surged) - ignited} written, ${expected} expected`);
+  // Ash is the only thing written with no heat, and there is one flake per flake asked for.
+  const look = surged.geometry.getAttribute('aLook');
+  let flakes = 0;
+  for (let index = 0; index < look.count; index++) if (look.array[index * 4 + 2] < 0) flakes += 1;
+  assert.equal(flakes, 10);
+
+  // Burnt down to nothing: no flames however long it stays lit, and no embers thrown off at the end.
+  const dying = createFire();
+  dying.update(1, 0, true, floor, 67);
+  const before = written(dying);
+  dying.update(2, 1, true, floor, 67, { rate: 0, size: 0.35, front: 1, ash: 0, light: 0 });
+  assert.equal(written(dying), before);
+  dying.update(3, 1, false, floor, 67);
+  assert.equal(written(dying), before, 'no puff');
 });
 
 test('the sparkle is never as orange as the fire: red never leads green by what the tests call burning', () => {

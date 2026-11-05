@@ -270,7 +270,7 @@ function assertHunterWire(network: Network) {
   const problems: string[] = [];
   const sameKeys = (value: object, expected: string[]) => Object.keys(value).sort().join() === expected.join();
   for (const message of snapshots) {
-    if (Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'stats').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
+    if (Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'exorcism' && key !== 'stats').sort().join() !== HUNTER_KEYS.join()) problems.push(`keys: ${Object.keys(message).join()}`);
     if (('stats' in message) !== (message.roundState === 'ended')) problems.push(`stats in ${message.roundState}`);
     if (message.catch && (!sameKeys(message.catch, ['elapsed', 'hunter']) || typeof message.catch.elapsed !== 'number')) {
       problems.push(`catch ${JSON.stringify(message.catch)}`);
@@ -737,7 +737,7 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     // The Gazette opens over everything and closes back to the overlay.
     await b.page.locator('#read-gazette').click();
     await expect(b.page.locator('#gazette')).toBeVisible();
-    await expect(b.page.locator('#gazette-headline')).toHaveText('Creature unmasked at the midnight ball');
+    await expect(b.page.locator('#gazette-headline')).toHaveText('Creature exorcised at the midnight ball');
     await expect(b.page.locator('#gazette-stats')).toContainText(`LIGHT ON IT${stats.lit.toFixed(1)} s`);
     await b.page.screenshot({ path: testInfo.outputPath('gazette.png') });
     await b.page.locator('#close-gazette').click();

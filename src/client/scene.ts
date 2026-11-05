@@ -44,6 +44,7 @@ import { lightOccluders, type World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
+import { EXORCISM, exorcismFrame } from './exorcism.js';
 import { createFear, hunterFear, previewInput } from './fear.js';
 import { createFire, createSparkles, pickupChanges } from './particles.js';
 import { createPost } from './post.js';
@@ -220,12 +221,13 @@ export async function loadHunterModel(): Promise<HunterModel> {
 }
 
 // The Creature model and its clips, loaded once per page and cloned each time the Creature
-// appears: Float, always playing, and Grab, the catch cutscene (art/animate_creature_grab.py).
+// appears: Float, always playing, Grab, the catch cutscene (art/animate_creature_grab.py), and
+// Exorcism, the cutscene when its HP reaches zero (art/animate_creature_exorcism.py).
 // `material` is its one textured emissive material ('Creature' in the file), tinted
 // while burning. `scale` fits it to CREATURE_HEIGHT; `lift` raises it so its lowest point
 // hovers CREATURE_HOVER above the floor. Like the Hunter, it faces +Z in the file.
 export type CreatureModel = {
-  scene: Object3D; float: AnimationClip; grab: AnimationClip; material: MeshStandardMaterial; scale: number; lift: number;
+  scene: Object3D; float: AnimationClip; grab: AnimationClip; exorcism: AnimationClip; material: MeshStandardMaterial; scale: number; lift: number;
 };
 
 export async function loadCreatureModel(): Promise<CreatureModel> {
@@ -234,6 +236,8 @@ export async function loadCreatureModel(): Promise<CreatureModel> {
   if (!float) throw new Error('creature.glb has no Float animation');
   const grab = AnimationClip.findByName(gltf.animations, 'Grab');
   if (!grab) throw new Error('creature.glb has no Grab animation');
+  const exorcism = AnimationClip.findByName(gltf.animations, 'Exorcism');
+  if (!exorcism) throw new Error('creature.glb has no Exorcism animation');
   const meshes: Mesh[] = [];
   gltf.scene.traverse((object) => {
     if (object instanceof Mesh) meshes.push(object);
@@ -244,7 +248,7 @@ export async function loadCreatureModel(): Promise<CreatureModel> {
   const bounds = new Box3().setFromObject(gltf.scene);
   const scale = CREATURE_HEIGHT / (bounds.max.y - bounds.min.y);
   addOutlineHulls(meshes);
-  return { scene: gltf.scene, float, grab, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
+  return { scene: gltf.scene, float, grab, exorcism, material, scale, lift: CREATURE_HOVER - bounds.min.y * scale };
 }
 
 // The battery pickup model, loaded once per page and cloned per spawn point. `map` is its
@@ -472,9 +476,11 @@ export function createScene(
   const fireFloor = { x: 0, y: 0, z: 0 };
 
   // The light follows `fireFloor` while it glows, cut at the walls and the tall props like a candle's.
-  function updateFireLight(seconds: number, deltaSeconds: number, burning: boolean): void {
+  // `strength` scales it, for the exorcism's swell and dying down.
+  function updateFireLight(seconds: number, deltaSeconds: number, burning: boolean, strength: number): void {
     const step = deltaSeconds / Math.max(burning ? FIRE_LIGHT.FIRE_LIGHT_UP : FIRE_LIGHT.FIRE_LIGHT_DOWN, 1e-3);
-    fireGlow = Math.min(1, Math.max(0, fireGlow + (burning ? step : -step)));
+    // A fire already died down to nothing has no glow left to ease out when it stops.
+    fireGlow = strength <= 0 ? 0 : Math.min(1, Math.max(0, fireGlow + (burning ? step : -step)));
     const light = FIRE_LIGHT_UNIFORMS.fireLight.value;
     if (fireGlow === 0) {
       light.w = 0;
@@ -489,7 +495,7 @@ export function createScene(
     }
     fireReaches.needsUpdate = true;
     const wave = (Math.sin(seconds * 11.3) + Math.sin(seconds * 23.7 + 1.1) + Math.sin(seconds * 6.1 + 2.3)) / 3;
-    light.set(origin.x, origin.y, origin.z, fireGlow * (1 + FIRE_LIGHT.FIRE_LIGHT_FLICKER * wave));
+    light.set(origin.x, origin.y, origin.z, fireGlow * strength * (1 + FIRE_LIGHT.FIRE_LIGHT_FLICKER * wave));
   }
 
   // Flashlight effects (vfx.ts), shared by every Hunter. The beam is a unit cone with its tip
@@ -647,11 +653,13 @@ export function createScene(
   // facing along local +X; `pose`, at the floor, carries the model and leans it into its travel.
   // `fade` (0..1) is how much of it is drawn while it dissolves in or out; its body and outline
   // share `fadeUniform`. `grab` is the catch cutscene's clip, posed by hand from the cutscene's
-  // progress rather than played, and `grabWeight` how much of it shows over Float.
+  // progress rather than played, and `grabWeight` how much of it shows over Float; `exorcism` and
+  // `exorcismWeight` are the same for the exorcism.
   type CreatureMesh = {
     group: Group; pose: Group; material: MeshStandardMaterial; outline: ShaderMaterial; ring: Mesh;
     ringMaterial: MeshBasicMaterial; shadow: Mesh; mixer: AnimationMixer; float: AnimationAction;
-    grab: AnimationAction; grabWeight: number; fade: number; fadeUniform: { value: number };
+    grab: AnimationAction; grabWeight: number; exorcism: AnimationAction; exorcismWeight: number;
+    fade: number; fadeUniform: { value: number };
   };
   let creature: CreatureMesh | null = null;
   // Movement and the eased facing outlive the mesh, so a Creature revealed again keeps the way
@@ -688,6 +696,9 @@ export function createScene(
     const grab = mixer.clipAction(creatureModel.grab).play();
     grab.paused = true;
     grab.setEffectiveWeight(0);
+    const exorcism = mixer.clipAction(creatureModel.exorcism).play();
+    exorcism.paused = true;
+    exorcism.setEffectiveWeight(0);
     // Sprint feedback: a flat ring on the floor under the Creature, fading with it.
     const ringMaterial = new MeshBasicMaterial({ color: '#e46448', transparent: true });
     const ring = new Mesh(new RingGeometry(GAMEPLAY.playerRadius + 2, GAMEPLAY.playerRadius + 6, 24), ringMaterial);
@@ -702,7 +713,9 @@ export function createScene(
     scene.add(group);
     // The first snapshot after a reveal has nothing to compare with: no movement yet.
     creatureLastPosition = null;
-    creature = { group, pose, material, outline, ring, ringMaterial, shadow, mixer, float, grab, grabWeight: 0, fade: 0, fadeUniform };
+    creature = {
+      group, pose, material, outline, ring, ringMaterial, shadow, mixer, float, grab, grabWeight: 0, exorcism, exorcismWeight: 0, fade: 0, fadeUniform,
+    };
     return creature;
   }
 
@@ -750,6 +763,12 @@ export function createScene(
   const GRAB_BLEND_SECONDS = 0.1;
   const catchFocus = new Vector3();
   const catchCamera = new Vector3();
+  // The exorcism cutscene's clock in seconds (null while none plays), and the debug menu's replay of
+  // it on this screen only (its own clock, null while none plays).
+  let exorcismClock: number | null = null;
+  let exorcismPreview: number | null = null;
+  const burnTint = new Color();
+  const hotTint = new Color();
   const smooth = (x: number) => {
     const t = Math.min(1, Math.max(0, x));
     return t * t * (3 - 2 * t);
@@ -802,7 +821,20 @@ export function createScene(
     const catchProgress = catchClock === null ? 0 : Math.min(1, catchClock / catchSeconds);
     const caughtHunter = caught ? snapshot?.hunters.find((view) => view.id === caught.hunter) : undefined;
     const caughtCreature = snapshot?.role === 'creature' ? snapshot.creature : snapshot?.creature?.position;
-    // The camera dollies in on the pair along its own view, so its angle never changes.
+    // The exorcism: the same clock as the catch's, or the debug menu's replay of it.
+    const exorcismSeconds = Math.max(tuning.exorcismSeconds, 1e-3);
+    if (snapshot?.exorcism) {
+      exorcismClock = newSnapshot || exorcismClock === null ? snapshot.exorcism.elapsed : exorcismClock + deltaSeconds;
+      exorcismPreview = null;
+    } else if (exorcismPreview !== null && exorcismPreview + deltaSeconds < exorcismSeconds) {
+      exorcismPreview += deltaSeconds;
+      exorcismClock = exorcismPreview;
+    } else {
+      exorcismPreview = exorcismClock = null;
+    }
+    const exorcism = exorcismClock === null ? null : exorcismFrame(exorcismClock, exorcismSeconds);
+    // The camera dollies in along its own view, so its angle never changes: on the pair in a catch,
+    // on the Creature in the exorcism.
     camera.position.copy(cameraHome);
     if (catchClock !== null && caughtHunter && caughtCreature) {
       const zoom = smooth(Math.min(1, catchClock / CATCH.ZOOM_IN_SECONDS, (catchSeconds - catchClock) / CATCH.ZOOM_OUT_SECONDS));
@@ -810,15 +842,18 @@ export function createScene(
         (caughtHunter.position.x + caughtCreature.x) / 2, world.floorY + CATCH_FOCUS_HEIGHT, (caughtHunter.position.z + caughtCreature.z) / 2,
       );
       camera.position.lerp(catchCamera.subVectors(cameraHome, cameraAim).multiplyScalar(CATCH.ZOOM).add(focus), zoom);
+    } else if (exorcism && caughtCreature) {
+      const focus = catchFocus.set(caughtCreature.x, world.floorY + EXORCISM.FOCUS_HEIGHT, caughtCreature.z);
+      camera.position.lerp(catchCamera.subVectors(cameraHome, cameraAim).multiplyScalar(EXORCISM.ZOOM).add(focus), exorcism.zoom);
     }
     camera.updateMatrixWorld();
 
     // Fear: only an active Hunter feels it, only while the round runs, from its own band and
-    // dread. It eases out while a catch plays, so a Hunter's darkness never hides the cutscene,
-    // once a Hunter is down (an incapacitated Hunter feels nothing until it is revived), and while
-    // the Creature burns (hunterFear). (The debug menu's fear preview still shows, for tuning.)
+    // dread. It eases out while a catch or the exorcism plays, so a Hunter's darkness never hides the
+    // cutscene, once a Hunter is down (an incapacitated Hunter feels nothing until it is revived), and
+    // while the Creature burns (hunterFear). (The debug menu's fear preview still shows, for tuning.)
     const selfView = snapshot?.hunters.find((view) => view.id === self);
-    const feeling = snapshot?.role !== 'hunter' || caught ? null
+    const feeling = snapshot?.role !== 'hunter' || caught || exorcism ? null
       : fearPreview !== null ? previewInput(fearPreview)
         : hunterFear(snapshot, tuning);
     const fearFrame = fear.update(feeling ?? { stage: 0, t: 0 }, deltaSeconds);
@@ -925,7 +960,8 @@ export function createScene(
       if (index < MAX_BATTERY_LIGHTS) BATTERY_LIGHT_UNIFORMS.batteryLights.value[index].z = pickup.halo.visible ? pulse * grown : 0;
     }
 
-    const creatureView = snapshot?.role === 'creature'
+    // A defeated Creature is gone for good: the exorcism has ended it, on every screen.
+    const creatureView = snapshot?.result === 'defeated' ? null : snapshot?.role === 'creature'
       ? { position: snapshot.creature, facing: snapshot.facing, staggered: snapshot.staggered, sprinting: snapshot.sprinting, burning: snapshot.burning || firePreview }
       : snapshot?.creature ? { ...snapshot.creature, burning: snapshot.creature.burning || firePreview } : null;
     if (creatureView) {
@@ -950,7 +986,8 @@ export function createScene(
         creatureMoving = last !== null && (last.x !== position.x || last.z !== position.z);
         creatureLastPosition = { ...position };
       }
-      const turn = wrapAngle(creatureView.facing - creatureFacing);
+      // In the exorcism it turns to the camera (+Z), so its raised face and arms read.
+      const turn = wrapAngle((exorcism ? Math.PI / 2 : creatureView.facing) - creatureFacing);
       const { CREATURE_LEAN, CREATURE_SPRINT_LEAN, FLOAT_RATE_EASE } = CHARACTERS;
       // In a catch it faces the Hunter at once (the server turned it there).
       creatureFacing = catchClock !== null ? creatureView.facing
@@ -958,11 +995,13 @@ export function createScene(
       mesh.group.rotation.y = -creatureFacing;
       // Leaning forward is a negative turn about the pose's Z (its +X is the facing). It eases to
       // the sprint lean, the moving lean or upright, at a rate that reaches the deepest one in
-      // FLOAT_RATE_EASE. Grab does its own leaning.
-      const leanTarget = catchClock !== null ? 0 : creatureView.sprinting ? CREATURE_SPRINT_LEAN : creatureMoving ? CREATURE_LEAN : 0;
+      // FLOAT_RATE_EASE. Grab and Exorcism do their own leaning.
+      const leanTarget = catchClock !== null || exorcism ? 0 : creatureView.sprinting ? CREATURE_SPRINT_LEAN : creatureMoving ? CREATURE_LEAN : 0;
       const leanStep = (Math.max(CREATURE_LEAN, CREATURE_SPRINT_LEAN) * deltaSeconds) / FLOAT_RATE_EASE;
       creatureLean += Math.max(-leanStep, Math.min(leanStep, leanTarget - creatureLean));
       mesh.pose.rotation.z = -creatureLean;
+      // Drawn up off the floor as it burns away.
+      mesh.pose.position.y = -GAMEPLAY.playerRadius + (exorcism?.lift ?? 0);
       const rate = creatureView.sprinting ? CHARACTERS.FLOAT_RATE_SPRINT : creatureMoving ? CHARACTERS.FLOAT_RATE_MOVING : 1;
       mesh.float.timeScale += (rate - mesh.float.timeScale) * Math.min(1, deltaSeconds / FLOAT_RATE_EASE);
       // Grab follows the cutscene's progress, taking over from Float within GRAB_BLEND_SECONDS
@@ -971,11 +1010,20 @@ export function createScene(
       mesh.grabWeight = Math.min(1, Math.max(0, mesh.grabWeight + (catchClock !== null ? grabStep : -grabStep)));
       if (catchClock !== null) mesh.grab.time = catchProgress * creatureModel.grab.duration;
       mesh.grab.setEffectiveWeight(mesh.grabWeight);
-      mesh.float.setEffectiveWeight(1 - mesh.grabWeight);
+      // Exorcism takes over the same way, from the timeline. It never hands back in a round, since
+      // the Creature is gone by its end; only the debug menu's replay does.
+      const exorcismStep = deltaSeconds / Math.max(EXORCISM.BLEND_SECONDS, 1e-3);
+      mesh.exorcismWeight = Math.min(1, Math.max(0, mesh.exorcismWeight + (exorcism ? exorcismStep : -exorcismStep)));
+      if (exorcism) mesh.exorcism.time = exorcism.clip * creatureModel.exorcism.duration;
+      mesh.exorcism.setEffectiveWeight(mesh.exorcismWeight);
+      mesh.float.setEffectiveWeight(Math.max(0, 1 - mesh.grabWeight - mesh.exorcismWeight));
       mesh.mixer.update(deltaSeconds);
-      // Burning feedback: the whole model glows ember red while the Creature cannot tag.
-      const [red, green, blue] = creatureView.burning ? CHARACTERS.CREATURE_BURNING_TINT : CHARACTERS.CREATURE_TINT;
-      mesh.material.emissive.setRGB(red, green, blue);
+      // Burning feedback: the whole model glows ember red while the Creature cannot tag, and hotter
+      // still as the exorcism burns it away.
+      const [red, green, blue] = creatureView.burning || exorcism ? CHARACTERS.CREATURE_BURNING_TINT : CHARACTERS.CREATURE_TINT;
+      burnTint.setRGB(red, green, blue);
+      if (exorcism) burnTint.lerp(hotTint.setRGB(EXORCISM.HOT_TINT[0], EXORCISM.HOT_TINT[1], EXORCISM.HOT_TINT[2]), exorcism.heat);
+      mesh.material.emissive.copy(burnTint);
       // Stagger feedback: a thick white outline, drawn even with the outline experiment off.
       mesh.outline.visible = VFX.outline || creatureView.staggered;
       mesh.outline.uniforms.vfxOutlineColor.value.set(creatureView.staggered ? SHADING.STAGGER_OUTLINE_COLOR : '#000000');
@@ -985,10 +1033,11 @@ export function createScene(
       mesh.shadow.scale.set(CHARACTERS.CREATURE_SHADOW_RADIUS, 1, CHARACTERS.CREATURE_SHADOW_RADIUS);
       // The fade, on a Hunter's screen only: it dissolves in over CREATURE_FADE_IN_SECONDS, and out
       // with the server's reveal countdown over its last CREATURE_FADE_OUT_SECONDS, so it is all but
-      // gone by the step the server stops sending it. The Creature always sees itself whole.
+      // gone by the step the server stops sending it. The Creature always sees itself whole, except in
+      // the exorcism, which dissolves it the same way on every screen.
       const fadeTarget = snapshot?.role === 'creature' ? 1
         : Math.min(1, (snapshot?.creature?.revealRemaining ?? 0) / Math.max(CHARACTERS.CREATURE_FADE_OUT_SECONDS, 1e-3));
-      mesh.fade = snapshot?.role === 'creature' ? 1
+      mesh.fade = exorcism ? exorcism.fade : snapshot?.role === 'creature' ? 1
         : Math.min(fadeTarget, mesh.fade + deltaSeconds / Math.max(CHARACTERS.CREATURE_FADE_IN_SECONDS, 1e-3));
       mesh.fadeUniform.value = mesh.fade;
       mesh.ringMaterial.opacity = mesh.fade;
@@ -996,14 +1045,15 @@ export function createScene(
     } else {
       removeCreature();
     }
-    // The fire stands wherever the Creature's body is drawn, the catch's slide included.
-    const burning = VFX.fire && (creatureView?.burning ?? false);
+    // The fire stands wherever the Creature's body is drawn, the catch's slide included. In the
+    // exorcism it burns on where the body was, swelling and then dying down by the timeline.
+    const burning = VFX.fire && (exorcism !== null || (creatureView?.burning ?? false));
     if (creature) {
       const { x, y, z } = creature.group.position;
       Object.assign(fireFloor, { x, y: y - GAMEPLAY.playerRadius, z });
     }
-    fire.update(seconds, deltaSeconds, burning, creature ? fireFloor : null, CREATURE_HEIGHT);
-    updateFireLight(seconds, deltaSeconds, burning);
+    fire.update(seconds, deltaSeconds, burning, creature ? fireFloor : null, CREATURE_HEIGHT, exorcism?.fire);
+    updateFireLight(seconds, deltaSeconds, burning, exorcism?.fire.light ?? 1);
     post.render();
   }
 
@@ -1026,6 +1076,12 @@ export function createScene(
     if (kind === 'spawn') pickup.spawnedAt = seconds;
   }
 
+  // The debug menu's replay of the exorcism, on this screen only, for a Creature it can already see.
+  // The round carries on underneath and the Creature comes back when it is over.
+  function previewExorcism(): void {
+    exorcismPreview = 0;
+  }
+
   // Frees this scene's geometry; the renderer is kept when the caller will reuse it for
   // the next map and disposed only when the page goes away.
   function dispose(keepRenderer = false): void {
@@ -1046,5 +1102,5 @@ export function createScene(
     if (!keepRenderer) renderer.dispose();
   }
 
-  return { render, resize, dispose, previewSparkle, renderer, aspect: CAMERA.aspect };
+  return { render, resize, dispose, previewSparkle, previewExorcism, renderer, aspect: CAMERA.aspect };
 }

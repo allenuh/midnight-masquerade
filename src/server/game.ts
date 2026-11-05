@@ -74,6 +74,10 @@ export type RoundStats = {
 // (the round ends as 'caught' when the cutscene does). The whole round pauses meanwhile.
 export type CatchState = { hunter: HunterId; ticks: number; total: number; endsRound: boolean };
 
+// The exorcism cutscene after the Creature's HP reaches zero: `ticks` how many steps are left out of
+// `total`. The whole round pauses meanwhile and ends as 'defeated' when it is over.
+export type ExorcismState = { ticks: number; total: number };
+
 export type Game = {
   // The map this room plays on: walls, spawn markers, battery points. Shared, read-only.
   world: World;
@@ -92,6 +96,7 @@ export type Game = {
   result: RoundResult | null;
   stats: RoundStats;
   catch: CatchState | null; // set only while a catch cutscene plays
+  exorcism: ExorcismState | null; // set only while the exorcism cutscene plays
 };
 
 export const PLAYER_COUNT = GAMEPLAY.players.hunters + 1;
@@ -121,6 +126,8 @@ export const reviveTicks = (tuning: Tuning): number => secondsToTicks(tuning.rev
 export const matchTicks = (tuning: Tuning): number => secondsToTicks(tuning.matchSeconds);
 // The catch cutscene's length in steps for a room's tuning (0: no cutscene).
 export const catchTicks = (tuning: Tuning): number => secondsToTicks(tuning.catchSeconds);
+// The exorcism cutscene's length in steps for a room's tuning (0: no cutscene).
+export const exorcismTicks = (tuning: Tuning): number => secondsToTicks(tuning.exorcismSeconds);
 // Center-to-center distance at which an active Hunter picks a battery up. Not tunable:
 // it is the geometry of two blockout shapes touching.
 export const PICKUP_REACH = GAMEPLAY.playerRadius + GAMEPLAY.batteryPickup.radius;
@@ -175,6 +182,7 @@ export function createGame(world: World, tuning: Tuning = defaultTuning()): Game
     result: null,
     stats: freshStats(),
     catch: null,
+    exorcism: null,
   };
 }
 
@@ -236,6 +244,7 @@ export function startRound(game: Game, players: readonly PlayerId[]): void {
   game.result = null;
   game.stats = freshStats();
   game.catch = null;
+  game.exorcism = null;
 }
 
 // Disconnect policy: a round cannot continue without all five players, so it is
@@ -251,6 +260,7 @@ export function abandonRound(game: Game): void {
   game.result = null;
   game.stats = freshStats();
   game.catch = null;
+  game.exorcism = null;
 }
 
 function clearInputs(game: Game): void {
@@ -281,8 +291,8 @@ export function setInput(game: Game, player: PlayerId, raw: unknown): boolean {
   // A message only replaces held keys. It never advances time or trusts a position.
   // The same `light` flag is the Hunter's flashlight and the Creature's sprint button.
   // An incapacitated Hunter has no input at all until it is revived. During a catch cutscene
-  // every input is accepted and dropped: nothing is held until the next message after it.
-  if (game.catch) return true;
+  // or the exorcism every input is accepted and dropped: nothing changes until the next message after it.
+  if (game.catch || game.exorcism) return true;
   const input: InputState = {
     up: message.up, down: message.down, left: message.left, right: message.right, light: message.light,
   };
@@ -407,6 +417,15 @@ export function stepGame(game: Game): void {
     const { endsRound } = game.catch;
     game.catch = null;
     if (endsRound) endRound(game, 'caught');
+    return;
+  }
+
+  // The exorcism pauses the round the same way, and the round ends when it is over.
+  if (game.exorcism) {
+    game.exorcism.ticks -= 1;
+    if (game.exorcism.ticks > 0) return;
+    game.exorcism = null;
+    endRound(game, 'defeated');
     return;
   }
 
@@ -572,8 +591,22 @@ export function stepGame(game: Game): void {
 
   // Result priority: HP first, so a kill on the final tick is still a Hunter victory.
   // An expired clock is a Creature victory; `caught` already returned above.
-  if (state.hp <= 0) endRound(game, 'defeated');
-  else if (game.timeTicks === 0) endRound(game, 'expired');
+  if (state.hp <= 0) {
+    const cutscene = exorcismTicks(tuning);
+    if (cutscene === 0) {
+      endRound(game, 'defeated');
+      return;
+    }
+    // The exorcism cutscene: the Creature stops, loses any stagger or sprint, and is revealed to
+    // everyone. Only its input is dropped: a Hunter's beam stays on it, frozen where it was, because
+    // their light is what is burning it. The beams go out with endRound, and the pause means they
+    // drain nothing. See the top of stepGame.
+    state.staggerTicks = 0;
+    state.sprinting = false;
+    state.revealTicks = secondsToTicks(tuning.visibilityLingerSeconds);
+    creature.input = emptyInput();
+    game.exorcism = { ticks: cutscene, total: cutscene };
+  } else if (game.timeTicks === 0) endRound(game, 'expired');
 }
 
 const copyPosition = (position: Position): Position => ({ x: position.x, y: position.y, z: position.z });
@@ -628,6 +661,8 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
     // Every player watches a catch: which Hunter, and how far into the cutscene. The key is
     // present only while one plays.
     ...(game.catch ? { catch: { hunter: game.catch.hunter, elapsed: (game.catch.total - game.catch.ticks) * STEP_SECONDS } } : {}),
+    // The same for the exorcism: every player watches it, and the key is present only while it plays.
+    ...(game.exorcism ? { exorcism: { elapsed: (game.exorcism.total - game.exorcism.ticks) * STEP_SECONDS } } : {}),
     // The result screen's tallies, present only once the round has ended.
     ...(roundState === 'ended' ? { stats: roundSummary(game) } : {}),
   };
@@ -645,9 +680,9 @@ export function snapshotFor(game: Game, player: PlayerId): HunterSnapshot | Crea
       dread: hunterDread(game, self),
       creatureHp: state.hp,
     };
-    // The Creature position exists in this payload only while revealed. Once the
-    // linger expires the key is gone, not merely flagged invisible.
-    if (isRevealed(state)) {
+    // The Creature position exists in this payload only while revealed (or being exorcised, whatever
+    // the room's linger is). Once the linger expires the key is gone, not merely flagged invisible.
+    if (isRevealed(state) || game.exorcism) {
       snapshot.creature = {
         position: copyPosition(game.creature.position), facing: game.creature.facing,
         staggered: isStaggered(state), sprinting: state.sprinting, burning: isBurning(state),

@@ -289,6 +289,9 @@ export function createGameServer(catalog: MapCatalog = loadMapCatalog(), { log =
       room.game.roundState === 'running' && fields.seconds >= 0 && fields.seconds <= room.game.tuning.matchSeconds
     ) {
       room.game.timeTicks = secondsToTicks(fields.seconds);
+    // The host brings the Creature's HP to zero; the next step starts the exorcism.
+    } else if (fields.type === 'exorcise' && keys.length === 1 && room && room.host === client && room.game.roundState === 'running') {
+      room.game.creatureState.hp = 0;
     // DEBUG-MENU end
     }
   }

@@ -109,7 +109,7 @@ function assertHunterMessage(message: Message, catchReveal = false) {
   // `creature` may appear only while revealed. These tests never use the light or the sprint,
   // so the only reveal is a catch: the cutscene shows the Creature to everyone, then it lingers.
   if (!catchReveal) assert.equal('creature' in message, false, 'hidden Creature never appears on the wire');
-  assert.deepEqual(Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch').sort(), HUNTER_PAYLOAD_KEYS);
+  assert.deepEqual(Object.keys(message).filter((key) => key !== 'creature' && key !== 'catch' && key !== 'exorcism').sort(), HUNTER_PAYLOAD_KEYS);
   assert.equal(message.type, 'snapshot');
   assert.equal(message.role, 'hunter');
   assert.equal(typeof message.roundId, 'number');

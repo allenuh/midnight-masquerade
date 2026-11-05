@@ -72,7 +72,9 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
   // Host clock buttons, enabled only while the host's round runs.
   const endRound = button('End round (expire clock)', () => send({ type: 'setClock', seconds: 0 }));
   const finalWarning = button('Clock to 0:31', () => send({ type: 'setClock', seconds: FINAL_WARNING_TEST_SECONDS }));
-  roundActions.append(endRound, finalWarning);
+  // The real thing: the Creature's HP to zero, the cutscene on every screen, and the round's end.
+  const exorcise = button('Exorcise (ends round)', () => send({ type: 'exorcise' }));
+  roundActions.append(endRound, finalWarning, exorcise);
 
   // Fear preview: a Hunter's fear effects at x (0 SAFE to 3 innermost IMMEDIATE; see fear.ts),
   // replacing the server's band, so the bands can be tuned without a Creature nearby.
@@ -111,8 +113,10 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
   roundActions.after(fearRow);
 
   // Effect previews, on this screen only: replay a battery's entrance and sparkle, or a pickup's
-  // sparkle, at the battery on the map, and set a Creature this client can already see burning.
+  // sparkle, at the battery on the map, set a Creature this client can already see burning, and replay
+  // the exorcism on it (the round carries on, and the Creature comes back when it is over).
   let sparklePreview: 'spawn' | 'pickup' | null = null;
+  let exorcismPreview = false;
   const effectRow = document.createElement('div');
   effectRow.className = 'look-row';
   const fireOn = document.createElement('input');
@@ -124,6 +128,7 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
   effectRow.append(
     button('Battery spawn', () => { sparklePreview = 'spawn'; }),
     button('Pickup sparkle', () => { sparklePreview = 'pickup'; }),
+    button('Exorcism', () => { exorcismPreview = true; }),
     fireLabel,
   );
   fearRow.after(effectRow);
@@ -280,9 +285,15 @@ export function mountDebugMenu(send: (message: ClientMessage) => void, initialFe
       sparklePreview = null;
       return kind;
     },
+    // Whether the exorcism replay was just asked for, once.
+    takeExorcismPreview(): boolean {
+      const asked = exorcismPreview;
+      exorcismPreview = false;
+      return asked;
+    },
     // From main.ts's updateUi: the clock buttons work only for the host of a running round.
     update(state: { host: boolean; running: boolean }): void {
-      endRound.disabled = finalWarning.disabled = !state.host || !state.running;
+      endRound.disabled = finalWarning.disabled = exorcise.disabled = !state.host || !state.running;
     },
     // Once a frame, after the scene has rendered.
     frame(renderer: WebGLRenderer): void {

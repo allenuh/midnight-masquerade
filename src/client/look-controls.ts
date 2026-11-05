@@ -2,6 +2,7 @@
 // object that holds it in its own module, and the range its slider covers (the number box beside
 // it takes any value). Every object here is read by its module every frame, so an edit shows at
 // once. Adding a value: put it in its module's object, read it from there each frame, list it here.
+import { EXORCISM } from './exorcism.js';
 import { FEAR_STAGES, FEAR_TIMING, type FearLevels } from './fear.js';
 import { FIRE, SPARKLE } from './particles.js';
 import { BLOOM, FEAR_LINE_COLOR, FEAR_PASS, GRADE } from './post.js';
@@ -94,7 +95,8 @@ add('Sparkle', 'particles.ts', 'SPARKLE', SPARKLE, {
 });
 
 add('Fire', 'particles.ts', 'FIRE', FIRE, {
-  COLOR_HOT: 'color', COLOR_MID: 'color', COLOR_LOW: 'color', COLOR_DYING: 'color', INTENSITY: intensity, FACET_SHADE: unit,
+  COLOR_HOT: 'color', COLOR_MID: 'color', COLOR_LOW: 'color', COLOR_DYING: 'color', COLOR_ASH: 'color', INTENSITY: intensity, FACET_SHADE: unit,
+  ASH_SIZE: [0, 20, 0.5], ASH_LIFE: [0.1, 4, 0.05], ASH_RISE: [0, 200, 1], ASH_DRIFT: [0, 120, 1],
   FLAMES_PER_SECOND: [0, 150, 1], FLAME_WIDTH: [0, 40, 0.5], FLAME_LENGTH: [0, 90, 0.5], FLAME_LIFE: [0.1, 2, 0.01],
   FLAME_RISE: [0, 400, 5], FLAME_FLUTTER: [0, 2, 0.01], BODY_RADIUS: [0, 60, 0.5],
   FRONT_SHARE: unit, FRONT_SCALE: [0, 2, 0.01], DISSOLVE_FROM: unit, IGNITE_FLAMES: [0, 60, 1],
@@ -169,5 +171,13 @@ add('Catch cutscene', 'scene.ts', 'CATCH', CATCH, {
   LUNGE_FROM: unit, LUNGE_TO: unit, RELEASE_FROM: unit, GRAB_DISTANCE: [10, 40, 0.5], STRUGGLE: [0, 4, 0.05],
   FALL_SECONDS: [0, 1.5, 0.01],
 });
+
+add('Exorcism cutscene', 'exorcism.ts', 'EXORCISM', EXORCISM, {
+  ZOOM: [0.1, 1, 0.01], ZOOM_IN_SECONDS: [0, 3, 0.01], ZOOM_OUT_SECONDS: [0, 3, 0.01], FOCUS_HEIGHT: [0, 80, 1],
+  BLEND_SECONDS: [0, 1, 0.01], LIFT: [0, 40, 0.5],
+  DISSOLVE_FROM: unit, DISSOLVE_TO: unit, SWELL_FROM: unit, SWELL_TO: unit, DIE_FROM: unit, DIE_TO: unit,
+  EARLY_FRONT: unit, FIRE_RATE: [0, 5, 0.05], FIRE_SIZE: [0, 4, 0.05], FIRE_LIGHT: [0, 5, 0.05], DYING_SIZE: unit, ASH_PER_SECOND: [0, 200, 1],
+});
+addRgb('Exorcism cutscene', 'exorcism.ts', 'EXORCISM.HOT_TINT', EXORCISM.HOT_TINT, [0, 20, 0.1]);
 
 add('View', 'scene.ts', 'VIEW', VIEW, { RENDER_SCALE: [0.25, 2, 0.05], SHOW_PROPS: 'boolean', SHOW_SURFACES: 'boolean' });

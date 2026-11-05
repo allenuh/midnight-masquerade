@@ -36,6 +36,8 @@ export type ClientMessage =
   | { type: 'leave' }
   // DEBUG-MENU: host only, while a round runs: set the match clock (0 ends the round as expired).
   | { type: 'setClock'; seconds: number }
+  // DEBUG-MENU: host only, while a round runs: bring the Creature's HP to zero, as a kill would.
+  | { type: 'exorcise' }
   // DEBUG-ROOM: a room that can start without a full party, and its start with the host's role.
   | { type: 'debugCreate' }
   | { type: 'debugStart'; role: DebugRole };
@@ -116,6 +118,10 @@ type RoundSnapshot = {
   // seconds since the catch (the room's tuning has the cutscene's length). The round is paused
   // meanwhile. The Creature is revealed for it like any reveal, through `creature`.
   catch?: { hunter: HunterId; elapsed: number };
+  // Present only while the exorcism cutscene plays, for every player: the seconds since the
+  // Creature's HP reached zero (the room's tuning has the cutscene's length). The round is paused
+  // meanwhile and ends as 'defeated' with it. Every Hunter receives `creature` throughout.
+  exorcism?: { elapsed: number };
   // Present only once the round has ended (roundState 'ended').
   stats?: RoundSummary;
 };

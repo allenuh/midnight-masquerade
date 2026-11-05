@@ -406,7 +406,7 @@ const REASON: Record<RoundResult, string> = {
 const HEADLINE: Record<RoundResult, string> = {
   caught: 'Guests vanish from the masquerade',
   expired: 'Creature outlasts the evening',
-  defeated: 'Creature unmasked at the midnight ball',
+  defeated: 'Creature exorcised at the midnight ball',
 };
 
 function statList(target: HTMLElement, entries: [string, string][]): void {

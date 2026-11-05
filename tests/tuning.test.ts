@@ -44,6 +44,7 @@ test('the tunable table mirrors gameplay-config.ts and every default is inside i
   assert.equal(byKey.attackCooldownSeconds.default, GAMEPLAY.creature.attackCooldownSeconds);
   assert.equal(byKey.burnSeconds.default, GAMEPLAY.creature.burnSeconds);
   assert.equal(byKey.catchSeconds.default, GAMEPLAY.creature.catchSeconds);
+  assert.equal(byKey.exorcismSeconds.default, GAMEPLAY.creature.exorcismSeconds);
   assert.equal(byKey.flashlightDamagePerSecond.default, GAMEPLAY.flashlight.damagePerSecond);
   assert.equal(byKey.flashlightRange.default, GAMEPLAY.flashlight.range);
   assert.equal(byKey.flashlightConeAngle.default, GAMEPLAY.flashlight.coneAngle);
@@ -61,7 +62,7 @@ test('the tunable table mirrors gameplay-config.ts and every default is inside i
   assert.equal(byKey.proximityUneasy.default, GAMEPLAY.proximity.uneasy);
   assert.equal(byKey.proximityDanger.default, GAMEPLAY.proximity.danger);
   assert.equal(byKey.proximityImmediate.default, GAMEPLAY.proximity.immediate);
-  assert.equal(TUNABLES.length, 30);
+  assert.equal(TUNABLES.length, 31);
   assert.equal(new Set(TUNABLES.map((tunable) => tunable.key)).size, TUNABLES.length, 'keys are unique');
   for (const tunable of TUNABLES) {
     assert.ok(tunable.min < tunable.max, tunable.key);
@@ -96,7 +97,7 @@ test('validateTuning accepts a complete in-bounds table and rejects everything e
 test('tuningDifferences names only the values that differ from the defaults', () => {
   assert.equal(tuningDifferences(defaultTuning()), 'defaults');
   assert.equal(tuningDifferences({ ...defaultTuning(), creatureSpeed: 170, matchSeconds: 60 }), 'matchSeconds=60 creatureSpeed=170');
-  assert.equal(tuningDifferences({ ...TEST_TUNING }), 'catchSeconds=0 lightEffectDelaySeconds=0', 'the rule tests differ from the defaults in those two values');
+  assert.equal(tuningDifferences({ ...TEST_TUNING }), 'catchSeconds=0 exorcismSeconds=0 lightEffectDelaySeconds=0', 'the rule tests differ from the defaults in those three values');
 });
 
 test('a room plays by its tuning: speeds, clock, HP, battery, burn, stagger, and proximity', () => {
