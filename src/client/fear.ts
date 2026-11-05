@@ -4,7 +4,7 @@
 // clear jump. The picture side is the fear pass in post.ts; this module decides the values.
 // No three.js here: the mapping is pure, and tested in tests/fear.test.ts.
 import { GAMEPLAY } from '../shared/gameplay-config.js';
-import type { ProximityState } from '../shared/protocol.js';
+import type { HunterSnapshot, ProximityState } from '../shared/protocol.js';
 import type { Tuning } from '../shared/tuning.js';
 
 // Stage 0..3 (SAFE, UNEASY, DANGER, IMMEDIATE) and how far through it the Hunter is, from its
@@ -80,6 +80,18 @@ export function fearInput(band: ProximityState, dread: number, tuning: Tuning): 
   const inner = edges[stage];
   const t = outer > inner ? (outer - distance) / (outer - inner) : 1;
   return { stage, t: Math.min(1, Math.max(0, t)) };
+}
+
+// What a Hunter feels now, or null for nothing. Fear is a warning, so it goes when there is nothing
+// to warn of: outside a running round, once the Hunter is down, and while the Creature burns and so
+// cannot catch anyone. `burning` says nothing about a hidden Creature: the server keeps a burning one
+// revealed for the whole burn, with its exact position on every Hunter's screen. When the burn ends
+// the fear comes straight back, with the stinger of entering a deeper band, as the Creature can
+// catch again from that very step.
+export function hunterFear(snapshot: HunterSnapshot, tuning: Tuning): FearInput | null {
+  if (snapshot.roundState !== 'running' || snapshot.creature?.burning) return null;
+  if (snapshot.hunters.find((view) => view.id === snapshot.self)?.down) return null;
+  return fearInput(snapshot.proximity, snapshot.dread, tuning);
 }
 
 // The ?debug=1&fear=x preview: x from 0 (SAFE) to 3 (the innermost IMMEDIATE). Up to 1 is UNEASY,

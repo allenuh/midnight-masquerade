@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { FEAR_STAGES, createFear, fearInput, fearLevels, previewInput, type FearLevels } from '../src/client/fear.js';
+import { FEAR_STAGES, createFear, fearInput, fearLevels, hunterFear, previewInput, type FearLevels } from '../src/client/fear.js';
 import { GAMEPLAY } from '../src/shared/gameplay-config.js';
+import type { HunterSnapshot } from '../src/shared/protocol.js';
 import { DEFAULT_TUNING } from '../src/shared/tuning.js';
 
 const { uneasy, danger, immediate, dreadSteps } = GAMEPLAY.proximity;
@@ -21,6 +22,38 @@ test('the band decides the fear stage and the dread places the Hunter inside it'
   assert.deepEqual(fearInput('IMMEDIATE', dreadSteps, DEFAULT_TUNING), { stage: 3, t: 1 });
   assert.equal(fearInput('UNEASY', 0, DEFAULT_TUNING).t, 0);
   assert.equal(fearInput('DANGER', 0, DEFAULT_TUNING).t, 0);
+});
+
+test('a Hunter feels fear only in a running round, while up, and while the Creature is not burning', () => {
+  const hunter = (overrides: Partial<HunterSnapshot> = {}) => ({
+    roundState: 'running', self: 'H1', proximity: 'IMMEDIATE', dread: dreadSteps,
+    hunters: [{ id: 'H1', down: false }],
+    ...overrides,
+  }) as HunterSnapshot;
+  const seen = (burning: boolean) => ({ burning } as HunterSnapshot['creature']);
+  const felt = { stage: 3, t: 1 };
+
+  assert.deepEqual(hunterFear(hunter(), DEFAULT_TUNING), felt, 'the Creature hidden');
+  assert.deepEqual(hunterFear(hunter({ creature: seen(false) }), DEFAULT_TUNING), felt, 'revealed, not burning');
+  assert.equal(hunterFear(hunter({ creature: seen(true) }), DEFAULT_TUNING), null, 'burning');
+  assert.equal(hunterFear(hunter({ roundState: 'reveal' }), DEFAULT_TUNING), null);
+  assert.equal(hunterFear(hunter({ roundState: 'ended' }), DEFAULT_TUNING), null);
+  assert.equal(hunterFear(hunter({ hunters: [{ id: 'H1', down: true }] as HunterSnapshot['hunters'] }), DEFAULT_TUNING), null);
+});
+
+test('fear fades out at the start of a burn and returns at its end, with a stinger', () => {
+  const fear = createFear();
+  const near = { stage: 3, t: 0.5 };
+  const settle = (input: { stage: number; t: number }) => { for (let i = 0; i < 90; i++) fear.update(input, 1 / 30); };
+  settle(near);
+  assert.equal(fear.update(near, 1 / 30).active, true);
+  settle({ stage: 0, t: 0 });
+  const calm = fear.update({ stage: 0, t: 0 }, 1 / 30);
+  assert.equal(calm.active, false);
+  assert.equal(calm.flicker, 1, 'the Hunter\'s own light stops stuttering');
+  const back = fear.update(near, 1 / 30);
+  assert.equal(back.active, true);
+  assert.ok(back.stinger > 0.8, `stinger ${back.stinger}`);
 });
 
 test('the preview runs from SAFE at 0 to the innermost IMMEDIATE at 3', () => {

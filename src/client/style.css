@@ -1139,8 +1139,7 @@ canvas {
   transform: rotate(-2deg);
 }
 
-/* Role reveal and incapacitation: a cut-out title in the middle of the arena. The reveal also
-   dims the game behind it. */
+/* The role reveal: a cut-out title in the middle of the arena, the game dimmed behind it. */
 #overlay {
   position: absolute;
   inset: 0;
@@ -1150,9 +1149,6 @@ canvas {
   justify-content: center;
   gap: 18px;
   text-align: center;
-}
-
-#overlay.reveal {
   background: rgba(11, 10, 14, 0.6);
 }
 
@@ -1326,6 +1322,147 @@ canvas {
   margin: 0;
   font-family: var(--alfa);
   font-size: 24px;
+}
+
+/* ---------- Overlay entrances ---------- */
+
+/* The overlays arrive like the rest of the page moves: in stop motion, at the jitter's own rate of
+   poses held and jumped to rather than eased. Only the dimming of the game and the letters falling
+   away at the end of the role reveal are smooth. ui.ts adds
+   .entering or .leaving and waits for these to end, so every timing lives here. With reduced motion
+   none of this runs and the overlays simply appear. */
+#overlay-title .tile:nth-child(even),
+#result-title .tile:nth-child(even) {
+  --paste-turn: -4deg;
+}
+
+#overlay-title .tile:nth-child(odd),
+#result-title .tile:nth-child(odd) {
+  --paste-turn: 4deg;
+}
+
+/* A cut-out letter slapped down: oversized, pressed flat, a little spring. It keeps its own tilt
+   (its inline transform), and takes up the jitter again afterwards. */
+@keyframes tile-paste {
+  0% { opacity: 0; }
+  1% { opacity: 1; scale: 1.75; rotate: calc(var(--paste-turn) * 3); translate: 0 -12px; }
+  25% { opacity: 1; scale: 0.9; rotate: calc(var(--paste-turn) * -1); translate: 0 2px; }
+  50% { opacity: 1; scale: 1.06; rotate: calc(var(--paste-turn) * 0.5); translate: 0 0; }
+  75% { opacity: 1; scale: 0.98; rotate: 0deg; translate: 0 0; }
+  100% { opacity: 1; scale: 1; rotate: 0deg; translate: 0 0; }
+}
+
+/* Unstuck and falling out of the frame, the one smooth part of the lettering: a little hop as it
+   comes away, then gravity. Only opacity and transforms, which the browser animates off the main
+   thread, so this doesn't touch the game's frame time. */
+@keyframes tile-fall {
+  0% { opacity: 1; translate: 0 0; rotate: 0deg; animation-timing-function: ease-out; }
+  20% { opacity: 1; translate: 0 -8px; rotate: calc(var(--paste-turn) * -1); animation-timing-function: cubic-bezier(0.55, 0, 0.85, 0.5); }
+  100% { opacity: 0; translate: 0 110px; rotate: calc(var(--paste-turn) * 6); }
+}
+
+/* Any other scrap of paper. Hidden until its turn, so a button can't be clicked before it is there:
+   the left mouse button is also the flashlight, and may well be going when the round ends. */
+@keyframes paper-pop {
+  0% { opacity: 0; visibility: hidden; }
+  1% { opacity: 1; visibility: visible; scale: 1.22; translate: 0 6px; }
+  33% { opacity: 1; visibility: visible; scale: 0.97; translate: 0 0; }
+  66% { opacity: 1; visibility: visible; scale: 1.015; translate: 0 0; }
+  100% { opacity: 1; visibility: visible; scale: 1; translate: 0 0; }
+}
+
+/* The typewriter face has even letters, so one step shows one more letter (--chars, from ui.ts). */
+@keyframes type-in {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+@keyframes dim-in {
+  from { background-color: rgba(11, 10, 14, 0); }
+}
+
+@keyframes dim-out {
+  to { background-color: rgba(11, 10, 14, 0); }
+}
+
+@keyframes fade-away {
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* The role reveal. --enter-delay comes from ui.ts: it follows the wipe that opens the round. The
+     server's 3 s begin with that wipe, so about a second of it is left to read the finished title. */
+  #overlay.entering {
+    animation: dim-in 0.35s ease-out var(--enter-delay, 0s) backwards;
+  }
+
+  #overlay.entering #overlay-title .tile {
+    animation: tile-jitter 1s steps(1, end) infinite, tile-paste 0.32s steps(1, end) backwards;
+    animation-delay: calc(var(--tile, 0) * -0.375s), calc(var(--enter-delay, 0s) + var(--tile, 0) * 35ms);
+  }
+
+  #overlay.entering #overlay-detail {
+    animation: paper-pop 0.24s steps(1, end) calc(var(--enter-delay, 0s) + 0.7s) backwards;
+  }
+
+  /* The round is live by now, so this is quick. */
+  #overlay.leaving {
+    animation: dim-out 0.4s ease-out forwards;
+  }
+
+  #overlay.leaving #overlay-title .tile {
+    animation: tile-fall 0.4s linear forwards;
+    animation-delay: calc(var(--tile, 0) * 10ms);
+  }
+
+  #overlay.leaving #overlay-detail {
+    animation: fade-away 0.2s ease-out forwards;
+  }
+
+  /* The result: a beat on the stilled game, then the dim, the kicker, the winner letter by letter,
+     the reason typed out, the tallies, and last what can be clicked. */
+  #game-hud.leaving {
+    animation: fade-away 0.3s ease-out 0.15s forwards;
+  }
+
+  #result.entering {
+    animation: dim-in 0.5s ease-out 0.25s backwards;
+  }
+
+  #result.entering .kicker {
+    animation: paper-pop 0.24s steps(1, end) 0.45s backwards;
+  }
+
+  #result.entering #result-title .tile {
+    animation: tile-jitter 1s steps(1, end) infinite, tile-paste 0.32s steps(1, end) backwards;
+    animation-delay: calc(var(--tile, 0) * -0.375s), calc(0.6s + var(--tile, 0) * 40ms);
+  }
+
+  #result.entering #result-reason {
+    animation: type-in 0.55s steps(var(--chars, 30), end) 1.3s backwards;
+  }
+
+  #result.entering #result-stats {
+    animation: paper-pop 0.24s steps(1, end) 1.6s backwards;
+  }
+
+  #result.entering #result-stats > div {
+    animation: paper-pop 0.24s steps(1, end) backwards;
+    animation-delay: calc(1.7s + var(--stat, 0) * 70ms);
+  }
+
+  #result-stats > div:nth-child(2) { --stat: 1; }
+  #result-stats > div:nth-child(3) { --stat: 2; }
+  #result-stats > div:nth-child(4) { --stat: 3; }
+  #result-stats > div:nth-child(5) { --stat: 4; }
+
+  #result.entering :is(.result-actions, .result-wait) {
+    animation: paper-pop 0.24s steps(1, end) 2.15s backwards;
+  }
+
+  #result.entering #read-gazette {
+    animation: paper-pop 0.24s steps(1, end) 2.3s backwards;
+  }
 }
 
 /* The Gazette: the whole window, in the winner's colours. */

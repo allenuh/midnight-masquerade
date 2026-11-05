@@ -9,8 +9,15 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Alfa+Slab+One&family=Bodoni+Moda:wght@900&family=Bungee&family=Courier+Prime:wght@400;700&family=Playfair+Display:ital,wght@1,900&family=Rye&family=UnifrakturMaguntia&display=swap" />
+    <!-- Linked here, not imported from main.ts: the browser waits for it before its first paint.
+         Imported, the page would paint unstyled until the whole script had loaded. -->
+    <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
+    <!-- The screen wipe (transition.ts), over everything. The page opens covered by its background,
+         which is inline, and it comes first, so nothing can paint before it. -->
+    <canvas id="transition" aria-hidden="true" style="position: fixed; inset: 0; z-index: 10; width: 100%; height: 100%; background: #0d0a10"></canvas>
+
     <!-- Icons, drawn in the colour of whatever uses them. -->
     <svg class="symbols" aria-hidden="true">
       <symbol id="mask" viewBox="0 0 48 26"><path d="M2 7c8-5 16-3 22 3 6-6 14-8 22-3 0 10-7 17-15 14-3-1-5-4-7-4s-4 3-7 4C9 24 2 17 2 7z"/><ellipse cx="14" cy="12" rx="4" ry="2.6"/><ellipse cx="34" cy="12" rx="4" ry="2.6"/></symbol>
@@ -114,7 +121,7 @@
             </section>
           </div>
 
-          <!-- The role reveal and incapacitation. -->
+          <!-- The role reveal. -->
           <div id="overlay" hidden><p id="overlay-title"></p><p id="overlay-detail"></p></div>
 
           <!-- The result over the stilled game. -->
@@ -210,9 +217,6 @@
       <div id="look-sections"></div>
       <div id="look-actions" class="debug-row"></div>
     </aside>
-    <!-- The screen wipe (transition.ts), over everything. The page opens covered by its background,
-         which is inline so it applies before the stylesheet loads. -->
-    <canvas id="transition" aria-hidden="true" style="position: fixed; inset: 0; z-index: 10; width: 100%; height: 100%; background: #0d0a10"></canvas>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

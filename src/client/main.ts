@@ -11,12 +11,11 @@ import { VFX, type VfxKey } from './vfx.js';
 import { loadPropModels, type PropModels } from './props.js';
 import { loadSurfaceTextures, type SurfaceTextures } from './surface-meshes.js';
 import {
-  GUEST_LIST, TITLE, clockText, createHud, createResult, ransom, renderGuests, setRoomCode, setTiles,
+  GUEST_LIST, TITLE, clockText, createHud, createResult, createRoleReveal, renderGuests, setRoomCode, setTiles,
 } from './ui.js';
 import { createTransition } from './transition.js';
 import { debugRoom } from './debug-room.js'; // DEBUG-ROOM
 import { mountDebugMenu } from './debug-menu.js'; // DEBUG-MENU
-import './style.css';
 
 const element = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const canvas = element<HTMLCanvasElement>('#arena');
@@ -47,9 +46,6 @@ const creatureStateText = element('#creature-state');
 const teamText = element('#team');
 const statusText = element('#status');
 const startButton = element<HTMLButtonElement>('#start');
-const overlay = element('#overlay');
-const overlayTitle = element('#overlay-title');
-const overlayDetail = element('#overlay-detail');
 const debugPanel = element('#debug');
 const startControls = element('#start-controls');
 const menuRoom = element('#menu-room');
@@ -72,6 +68,17 @@ const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
 // through DANGER (see fear.ts).
 const fearParameter = new URLSearchParams(location.search).get('fear');
 const FEAR_PREVIEW = DEBUG && fearParameter !== null && Number.isFinite(Number(fearParameter)) ? Number(fearParameter) : null;
+
+// The full screens (title, room, Gazette) are a 1440 × 900 stage fitted to the window.
+function fitStage(): void {
+  const scale = Math.min(window.innerWidth / STAGE.width, window.innerHeight / STAGE.height);
+  document.documentElement.style.setProperty('--stage-scale', String(scale));
+}
+window.addEventListener('resize', fitStage);
+fitStage();
+// Drawn now, not with the rest of the page: the opening reveal below can start before the models
+// have loaded, and it waits on the fonts this asks for.
+setTiles(element('#game-title'), TITLE);
 
 // The screen wipe. The page opens covered and is revealed once the ransom faces have loaded (or
 // after 1.5 s without them), so the title never shows in fallback fonts. Each wipe ends by
@@ -138,6 +145,7 @@ function start(
 
   const debugMenu = mountDebugMenu(send, FEAR_PREVIEW); // DEBUG-MENU
   const hud = createHud();
+  const roleReveal = createRoleReveal();
   const result = createResult();
   // The result overlay comes first; the Gazette only once a player asks for it.
   let gazetteOpen = false;
@@ -145,7 +153,6 @@ function start(
   // these hold still while the wipe covers the window, and change behind it.
   let shownScreen: string | null = null;
   let shownSnapshot: Snapshot | null = null;
-  setTiles(element('#game-title'), TITLE);
   setTiles(element('#guests-title'), [GUEST_LIST]);
 
   // In the lobby the host's start sits under the guest list; during a round the page shows only
@@ -259,17 +266,6 @@ function start(
       ? 'Values apply to the next round. Everyone in the room sees them; the server checks and bounds every change.'
       : 'Set by the host between rounds. Changed values are marked *.';
     tuningReset.hidden = !editable;
-  }
-
-  // The title in cut-out letters, redrawn only when it changes. `dim` darkens the game behind it.
-  function showOverlay(title: string, detail = '', dim = false): void {
-    overlay.hidden = false;
-    overlay.classList.toggle('reveal', dim);
-    if (overlayTitle.dataset.text !== title) {
-      overlayTitle.dataset.text = title;
-      setTiles(overlayTitle, [ransom(title, 60)]);
-    }
-    overlayDetail.textContent = detail;
   }
 
   function resultText(result: Snapshot['result']): string {
@@ -386,7 +382,7 @@ function start(
     proximityText.hidden = batteryText.hidden = snapshot?.role !== 'hunter';
     debugPanel.hidden = !inRound;
     debugMenu.update({ host: room?.host ?? false, running: snapshot?.roundState === 'running' }); // DEBUG-MENU
-    overlay.hidden = true;
+    roleReveal.update(snapshot);
     result.update(snapshot, room, gazetteOpen);
 
     // The status line carries only what the screens do not already say.
@@ -454,16 +450,13 @@ function start(
     const own = self === null ? undefined : snapshot.hunters.find((hunter) => hunter.id === self);
     switch (snapshot.roundState) {
       case 'reveal':
-        if (snapshot.role === 'creature') showOverlay('YOU ARE THE CREATURE', '', true);
-        else showOverlay('YOU ARE A HUNTER', snapshot.self, true);
         statusText.textContent = 'Roles are assigned. The round starts in a moment.';
         break;
       case 'running':
-        // While a catch cutscene plays, the game itself is the message: no overlay.
         if (snapshot.catch) {
           statusText.textContent = '';
         } else if (own?.down) {
-          showOverlay('INCAPACITATED', `REVIVE ${Math.floor(own.revive * 100)}%`);
+          // Nothing covers the game: a downed Hunter watches on, and its card in the HUD shows the revive.
           statusText.textContent = 'You are down. A teammate revives you by holding a flashlight on you.';
         } else if (snapshot.role === 'hunter') {
           // An empty flashlight is the one thing a Hunter has to be told in words: the
@@ -680,14 +673,6 @@ function start(
     hudLayer.style.setProperty('--hud-height', `${HUD_WIDTH / scene.aspect}px`);
     scene.resize(width, height);
   }
-
-  // The full screens (title, room, Gazette) are a 1440 × 900 stage fitted to the window.
-  function fitStage(): void {
-    const scale = Math.min(window.innerWidth / STAGE.width, window.innerHeight / STAGE.height);
-    document.documentElement.style.setProperty('--stage-scale', String(scale));
-  }
-  window.addEventListener('resize', fitStage);
-  fitStage();
 
   // Render the latest authoritative state; the client does not simulate movement or hits.
   let animationFrame = 0;

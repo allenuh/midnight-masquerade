@@ -44,7 +44,7 @@ import type { World } from '../shared/map/world.js';
 import type { HunterId, Position, ServerMessage } from '../shared/protocol.js';
 import { wallDistance } from '../shared/raycast.js';
 import { cameraFor } from './camera-config.js';
-import { createFear, fearInput, previewInput } from './fear.js';
+import { createFear, hunterFear, previewInput } from './fear.js';
 import { createPost } from './post.js';
 import { buildProps, type PropModels } from './props.js';
 import { buildSurfaceMeshes, setPixelTextures, type SurfaceTextures } from './surface-meshes.js';
@@ -773,12 +773,12 @@ export function createScene(
 
     // Fear: only an active Hunter feels it, only while the round runs, from its own band and
     // dread. It eases out while a catch plays, so a Hunter's darkness never hides the cutscene,
-    // and once a Hunter is down: an incapacitated Hunter feels nothing until it is revived. (The
-    // debug menu's fear preview still shows, for tuning.)
+    // once a Hunter is down (an incapacitated Hunter feels nothing until it is revived), and while
+    // the Creature burns (hunterFear). (The debug menu's fear preview still shows, for tuning.)
     const selfView = snapshot?.hunters.find((view) => view.id === self);
     const feeling = snapshot?.role !== 'hunter' || caught ? null
       : fearPreview !== null ? previewInput(fearPreview)
-        : snapshot.roundState === 'running' && !selfView?.down ? fearInput(snapshot.proximity, snapshot.dread, tuning) : null;
+        : hunterFear(snapshot, tuning);
     const fearFrame = fear.update(feeling ?? { stage: 0, t: 0 }, deltaSeconds);
     if (selfView) post.setFear(fearFrame, fearFocus(selfView.position, selfView.down), (now - startTime) / 1000);
     else post.setFear({ ...fearFrame, active: false }, { x: 0.5, y: 0.5, scale: 1, lineX: 0.5, lineY: 0.5 }, 0);

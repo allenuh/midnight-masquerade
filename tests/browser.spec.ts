@@ -295,6 +295,39 @@ function assertHunterWire(network: Network) {
   expect(problems.slice(0, 5)).toEqual([]);
 }
 
+test('the title screen is styled from its first frame, and ready before the wipe uncovers it', async ({ page }) => {
+  // Every frame the browser renders from the very start, until the opening wipe has finished.
+  await page.addInitScript(() => {
+    const seen = { unstyled: 0, frames: 0, atReveal: null as null | { tiles: number; scale: string } };
+    (window as unknown as { seen: typeof seen }).seen = seen;
+    const frame = () => {
+      const cover = document.querySelector<HTMLCanvasElement>('#transition');
+      if (document.body) {
+        seen.frames += 1;
+        if (getComputedStyle(document.body).overflow !== 'hidden'
+          || document.documentElement.scrollHeight > window.innerHeight) seen.unstyled += 1;
+      }
+      if (cover && !cover.style.background && !seen.atReveal) {
+        seen.atReveal = {
+          tiles: document.querySelectorAll('#game-title .tile').length,
+          scale: document.documentElement.style.getPropertyValue('--stage-scale'),
+        };
+      }
+      if (!cover?.hidden) requestAnimationFrame(frame);
+    };
+    frame();
+  });
+  await page.goto('/');
+  await expect(page.locator('#transition')).toBeHidden();
+  const seen = await page.evaluate(() => (window as unknown as { seen: unknown }).seen) as {
+    unstyled: number; frames: number; atReveal: { tiles: number; scale: string };
+  };
+  expect(seen.frames).toBeGreaterThan(0);
+  expect(seen.unstyled).toBe(0);
+  expect(seen.atReveal.tiles).toBeGreaterThan(0);
+  expect(seen.atReveal.scale).not.toBe('');
+});
+
 test('five players fill a room, receive private roles, move, see only permitted state, and survive a disconnect', async ({ browser }, testInfo) => {
   const { players, pageErrors, close } = await openPlayers(browser);
   const [host, second] = players;
@@ -597,8 +630,9 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     for (const player of players) await expect.poll(() => player.network.teammate(aId).down).toBe(true);
     expect(creature.network.creature().roundState).toBe('running');
     expect(creature.network.creature().attackCooldown).toBeGreaterThan(0);
-    await expect(a.page.locator('#overlay-title')).toHaveText('INCAPACITATED');
-    await expect(a.page.locator('#overlay-detail')).toHaveText('REVIVE 0%');
+    // Nothing covers the game for a downed Hunter: its own card says so, and it watches on.
+    await expect(a.page.locator('#team-cards')).toContainText('DOWN · 0%');
+    await expect(a.page.locator('#overlay')).toBeHidden();
     for (const player of players) await expect(player.page.locator('#team')).toContainText(`${aId}${player === a ? '*' : ''} DOWN 0%`);
     await a.page.screenshot({ path: testInfo.outputPath('hunter-down.png') });
     // A's keys do nothing now.
@@ -623,12 +657,12 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     await face(rescuer, fromWest ? 'east' : 'west');
     await rescuer.page.keyboard.down('Space');
     await expect.poll(() => rescuer.network.teammate(aId).revive).toBeGreaterThan(0);
-    await expect(a.page.locator('#overlay-detail')).toHaveText(/REVIVE [1-9]\d?%/);
+    await expect(a.page.locator('#team-cards')).toContainText(/DOWN · [1-9]\d?%/);
+    await expect(a.page.locator('#overlay')).toBeHidden();
     await expect(rescuer.page.locator('#team')).toContainText(new RegExp(`${aId} DOWN [1-9]\\d?%`));
     await rescuer.page.screenshot({ path: testInfo.outputPath('hunter-reviving.png') });
     await expect.poll(() => rescuer.network.teammate(aId).down, { timeout: GAMEPLAY.revive.seconds * 1000 + 15_000 }).toBe(false);
     await rescuer.page.keyboard.up('Space');
-    await expect(a.page.locator('#overlay')).toBeHidden();
     for (const player of players) await expect(player.page.locator('#team')).toContainText(`${aId}${player === a ? '*' : ''} ACTIVE`);
     // Revived: A can move again (toward whichever side has more open floor).
     const revivedAt = { ...positionOf(a) };
@@ -709,6 +743,8 @@ test('Hunters reveal and damage the Creature, a downed Hunter is revived by a te
     await b.page.locator('#close-gazette').click();
     await expect(b.page.locator('#gazette')).toBeHidden();
     await expect(b.page.locator('#result')).toBeVisible();
+    // Coming back is the wipe's job: the entrance does not play twice.
+    await expect(b.page.locator('#result')).not.toHaveClass(/entering/);
     for (const hunter of hunters) await expect(hunter.page.locator('#creature-hp')).toHaveText('Creature HP: 0');
     expect(creature.network.creature().hp).toBe(0);
     const creatureMessages = creature.network.messages.filter((message): message is CreatureSnapshot => message.type === 'snapshot' && message.role === 'creature');

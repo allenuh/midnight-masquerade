@@ -5,10 +5,20 @@ import { flashlightStage } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import type { HunterId, RoomMessage, RoundResult, ServerMessage } from '../shared/protocol.js';
 import type { Tuning } from '../shared/tuning.js';
+import { TRANSITION } from './transition.js';
 
 type Snapshot = Extract<ServerMessage, { type: 'snapshot' }>;
 
 const element = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
+
+// Calls `done` when every finite CSS animation now on `target` or inside it has ended, so the timings
+// live only in style.css. With reduced motion there are none, and `done` runs at once. The cut-out
+// letters' endless jitter does not count.
+function afterAnimations(target: HTMLElement, done: () => void): void {
+  const finite = target.getAnimations({ subtree: true })
+    .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity);
+  void Promise.allSettled(finite.map((animation) => animation.finished)).then(done);
+}
 
 // Paper colours as [background, letter]. The palette is the masquerade's: cream card, ink,
 // wine, mustard, teal, pink, powder blue and orange.
@@ -242,10 +252,22 @@ export function createHud() {
   }
 
   let clockShown = '';
+  let hudEnded: boolean | null = null;
   return {
     update(snapshot: Snapshot, tuning: Tuning): void {
-      // The result has its own view; the HUD steps aside.
-      hud.hidden = snapshot.roundState === 'ended';
+      // The result has its own view; the HUD fades aside as it comes in.
+      const ended = snapshot.roundState === 'ended';
+      if (ended !== hudEnded) {
+        hudEnded = ended;
+        hud.classList.toggle('leaving', ended);
+        if (ended) {
+          afterAnimations(hud, () => {
+            if (hudEnded) hud.hidden = true;
+          });
+        } else {
+          hud.hidden = false;
+        }
+      }
       const self = snapshot.role === 'hunter' ? snapshot.self : null;
 
       for (const hunter of snapshot.hunters) {
@@ -333,6 +355,48 @@ export function createHud() {
   };
 }
 
+// The private role reveal: the letters are pasted on as the wipe that opened the round clears, and
+// fall away when the round goes live. The fall never holds up play: the overlay takes no input.
+export function createRoleReveal() {
+  const overlay = element('#overlay');
+  const title = element('#overlay-title');
+  const detail = element('#overlay-detail');
+  // The wipe clears left to right, reaching the title about now.
+  overlay.style.setProperty('--enter-delay', `${TRANSITION.HOLD_SECONDS + TRANSITION.REVEAL_SECONDS * 0.6}s`);
+  let round: Snapshot['roundId'] | null = null;
+
+  return {
+    update(snapshot: Snapshot | null): void {
+      if (snapshot?.roundState === 'reveal') {
+        if (snapshot.roundId === round) return;
+        round = snapshot.roundId;
+        setTiles(title, [ransom(snapshot.role === 'creature' ? 'YOU ARE THE CREATURE' : 'YOU ARE A HUNTER', 60)]);
+        detail.textContent = snapshot.role === 'creature' ? '' : snapshot.self;
+        // Taken off and put back with a style flush between, so a restart mid-reveal plays it again.
+        overlay.classList.remove('entering', 'leaving');
+        overlay.hidden = false;
+        void overlay.offsetWidth;
+        overlay.classList.add('entering');
+        return;
+      }
+      if (round === null) return;
+      const goingLive = snapshot?.roundId === round && snapshot.roundState === 'running';
+      round = null;
+      overlay.classList.remove('entering');
+      if (!goingLive) {
+        overlay.hidden = true;
+        return;
+      }
+      overlay.classList.add('leaving');
+      afterAnimations(overlay, () => {
+        if (round !== null) return;
+        overlay.hidden = true;
+        overlay.classList.remove('leaving');
+      });
+    },
+  };
+}
+
 // The words that go with each result, on the overlay and in the Gazette.
 const REASON: Record<RoundResult, string> = {
   caught: 'Every Hunter is down.',
@@ -376,6 +440,9 @@ export function createResult() {
     update(snapshot: Snapshot | null, room: RoomMessage | null, showGazette: boolean): void {
       const ended = snapshot?.roundState === 'ended' && snapshot.result !== null;
       overlay.hidden = !ended || showGazette;
+      // A browser restarts an animation when its element is shown again, and coming back from the
+      // Gazette is already a wipe: the entrance plays once per result.
+      if (overlay.hidden) overlay.classList.remove('entering');
       gazette.hidden = !ended || !showGazette;
       for (const host of document.querySelectorAll<HTMLElement>('.result-host')) host.hidden = !room?.host;
       for (const wait of document.querySelectorAll<HTMLElement>('.result-wait')) wait.hidden = room?.host ?? false;
@@ -394,6 +461,7 @@ export function createResult() {
       setTiles(overlayTitle, creatureWon ? CREATURE_WINS : HUNTERS_WIN);
       overlayTitle.setAttribute('aria-label', creatureWon ? 'The Creature wins' : 'The Hunters win');
       overlayReason.textContent = REASON[result];
+      overlayReason.style.setProperty('--chars', String(REASON[result].length));
       statList(overlayStats, [
         ['ROUND', clockText(played)], ['CREATURE HP', String(hp)], ['CAUGHT', String(stats.caught)],
         ['REVIVED', String(stats.revived)], ['BATTERIES', String(stats.batteries)],
@@ -412,6 +480,11 @@ export function createResult() {
       ]);
       gazetteFlashlight.textContent = `Flashlight time: ${(Object.entries(stats.flashlight) as [HunterId, number][])
         .map(([id, seconds]) => `${id} ${Math.round(seconds)} s`).join(' · ')}`;
+
+      // Everything is drawn: play the overlay's entrance (style.css), once.
+      if (overlay.hidden) return;
+      overlay.classList.add('entering');
+      afterAnimations(overlay, () => overlay.classList.remove('entering'));
     },
   };
 }

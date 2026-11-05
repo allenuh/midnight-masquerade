@@ -701,6 +701,21 @@ test('a flashlight hit sets the Creature burning: revealed and fast for the whol
   assert.equal(JSON.stringify(hidden).includes('burn'), false);
 });
 
+// The Hunter's fear effects lift on this flag (hunterFear in fear.ts), so it must hold for every
+// step of the burn, and end on the step the Creature can catch again.
+test('a Hunter is told the Creature is burning on every step of the burn, and not a step longer', () => {
+  const game = huntGame(LANE_HUNTER, LANE_CREATURE);
+  step(game, 1, { light: true });
+  for (let tick = 1; tick < burnTicks; tick++) {
+    assert.equal(hunterView(game).creature?.burning, true, `burn step ${tick}`);
+    step(game, 1);
+  }
+  assert.equal(hunterView(game).creature?.burning, true, 'the last step of the burn');
+  step(game, 1);
+  assert.equal(isBurning(game.creatureState), false);
+  assert.equal(hunterView(game).creature?.burning, false, 'over, on the step it can catch again');
+});
+
 test('a burning Creature holding sprint moves no faster, and a stagger still freezes it', () => {
   const game = huntGame(LANE_HUNTER, LANE_CREATURE);
   step(game, 1, { light: true });
