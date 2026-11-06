@@ -13,7 +13,7 @@ import { lightOccluders, type World } from '../shared/map/world.js';
 import { wallDistance } from '../shared/raycast.js';
 import {
   CANDLE_LIGHT, CANDLE_LIGHT_REACH, CANDLE_LIGHT_RAYS, CANDLE_LIGHT_UNIFORMS, MAX_CANDLE_LIGHTS, VFX,
-  createHaloMaterial, flashlitPropShader,
+  createHaloMaterial, flashlitPropShader, setCandleLightLists,
 } from './vfx.js';
 
 const MODEL_URLS = import.meta.glob<string>('./assets/*.glb', { query: '?url', import: 'default', eager: true });
@@ -119,8 +119,16 @@ export function buildProps(world: World, models: PropModels, facing: Quaternion)
     }
   }
   CANDLE_LIGHT_UNIFORMS.candleLightReach.value.needsUpdate = true;
+  // Which of those lights each tile looks at, redone only if the debug menu changes their radius.
+  const litPositions = lights.slice(0, MAX_CANDLE_LIGHTS).map(({ position }) => position);
+  let listedRadius = -1;
 
   function update(seconds: number): void {
+    const radius = Math.min(CANDLE_LIGHT.CANDLE_LIGHT_RADIUS, CANDLE_LIGHT_REACH);
+    if (radius !== listedRadius) {
+      listedRadius = radius;
+      setCandleLightLists(litPositions, world.map.width, world.map.height, radius);
+    }
     haloMaterial.uniforms.haloColor.value.set(CANDLE_LIGHT.CANDLE_LIGHT_COLOR);
     haloMaterial.uniforms.haloIntensity.value = CANDLE_LIGHT.CANDLE_HALO_INTENSITY;
     const waves = flames.map(({ flame, phase }) => {
@@ -144,6 +152,7 @@ export function buildProps(world: World, models: PropModels, facing: Quaternion)
     haloGeometry.dispose();
     haloMaterial.dispose();
     for (const slot of slots) slot.set(0, 0, 0, 0);
+    CANDLE_LIGHT_UNIFORMS.candleGrid.value.dispose();
   }
 
   return { group, update, dispose };

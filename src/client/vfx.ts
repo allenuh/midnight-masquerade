@@ -364,9 +364,17 @@ export const BATTERY_LIGHT_UNIFORMS = {
 
 // The candle lights' state, shared like BATTERY_LIGHT_UNIFORMS. Each slot of `candleLights` is
 // (x, y, z, brightness), set by props.ts: brightness 0 for an unused slot or with the light
-// toggled off. `candleLightReach` is laid out like `batteryLightReach`.
+// toggled off. `candleLightReach` is laid out like `batteryLightReach`. `candleGrid` and
+// `candleGridLongest` say which slots each tile should look at (candleLightLists).
+const candleGridTexture = (data: Float32Array, width: number, height: number): DataTexture => {
+  const texture = new DataTexture(data, width, height, RedFormat, FloatType);
+  texture.needsUpdate = true;
+  return texture;
+};
 export const CANDLE_LIGHT_UNIFORMS = {
   candleLights: { value: Array.from({ length: MAX_CANDLE_LIGHTS }, () => new Vector4()) },
+  candleGrid: { value: candleGridTexture(new Float32Array([-1]), 1, 1) },
+  candleGridLongest: { value: 1 },
   candleLightReach: {
     value: new DataTexture(new Float32Array(CANDLE_LIGHT_RAYS * MAX_CANDLE_LIGHTS), CANDLE_LIGHT_RAYS,
       MAX_CANDLE_LIGHTS, RedFormat, FloatType),
@@ -376,6 +384,45 @@ export const CANDLE_LIGHT_UNIFORMS = {
   candleLightIntensity: { value: CANDLE_LIGHT.CANDLE_LIGHT_INTENSITY },
   candleLightMax: { value: CANDLE_LIGHT.CANDLE_LIGHT_MAX },
 };
+
+// Which candles can reach each tile of a map, so a pixel only looks at those rather than at every
+// slot: this is by far the largest saving in the frame, as a map holds dozens of candles and a tile
+// is reached by a handful. `data` holds, for each tile, `longest` slot numbers ended by -1 if it has
+// fewer: tile (column, row) starts at texel (column * longest, row). A light is listed if it is within
+// `radius` of any part of the tile, which is exactly when it can add anything to a pixel there
+// (vfxRoundLight fades to nothing at the radius). Tiles on the edge also stand for everything beyond
+// it, as the boundary walls' caps lie outside the grid. Walls are left to the reach rays as before.
+export function candleLightLists(
+  lights: readonly { x: number; z: number }[], columns: number, rows: number, radius: number,
+): { data: Float32Array; longest: number } {
+  // How far `value` is from cell `index` of `count` along one axis.
+  const gap = (value: number, index: number, count: number): number => Math.max(
+    index === 0 ? 0 : index * TILE_SIZE - value, index === count - 1 ? 0 : value - (index + 1) * TILE_SIZE, 0,
+  );
+  const lists: number[][] = [];
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const list: number[] = [];
+      lights.forEach(({ x, z }, slot) => {
+        if (Math.hypot(gap(x, column, columns), gap(z, row, rows)) <= radius) list.push(slot);
+      });
+      lists.push(list);
+    }
+  }
+  const longest = Math.max(1, ...lists.map((list) => list.length));
+  const data = new Float32Array(columns * longest * rows).fill(-1);
+  lists.forEach((list, tile) => data.set(list, tile * longest));
+  return { data, longest };
+}
+
+// Points the surface shaders at a map's lists, freeing the last ones. props.ts calls this when a map
+// is built and when the debug menu changes the radius.
+export function setCandleLightLists(lights: readonly { x: number; z: number }[], columns: number, rows: number, radius: number): void {
+  const { data, longest } = candleLightLists(lights, columns, rows, radius);
+  CANDLE_LIGHT_UNIFORMS.candleGrid.value.dispose();
+  CANDLE_LIGHT_UNIFORMS.candleGrid.value = candleGridTexture(data, columns * longest, rows);
+  CANDLE_LIGHT_UNIFORMS.candleGridLongest.value = longest;
+}
 
 // The fire's light, shared like the others: `fireLight` is (x, y, z, brightness), brightness 0 while
 // nothing burns, and `fireLightReach` one row like `batteryLightReach`. Set by scene.ts.
@@ -425,6 +472,8 @@ uniform vec3 batteryLightColor;
 uniform float batteryLightRadius;
 uniform float batteryLightIntensity;
 uniform vec4 candleLights[${MAX_CANDLE_LIGHTS}];
+uniform sampler2D candleGrid;
+uniform int candleGridLongest;
 uniform sampler2D candleLightReach;
 uniform vec3 candleLightColor;
 uniform float candleLightRadius;
@@ -489,7 +538,12 @@ float vfxCandleLight(vec3 world, vec3 normal) {
   if (normal.y > 0.5 && world.y > flashFloorY + 1.0) return 0.0;
 #endif
   float total = 0.0;
-  for (int slot = 0; slot < ${MAX_CANDLE_LIGHTS}; slot++) {
+  // Only the candles that can reach this tile (candleLightLists).
+  ivec2 size = textureSize(candleGrid, 0);
+  ivec2 tile = clamp(ivec2(floor(world.xz / ${TILE_SIZE.toFixed(1)})), ivec2(0), ivec2(size.x / candleGridLongest - 1, size.y - 1));
+  for (int entry = 0; entry < candleGridLongest; entry++) {
+    int slot = int(texelFetch(candleGrid, ivec2(tile.x * candleGridLongest + entry, tile.y), 0).r);
+    if (slot < 0) break;
     vec4 light = candleLights[slot];
     if (light.w <= 0.0) continue;
     total += candleLightIntensity * light.w * vfxRoundLight(world, normal,
