@@ -290,7 +290,7 @@ const MIN_SIZE = 64;
 export type FearFocus = { x: number; y: number; scale: number; lineX: number; lineY: number };
 
 export type Post = {
-  render: () => void; setFear: (frame: FearFrame, focus: FearFocus, time: number) => void;
+  render: () => void; warmUp: () => void; setFear: (frame: FearFrame, focus: FearFocus, time: number) => void;
   setSize: (width: number, height: number) => void; dispose: () => void;
 };
 
@@ -333,6 +333,14 @@ export function createPost(renderer: WebGLRenderer, scene: Scene, camera: Camera
       bloom.enabled = VFX.bloom;
       grade.enabled = VFX.grade;
       composer.render();
+    },
+    // One frame through every pass, so that all their shaders are compiled (scene.ts). The next
+    // render() and setFear() put back what is really on.
+    warmUp() {
+      syncLook();
+      bloom.enabled = grade.enabled = fear.enabled = true;
+      composer.render();
+      fear.enabled = false;
     },
     setFear(frame, focus, time) {
       fear.enabled = frame.active;

@@ -852,3 +852,158 @@ test('the Creature wins by downing all four Hunters, and the room can start agai
     await close();
   }
 });
+
+// A shader compiled mid-round freezes the game for a frame or several, at the worst moment: as a Hunter
+// spots the Creature, say. So nothing may compile once a round is live: everything is warmed up with
+// the map (scene.ts), and nothing is thrown away that would have to be compiled again. Each role plays
+// two short rounds, so the Creature appears, goes, and appears again.
+for (const role of ['hunter', 'creature'] as const) {
+  test(`no shader is compiled once a round is live, playing the ${role}`, async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(String(error)));
+    await page.addInitScript(() => {
+      const shared = window as unknown as { links: number; socket: WebSocket; room: RoomMessage; snapshot: Snapshot };
+      shared.links = 0;
+      const link = WebGL2RenderingContext.prototype.linkProgram;
+      WebGL2RenderingContext.prototype.linkProgram = function (program) {
+        // The page transition has its own canvas and shader, and is not part of a round.
+        if ((this.canvas as HTMLCanvasElement).id === 'arena') shared.links += 1;
+        return link.call(this, program);
+      };
+      const Real = window.WebSocket;
+      window.WebSocket = class extends Real {
+        constructor(...args: ConstructorParameters<typeof WebSocket>) {
+          super(...args);
+          shared.socket = this;
+          this.addEventListener('message', (event) => {
+            const message = JSON.parse(event.data as string) as ServerMessage;
+            if (message.type === 'room') shared.room = message;
+            if (message.type === 'snapshot') shared.snapshot = message;
+          });
+        }
+      };
+    });
+    const send = (message: object) => page.evaluate((text) => {
+      (window as unknown as { socket: WebSocket }).socket.send(text);
+    }, JSON.stringify(message));
+    const links = () => page.evaluate(() => (window as unknown as { links: number }).links);
+    const roundIs = (state: string) => page.waitForFunction((wanted) =>
+      (window as unknown as { snapshot?: Snapshot }).snapshot?.roundState === wanted, state, { timeout: 30_000 });
+
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Debug room' }).click();
+    await page.getByLabel('Debug role').selectOption(role);
+    // A battery from the first step, and a short exorcism.
+    await page.waitForFunction(() => (window as unknown as { room?: RoomMessage }).room !== undefined);
+    const tuning = await page.evaluate(() => (window as unknown as { room: RoomMessage }).room.tuning);
+    await send({ type: 'tune', tuning: { ...tuning, firstBatterySeconds: 0, exorcismSeconds: 1 } });
+    await page.waitForFunction(() => (window as unknown as { room: RoomMessage }).room.tuning.exorcismSeconds === 1);
+    await page.getByRole('button', { name: 'Begin the evening' }).click();
+    await roundIs('running');
+    const atStart = await links();
+    expect(atStart, 'the scene compiled its shaders before the round').toBeGreaterThan(0);
+
+    await page.waitForFunction(() => (window as unknown as { snapshot: Snapshot }).snapshot.pickups.length > 0);
+    // Space is the flashlight or the sprint, whose ring has its own shader.
+    await page.keyboard.down('Space');
+    await page.waitForTimeout(400);
+    await page.keyboard.up('Space');
+    // The fear pass, from the debug menu's preview (it only ever shows on a Hunter's screen).
+    const setFear = (level: number) => page.evaluate((value) => {
+      const row = [...document.querySelectorAll('.look-row')].find((candidate) => candidate.textContent?.includes('fear preview'))!;
+      const slider = row.querySelector<HTMLInputElement>('input[type=range]')!;
+      slider.value = String(value);
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+    }, level);
+    await setFear(3);
+    await page.waitForTimeout(300);
+    await page.evaluate(() => {
+      const row = [...document.querySelectorAll('.look-row')].find((candidate) => candidate.textContent?.includes('fear preview'))!;
+      row.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();
+    });
+    // The Creature burns away, is gone with the round, and comes back in the next.
+    await send({ type: 'exorcise' });
+    await roundIs('ended');
+    expect(await links(), 'first round').toBe(atStart);
+    await page.waitForTimeout(800);
+    await page.locator('#play-again').click();
+    await roundIs('running');
+    await page.waitForTimeout(300);
+    await send({ type: 'exorcise' });
+    await roundIs('ended');
+    await page.waitForTimeout(300);
+    expect(await links(), 'second round').toBe(atStart);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+// The opening cover compiles the game's shaders on a map generated from the catalogues, so the wipe to
+// the room finds them all cached. That only works if what it compiles is what the real maps use, so
+// every shader a furnished map then links must be one the cover already did.
+test('everything a furnished map draws was compiled under the opening cover', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(String(error)));
+  await page.addInitScript(() => {
+    const shared = window as unknown as { programs: string[]; socket: WebSocket; snapshot: Snapshot; room: RoomMessage };
+    shared.programs = [];
+    const sources = new WeakMap<WebGLShader, string>();
+    const source = WebGL2RenderingContext.prototype.shaderSource;
+    WebGL2RenderingContext.prototype.shaderSource = function (shader, text) {
+      sources.set(shader, text);
+      return source.call(this, shader, text);
+    };
+    const link = WebGL2RenderingContext.prototype.linkProgram;
+    WebGL2RenderingContext.prototype.linkProgram = function (program) {
+      if ((this.canvas as HTMLCanvasElement).id === 'arena') {
+        shared.programs.push(this.getAttachedShaders(program)!.map((shader) => sources.get(shader)).join('\n----\n'));
+      }
+      return link.call(this, program);
+    };
+    const Real = window.WebSocket;
+    window.WebSocket = class extends Real {
+      constructor(...args: ConstructorParameters<typeof WebSocket>) {
+        super(...args);
+        shared.socket = this;
+        this.addEventListener('message', (event) => {
+          const message = JSON.parse(event.data as string) as ServerMessage;
+          if (message.type === 'snapshot') shared.snapshot = message;
+          if (message.type === 'room') shared.room = message;
+        });
+      }
+    };
+  });
+  const send = (message: object) => page.evaluate((text) => {
+    (window as unknown as { socket: WebSocket }).socket.send(text);
+  }, JSON.stringify(message));
+  const programs = () => page.evaluate(() => (window as unknown as { programs: string[] }).programs);
+  const roundIs = (state: string) => page.waitForFunction((wanted) =>
+    (window as unknown as { snapshot?: Snapshot }).snapshot?.roundState === wanted, state, { timeout: 30_000 });
+
+  await page.goto('/');
+  await expect(page.locator('#transition')).toBeHidden();
+  const compiledUnderCover = new Set(await programs());
+  expect(compiledUnderCover.size, 'the cover compiled the shaders').toBeGreaterThan(20);
+
+  await page.getByRole('button', { name: 'Debug room' }).click();
+  await page.getByLabel('Debug role').selectOption('hunter');
+  await page.waitForFunction(() => (window as unknown as { room?: RoomMessage }).room !== undefined);
+  // Both furnished maps, in a round on the second: a battery from the first step and a short exorcism.
+  await send({ type: 'selectMap', id: '1-main-floor-1' });
+  await page.waitForTimeout(800);
+  await send({ type: 'selectMap', id: '1-main-floor-2' });
+  await page.waitForTimeout(800);
+  const tuning = await page.evaluate(() => (window as unknown as { room: RoomMessage }).room.tuning);
+  await send({ type: 'tune', tuning: { ...tuning, firstBatterySeconds: 0, exorcismSeconds: 1 } });
+  await page.waitForFunction(() => (window as unknown as { room: RoomMessage }).room.tuning.exorcismSeconds === 1);
+  await page.getByRole('button', { name: 'Begin the evening' }).click();
+  await roundIs('running');
+  await page.keyboard.down('Space');
+  await page.waitForTimeout(300);
+  await page.keyboard.up('Space');
+  await send({ type: 'exorcise' });
+  await roundIs('ended');
+
+  const missed = (await programs()).filter((program) => !compiledUnderCover.has(program));
+  expect(missed.map((program) => /#define SHADER_NAME (\S+)/.exec(program)?.[1] ?? program.slice(0, 200)), 'shaders the warm-up map missed').toEqual([]);
+  expect(pageErrors).toEqual([]);
+});

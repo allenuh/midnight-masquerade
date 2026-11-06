@@ -647,10 +647,12 @@ export function createScene(
   // The Creature mesh exists only while this client holds a Creature position:
   // always for the Creature itself, and for a Hunter only while the server
   // says the Creature is revealed. There is no hidden mesh, shadow, or reflection.
-  // It is the creature.glb model, cloned on each appearance with its own copy of the textured
-  // material (for the burn tint) and of the outline material (for the stagger), and its own
-  // Float mixer. Like a Hunter's, the group sits at the server's position and turns to the
-  // facing along local +X; `pose`, at the floor, carries the model and leans it into its travel.
+  // It is the creature.glb model, cloned on each appearance with its own Float mixer. Its materials,
+  // a copy of the textured one (for the burn tint) and of the outline (for the stagger), and its
+  // sprint ring's, stay for the whole scene: freeing them would delete the shaders only they use,
+  // which would then compile again, freezing a frame, the moment a Hunter next sees it. They hold
+  // nothing about where it is. Like a Hunter's, the group sits at the server's position and turns to
+  // the facing along local +X; `pose`, at the floor, carries the model and leans it into its travel.
   // `fade` (0..1) is how much of it is drawn while it dissolves in or out; its body and outline
   // share `fadeUniform`. `grab` is the catch cutscene's clip, posed by hand from the cutscene's
   // progress rather than played, and `grabWeight` how much of it shows over Float; `exorcism` and
@@ -662,6 +664,11 @@ export function createScene(
     fade: number; fadeUniform: { value: number };
   };
   let creature: CreatureMesh | null = null;
+  const creatureFade = { value: 0 };
+  const creatureMaterial = ditheredBody(creatureModel.material.clone(), creatureFade);
+  const creatureOutline = createOutlineMaterial(creatureFade);
+  const creatureRingGeometry = new RingGeometry(GAMEPLAY.playerRadius + 2, GAMEPLAY.playerRadius + 6, 24);
+  const creatureRingMaterial = new MeshBasicMaterial({ color: '#e46448', transparent: true });
   // Movement and the eased facing outlive the mesh, so a Creature revealed again keeps the way
   // it faced. It starts facing +Z, toward the camera, as the server spawns it.
   let creatureFacing = Math.PI / 2;
@@ -682,13 +689,11 @@ export function createScene(
     model.position.y = creatureModel.lift;
     pose.add(model);
     // Each appearance starts fully dissolved and fades in (render).
-    const fadeUniform = { value: 0 };
-    const material = ditheredBody(creatureModel.material.clone(), fadeUniform);
-    const outline = createOutlineMaterial(fadeUniform);
+    creatureFade.value = 0;
     model.traverse((object) => {
       if (!(object instanceof Mesh)) return;
-      if (object.material === creatureModel.material) object.material = material;
-      else if (object.material === OUTLINE_MATERIAL) object.material = outline;
+      if (object.material === creatureModel.material) object.material = creatureMaterial;
+      else if (object.material === OUTLINE_MATERIAL) object.material = creatureOutline;
     });
     const mixer = new AnimationMixer(model);
     const float = mixer.clipAction(creatureModel.float).play();
@@ -700,8 +705,7 @@ export function createScene(
     exorcism.paused = true;
     exorcism.setEffectiveWeight(0);
     // Sprint feedback: a flat ring on the floor under the Creature, fading with it.
-    const ringMaterial = new MeshBasicMaterial({ color: '#e46448', transparent: true });
-    const ring = new Mesh(new RingGeometry(GAMEPLAY.playerRadius + 2, GAMEPLAY.playerRadius + 6, 24), ringMaterial);
+    const ring = new Mesh(creatureRingGeometry, creatureRingMaterial);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = -(GAMEPLAY.playerRadius - 2);
     ring.visible = false;
@@ -714,20 +718,16 @@ export function createScene(
     // The first snapshot after a reveal has nothing to compare with: no movement yet.
     creatureLastPosition = null;
     creature = {
-      group, pose, material, outline, ring, ringMaterial, shadow, mixer, float, grab, grabWeight: 0, exorcism, exorcismWeight: 0, fade: 0, fadeUniform,
+      group, pose, material: creatureMaterial, outline: creatureOutline, ring, ringMaterial: creatureRingMaterial, shadow, mixer, float, grab,
+      grabWeight: 0, exorcism, exorcismWeight: 0, fade: 0, fadeUniform: creatureFade,
     };
     return creature;
   }
 
-  // Frees only what this appearance made; the model's geometry and texture, and the shadow's,
-  // are shared with the next one.
+  // Everything it is made of is shared with the next appearance, so there is nothing to free.
   function removeCreature(): void {
     if (!creature) return;
     scene.remove(creature.group);
-    creature.material.dispose();
-    creature.outline.dispose();
-    creature.ring.geometry.dispose();
-    creature.ringMaterial.dispose();
     creature = null;
   }
 
@@ -774,6 +774,28 @@ export function createScene(
     return t * t * (3 - 2 * t);
   };
 
+  // A shader compiles the first time something using it is drawn, which freezes that frame. So the
+  // scene's first frame is drawn with everything that otherwise waits for its moment switched on (a
+  // lit flashlight, the Creature and its sprint ring, the batteries, the fear pass) and thrown away,
+  // while the map is loading rather than in the middle of a round. It is a real frame, through the
+  // real passes, because a shader depends on what it draws into. The rest of that same render()
+  // draws over it, so it never shows, and every frame after it resets what this switched on.
+  let warmedUp = false;
+  function warmUp(): void {
+    props.update(performance.now() / 1000);
+    const hunter = ensureHunter('H1');
+    hunter.group.position.copy(cameraAim);
+    hunter.group.visible = hunter.beam.visible = hunter.glow.visible = true;
+    const standIn = ensureCreature();
+    standIn.group.position.copy(cameraAim);
+    standIn.ring.visible = true;
+    creatureFade.value = 1;
+    for (const pickup of pickups) pickup.pose.visible = pickup.shadow.visible = pickup.halo.visible = pickup.motes.visible = true;
+    post.warmUp();
+    hunter.beam.visible = hunter.glow.visible = false;
+    removeCreature();
+  }
+
   // `tuning` is the room's: the fan's length and width follow the values the server plays by.
   // `fearPreview` (the debug menu's fear preview) replaces a Hunter's band and dread. `firePreview`
   // (the debug menu's too) sets a Creature this client can already see burning, on this screen only.
@@ -794,6 +816,10 @@ export function createScene(
     OUTLINE_MATERIAL.visible = VFX.outline;
     setPixelTextures(surfaceTextures, VFX.pixelTextures);
     VFX_UNIFORMS.vfxDitherShading.value = VFX.ditherShading ? 1 : 0;
+    if (!warmedUp) {
+      warmedUp = true;
+      warmUp();
+    }
     const now = performance.now();
     // Capped so a backgrounded tab does not jump the walk cycle when it returns.
     const deltaSeconds = Math.min((now - lastFrameTime) / 1000, 0.1);
@@ -1093,6 +1119,10 @@ export function createScene(
     shadowGeometry.dispose();
     shadowMaterial.dispose();
     creatureShadowMaterial.dispose();
+    creatureMaterial.dispose();
+    creatureOutline.dispose();
+    creatureRingGeometry.dispose();
+    creatureRingMaterial.dispose();
     scene.traverse((object) => {
       if (object instanceof Mesh || object instanceof Points) {
         object.geometry.dispose();

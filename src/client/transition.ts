@@ -60,6 +60,11 @@ export type Transition = {
   run(swap: () => void): void;
   // The page opens covered (index.html); this plays the reveal.
   reveal(): void;
+  // Whether the diamonds are moving, so a frozen page would show. Under the page's opening cover or
+  // while a wipe holds at full cover they are not, so that is the time for slow work.
+  animating(): boolean;
+  // Whether the page's opening cover is still up, its reveal not yet begun.
+  opening(): boolean;
 };
 
 export function createTransition(canvas: HTMLCanvasElement, onSettle: () => void): Transition {
@@ -175,6 +180,12 @@ export function createTransition(canvas: HTMLCanvasElement, onSettle: () => void
       draw(-COVERED);
       begin('reveal', performance.now());
       frame = window.requestAnimationFrame(step);
+    },
+    animating() {
+      return phase === 'cover' || phase === 'reveal';
+    },
+    opening() {
+      return covered && phase === 'idle';
     },
   };
 }

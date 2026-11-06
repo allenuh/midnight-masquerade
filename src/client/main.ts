@@ -1,3 +1,4 @@
+import type { WebGLRenderer } from 'three';
 import { flashlightStage } from '../shared/flashlight.js';
 import { GAMEPLAY } from '../shared/gameplay-config.js';
 import { validateMap } from '../shared/map/validate.js';
@@ -14,6 +15,7 @@ import {
   GUEST_LIST, TITLE, clockText, createHud, createResult, createRoleReveal, renderGuests, setRoomCode, setTiles,
 } from './ui.js';
 import { createTransition } from './transition.js';
+import { warmUpMap } from './warm-up-map.js';
 import { debugRoom } from './debug-room.js'; // DEBUG-ROOM
 import { mountDebugMenu } from './debug-menu.js'; // DEBUG-MENU
 
@@ -81,11 +83,21 @@ fitStage();
 setTiles(element('#game-title'), TITLE);
 
 // The screen wipe. The page opens covered and is revealed once the ransom faces have loaded (or
-// after 1.5 s without them), so the title never shows in fallback fonts. Each wipe ends by
-// redrawing the page (`settle`, set once the page is running), in case it changed screens again.
+// after 1.5 s without them), so the title never shows in fallback fonts, and the game is ready: its
+// models loaded and its shaders compiled (start), so nothing freezes in front of the player later. A
+// slow connection never leaves anyone on a dark screen: after COVER_LIMIT_MS the title shows anyway,
+// and the game catches up behind it. Each wipe ends by redrawing the page (`settle`, set once the page
+// is running), in case it changed screens again.
+const COVER_LIMIT_MS = 6000;
 let settle = () => {};
 const transition = createTransition(element<HTMLCanvasElement>('#transition'), () => settle());
-Promise.race([document.fonts.ready, new Promise((resolve) => window.setTimeout(resolve, 1500))]).then(() => transition.reveal());
+const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+let gameReady = () => {};
+const gameIsReady = new Promise<void>((resolve) => { gameReady = resolve; });
+Promise.race([
+  Promise.all([Promise.race([document.fonts.ready, wait(1500)]), gameIsReady]),
+  wait(COVER_LIMIT_MS),
+]).then(() => transition.reveal());
 
 function start(
   hunterModel: HunterModel, creatureModel: CreatureModel, batteryModel: BatteryModel, surfaceTextures: SurfaceTextures,
@@ -94,6 +106,28 @@ function start(
   // The client bundles no map. The scene exists only once the server has sent the room's
   // map, and is rebuilt (reusing the WebGL renderer) whenever the host switches map.
   let scene: ReturnType<typeof createScene> | null = null;
+  // A new scene's first frame compiles its shaders, which freezes the page, even if only briefly once
+  // the browser has them cached. So it waits while a wipe's diamonds are moving (draw).
+  let sceneIsNew = false;
+
+  // Compiles the game's shaders while the opening cover hides the freeze, by building a scene on a map
+  // nobody sees (warm-up-map.ts), drawing it once and throwing it away. The browser keeps what it
+  // compiled, so the real map's first frame finds it all cached. If the cover has already lifted, or
+  // WebGL is missing, this does nothing: the real scene then compiles for itself, or reports the problem.
+  let renderer: WebGLRenderer | undefined;
+  if (transition.opening()) {
+    try {
+      const warm = createScene(
+        canvas, buildWorld(warmUpMap()), hunterModel, creatureModel, batteryModel, surfaceTextures, propModels,
+      );
+      warm.render(null, DEFAULT_TUNING);
+      renderer = warm.renderer;
+      warm.dispose(true);
+    } catch {
+      // No WebGL 2: loadMap says so, once there is a map to show.
+    }
+  }
+  gameReady();
 
   function loadMap(value: unknown): void {
     const result = validateMap(value);
@@ -101,7 +135,7 @@ function start(
       statusText.textContent = `The server sent an invalid map: ${result.errors.join(' | ')}`;
       return;
     }
-    const renderer = scene?.renderer;
+    renderer = scene?.renderer ?? renderer;
     scene?.dispose(true);
     try {
       scene = createScene(
@@ -112,6 +146,7 @@ function start(
       statusText.textContent = 'This prototype requires WebGL 2. Enable browser hardware acceleration or try another desktop browser, then reload.';
       return;
     }
+    sceneIsNew = true;
     resizeArena();
   }
 
@@ -681,7 +716,10 @@ function start(
     const sparklePreview = debugMenu.takeSparklePreview(); // DEBUG-MENU
     if (sparklePreview) scene?.previewSparkle(sparklePreview); // DEBUG-MENU
     if (debugMenu.takeExorcismPreview()) scene?.previewExorcism(); // DEBUG-MENU
-    scene?.render(shownSnapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview, debugMenu.firePreview); // DEBUG-MENU: was FEAR_PREVIEW
+    if (!sceneIsNew || !transition.animating()) {
+      scene?.render(shownSnapshot, room?.tuning ?? DEFAULT_TUNING, debugMenu.fearPreview, debugMenu.firePreview); // DEBUG-MENU: was FEAR_PREVIEW
+      sceneIsNew = false;
+    }
     if (scene) debugMenu.frame(scene.renderer); // DEBUG-MENU
     // The letterbox round the game matches the night beyond the map.
     if (letterbox !== NIGHT.BACKGROUND_COLOR) container.style.background = letterbox = NIGHT.BACKGROUND_COLOR;
@@ -711,4 +749,5 @@ Promise.all([loadHunterModel(), loadCreatureModel(), loadBatteryModel(), loadSur
   ([hunterModel, creatureModel, batteryModel, surfaceTextures, propModels]) =>
     start(hunterModel, creatureModel, batteryModel, surfaceTextures, propModels), () => {
   statusText.textContent = 'Could not load the game models. Reload the page to try again.';
+  gameReady();
 });
