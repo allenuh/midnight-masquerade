@@ -294,12 +294,12 @@ export type Post = {
   setSize: (width: number, height: number) => void; dispose: () => void;
 };
 
-// The composer renders the scene into a multisampled half-float target (so the canvas's
-// anti-aliasing is kept and bright light can exceed 1 for the bloom), then blooms, grades, and
-// converts to the canvas's colour space in OutputPass, as rendering straight to it did. With bloom
-// and grade off and no fear, it renders straight to the canvas, as before.
+// The composer renders the scene into a half-float target (so bright light can exceed 1 for the
+// bloom), then blooms, grades, and converts to the canvas's colour space in OutputPass, as rendering
+// straight to it did. With bloom and grade off and no fear, it renders straight to the canvas. The
+// game has no anti-aliasing anywhere, on purpose: hard edges suit its look.
 export function createPost(renderer: WebGLRenderer, scene: Scene, camera: Camera): Post {
-  const target = new WebGLRenderTarget(MIN_SIZE, MIN_SIZE, { type: HalfFloatType, samples: 4 });
+  const target = new WebGLRenderTarget(MIN_SIZE, MIN_SIZE, { type: HalfFloatType });
   const composer = new EffectComposer(renderer, target);
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(new Vector2(MIN_SIZE, MIN_SIZE), BLOOM.BLOOM_STRENGTH, BLOOM.BLOOM_RADIUS, BLOOM.BLOOM_THRESHOLD);

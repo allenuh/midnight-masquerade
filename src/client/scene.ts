@@ -318,7 +318,7 @@ export function createScene(
   canvas: HTMLCanvasElement, world: World, hunterModel: HunterModel, creatureModel: CreatureModel,
   batteryModel: BatteryModel, surfaceTextures: SurfaceTextures, propModels: PropModels, existingRenderer?: WebGLRenderer,
 ) {
-  const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: true });
+  const renderer = existingRenderer ?? new WebGLRenderer({ canvas, antialias: false });
   // The canvas's pixel ratio, scaled by VIEW.RENDER_SCALE; render() re-applies it when that changes.
   let renderScale = VIEW.RENDER_SCALE;
   const pixelRatio = () => Math.min(window.devicePixelRatio, 2) * renderScale;
